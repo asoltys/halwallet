@@ -146,6 +146,7 @@ function nk(base, net) { return net === 'mainnet' ? base : `${base}:${net}`; }
 export const BOLTZ_PRESETS = [
   { id: 'local', label: 'Local (regtest)', api: '/boltz', ws: 'ws://localhost:9004/v2/ws' },
   { id: 'staging', label: 'coinos staging (mutinynet)', api: 'https://swap-staging.coinos.io', ws: 'wss://swap-staging.coinos.io/v2/ws' },
+  { id: 'coinos', label: 'coinos (swap.coinos.io)', api: 'https://swap.coinos.io', ws: 'wss://swap.coinos.io/v2/ws' },
   { id: 'boltz', label: 'Boltz Exchange', api: 'https://api.boltz.exchange' },
   { id: 'middleway', label: 'Middle Way', api: 'https://api.middle-way.space' },
   { id: 'zeus', label: 'ZEUS Swaps', api: 'https://swaps.zeuslsp.com/api' },
@@ -165,6 +166,8 @@ export function setBoltzCustom({ api, ws }) {
 export function getBoltzProviderId() {
   try { const id = localStorage.getItem(BOLTZ_PROVIDER_KEY); if (id && BOLTZ_PRESETS.some((p) => p.id === id)) return id; } catch {}
   const net = getNetwork(); // default per network
+  // Mainnet defaults to public Boltz Exchange until our own swap.coinos.io
+  // node ('coinos') has channel liquidity; flip this to 'coinos' once funded.
   return net === 'regtest' ? 'local' : net === 'mutinynet' ? 'staging' : 'boltz';
 }
 export function setBoltzProviderId(id) { try { localStorage.setItem(BOLTZ_PROVIDER_KEY, id); } catch {} }
