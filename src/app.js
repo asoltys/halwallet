@@ -8,8 +8,9 @@ import { Wallet, newMnemonic, isValidMnemonic, accountXpubFor, cacheKeyFor, utxo
 import { qrSvg } from './qr.js';
 import { scanQr } from './scan.js';
 import { getSyncConfig, setSyncConfig, parseNostrPubkey, npubOf, fetchNostrProfile, decryptWithCode } from './nostr.js';
-import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS, getSpIndexerConfig, setSpIndexerConfig, spIndexerPresets, getBoltzApi, BOLTZ_PRESETS, getBoltzProviderId, setBoltzProviderId, getBoltzCustom, setBoltzCustom } from './api.js';
+import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS, getSpIndexerConfig, setSpIndexerConfig, spIndexerPresets, getBoltzApi, BOLTZ_PRESETS, getBoltzProviderId, setBoltzProviderId, getBoltzCustom, setBoltzCustom, arkPresets, getArkProviderId, setArkProviderId, getArkCustom, setArkCustom, getArkConfig } from './api.js';
 import { SwapManager } from './swap.js';
+import { ArkManager } from './ark/manager.js';
 import { isSilentPaymentAddress } from './silentpay.js';
 import { t, LANGS, getLang, setLang, isRTL, loadLocale } from './i18n.js';
 import {
@@ -28,6 +29,58 @@ const swaps = new SwapManager({
   wallet, network: getNetwork(), getApi: getBoltzApi,
   feeRate: 2, onUpdate: () => render(),
 });
+
+// Ark (off-chain payments via an ASP, spoken natively — see src/ark). One
+// manager per open wallet; null when Ark is off in Settings, watch-only, or
+// still connecting. State persists under the wallet's cache key.
+let ark = null;
+let arkTimer = null;
+let arkInitGen = 0; // guards against a stale init() resolving after a wallet switch
+
+function stopArk() {
+  arkInitGen++;
+  if (arkTimer) clearInterval(arkTimer);
+  arkTimer = null;
+  ark = null;
+}
+
+function initArk() {
+  stopArk();
+  ui.arkError = '';
+  const cfg = getArkConfig();
+  if (!cfg || wallet.watchOnly || !wallet.account) return;
+  const gen = arkInitGen;
+  const mgr = new ArkManager({
+    account: wallet.account(),
+    storage: { load: () => wallet.loadArkState(), save: (s) => wallet.saveArkState(s) },
+    arkUrl: cfg.ark,
+    esploraUrl: cfg.esplora,
+    network: getNetwork(),
+    onUpdate: () => render(),
+  });
+  mgr.init().then(() => {
+    if (gen !== arkInitGen) return; // superseded by a newer initArk()/stopArk()
+    ark = mgr;
+    const tick = () => mgr.sync().catch(() => {});
+    tick();
+    // Regtest rounds are seconds apart; on mainnet a slower poll is plenty.
+    arkTimer = setInterval(() => { if (ark === mgr) tick(); }, getNetwork() === 'regtest' ? 5000 : 30000);
+    render();
+  }).catch((e) => {
+    if (gen !== arkInitGen) return;
+    ui.arkError = e.message;
+    render();
+  });
+}
+
+// The spendable Ark balance (sats), or null when Ark isn't active.
+function arkBalance() {
+  if (!ark || !ark.state) return null;
+  return ark.balance();
+}
+
+// t?ark1… bech32m — an Ark address for this or another ASP.
+function isArkAddress(a) { return /^t?ark1[a-z0-9]{20,}$/i.test((a || '').trim()); }
 
 const ui = {
   screen: 'unlock', // 'unlock' | 'wallet' | 'claim' | 'howItWorks'
@@ -777,6 +830,7 @@ async function activateAccount(acc, opts = {}) {
   persistAccounts();
   swaps.network = getNetwork();
   if (!wallet.watchOnly) { try { swaps.resumeAll(); } catch {} } // re-attach in-flight swap watchers
+  initArk(); // connect to the Ark server (no-op when Ark is off in Settings)
   const hadCache = wallet.restoreCache(); // show last-known balance/history instantly
   // An opened gift link starts on a claim/back-up screen instead of the wallet.
   ui.screen = opts.gift ? 'claim' : 'wallet';
@@ -1444,6 +1498,7 @@ function settingsTab() {
     ),
     networkCard(),
     boltzProviderCard(),
+    arkCard(),
     consolidateCard(),
     explorerCard(),
     spIndexerCard(),
@@ -1755,6 +1810,128 @@ function boltzProviderCard() {
             h('div', { class: 'small faint' }, 'Left blank, the WS is derived from the API URL.')))
       : h('div', { class: 'small faint', style: 'word-break:break-all' }, getBoltzApi())
   );
+}
+
+// Ark server selector + wallet panel. Off by default; picking a server spins
+// up the ArkManager for this wallet (off-chain balance, board, refresh).
+function arkCard() {
+  const net = getNetwork();
+  const id = getArkProviderId(net);
+  const custom = getArkCustom(net);
+  const presets = arkPresets(net);
+  const applyProvider = (v) => {
+    setArkProviderId(v, net);
+    ui.receiveType = null;
+    initArk();
+    render();
+  };
+  const head = [
+    h('h3', {}, '⚔ Ark'),
+    h('p', { class: 'small muted', style: 'margin:0' }, t('arkDesc')),
+    h('select', { onChange: (e) => applyProvider(e.target.value) },
+      presets.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
+    id === 'custom'
+      ? h('div', { class: 'col', style: 'gap:8px' },
+          h('label', { class: 'field' },
+            h('span', { class: 'lab' }, t('arkServerUrl')),
+            h('input', {
+              type: 'text', class: 'mono-input', placeholder: 'https://ark.example.com',
+              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: custom.ark,
+              onChange: (e) => { setArkCustom({ ark: e.target.value.trim(), esplora: custom.esplora }, net); initArk(); render(); },
+            })),
+          h('label', { class: 'field' },
+            h('span', { class: 'lab' }, t('arkEsploraUrl')),
+            h('input', {
+              type: 'text', class: 'mono-input', placeholder: 'https://mempool.example.com/api',
+              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: custom.esplora,
+              onChange: (e) => { setArkCustom({ ark: custom.ark, esplora: e.target.value.trim() }, net); initArk(); render(); },
+            })))
+      : null,
+    ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null,
+  ];
+  if (id === 'off' || wallet.watchOnly) {
+    return h('div', { class: 'card col' }, ...head,
+      wallet.watchOnly && id !== 'off' ? h('div', { class: 'small faint' }, t('arkWatchOnly')) : null);
+  }
+  if (!ark || !ark.state) {
+    return h('div', { class: 'card col' }, ...head,
+      ui.arkError ? null : h('div', { class: 'row gap6', style: 'align-items:center' },
+        h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting'))));
+  }
+
+  const bal = ark.balance();
+  const spendables = ark.vtxos().filter((v) => v.state === 'spendable');
+  const pendingActions = ark.pendingActions();
+  const moves = ark.movements().slice(-5).reverse();
+  const row = (k, v) => h('div', { class: 'row between' }, h('span', { class: 'small muted' }, k), h('span', { class: 'small' }, v));
+
+  return h(
+    'div',
+    { class: 'card col', style: 'gap:10px' },
+    ...head,
+    row(t('arkBalance'), fmtAmount(bal.spendableSat) + ' ' + unitLabel() + (bal.pendingSat ? ` (+${fmtAmount(bal.pendingSat)} ${t('pending').toLowerCase()})` : '')),
+    spendables.length ? row(t('arkVtxos'), String(spendables.length)) : null,
+    pendingActions.length
+      ? h('div', { class: 'small muted' }, t('arkPendingActions', { n: pendingActions.length }) + ' — ' + pendingActions.map((a) => `${a.type}:${a.step}`).join(', '))
+      : null,
+
+    // Board: move on-chain sats into the Ark (one on-chain tx, then confirms).
+    h('div', { class: 'input-group' },
+      h('input', {
+        type: 'number', inputmode: 'numeric', min: '0',
+        placeholder: t('arkBoardPlaceholder', { n: (ark.info.minBoardAmountSat || 0).toLocaleString() }),
+        value: ui.arkBoardAmt || '',
+        onInput: (e) => { ui.arkBoardAmt = e.target.value; },
+      }),
+      h('button', { class: 'btn-sm', disabled: !!ui.arkBusy, onClick: doArkBoard }, ui.arkBusy === 'board' ? h('span', { class: 'spinner sm' }) : t('arkBoardBtn'))),
+
+    spendables.length >= 1
+      ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkRefresh },
+          ui.arkBusy === 'refresh' ? h('span', { class: 'spinner sm' }) : t('arkRefreshBtn', { n: spendables.length }))
+      : null,
+
+    moves.length
+      ? h('div', { class: 'col', style: 'gap:4px' },
+          h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' }, t('arkActivity')),
+          moves.map((m) => row(
+            `${m.type}${m.detail ? ' · ' + m.detail : ''}`,
+            `${m.type === 'send' ? '-' : '+'}${fmtAmount(m.amountSat)} · ${m.status}`)))
+      : null
+  );
+}
+
+// Board: startBoard() gives the funding address; hal's own on-chain wallet pays
+// it (recipient pinned to vout 0 — the ASP requires the board output there),
+// then the manager waits for confirmations and registers via the sync loop.
+async function doArkBoard() {
+  const sats = parseInt((ui.arkBoardAmt || '').trim(), 10);
+  if (!sats) return;
+  ui.arkBusy = 'board'; ui.arkError = ''; render();
+  try {
+    const { actionId, fundingAddress } = await ark.startBoard(sats);
+    const feeRate = (wallet.feeRates && wallet.feeRates.halfHourFee) || 5;
+    const draft = wallet.buildTx({ recipients: [{ address: fundingAddress, amount: sats }], feeRate, noSort: true });
+    const hexTx = wallet.sign(draft.tx);
+    const txid = await wallet.broadcast(hexTx);
+    await ark.completeBoard(actionId, txid);
+    ui.arkBoardAmt = '';
+    toast(t('arkBoardStarted'));
+    wallet.scan().catch(() => {});
+  } catch (e) {
+    ui.arkError = e.message;
+  }
+  ui.arkBusy = null; render();
+}
+
+async function doArkRefresh() {
+  ui.arkBusy = 'refresh'; ui.arkError = ''; render();
+  try {
+    await ark.refresh();
+    toast(t('arkRefreshStarted'));
+  } catch (e) {
+    ui.arkError = e.message;
+  }
+  ui.arkBusy = null; render();
 }
 
 // Network selector. Per-network endpoints (Electrum server / block explorer) are
@@ -2512,6 +2689,8 @@ function balanceCard() {
   const firstLoad = wallet.scanning && !wallet.loaded;
   const locked = wallet.lockedValue;
   const pending = wallet.pendingIncoming;
+  const b = arkBalance();
+  const arkBal = b && (b.spendableSat + b.pendingSat) > 0 ? b : null;
   return h(
     'div',
     { class: 'card balance' },
@@ -2520,7 +2699,7 @@ function balanceCard() {
     // change, minus gift locks — so a pending spend debits immediately, while a
     // pending incoming receive stays out of it until it confirms.
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' }, fmtAmount(wallet.spendable), ' ', unitTag('unit')),
-    pending > 0 || locked > 0
+    pending > 0 || locked > 0 || arkBal
       ? h(
           'div',
           { class: 'split' },
@@ -2529,6 +2708,9 @@ function balanceCard() {
             : null,
           locked > 0
             ? h('div', {}, h('div', { class: 'k' }, t('lockedInGifts')), h('div', { class: 'v' }, fmtAmount(locked), ' ', unitTag()))
+            : null,
+          arkBal
+            ? h('div', {}, h('div', { class: 'k' }, t('arkBalance')), h('div', { class: 'v' }, fmtAmount(arkBal.spendableSat + arkBal.pendingSat), ' ', unitTag()))
             : null
         )
       : null
@@ -2634,17 +2816,31 @@ function receiveTab() {
   let mode = ui.receiveType || 'address';
   if (mode === 'sp' && !spAddr) mode = 'address';
   if (mode === 'ln' && !canLn) mode = 'address';
+  if (mode === 'ark' && !(ark && ark.state)) mode = 'address';
   // A compact dropdown (not a 3-button segmented control) so it fits on mobile and
   // scales if more address types are added.
   const opts = [['address', t('receiveAddressTab')]];
   if (canLn) opts.push(['ln', t('receiveLnTab')]);
   if (spAddr) opts.push(['sp', t('receiveSpTab')]);
+  if (ark && ark.state) opts.push(['ark', t('receiveArkTab')]);
   const seg = opts.length > 1
     ? h('select', { style: 'width:100%', onChange: (e) => { ui.receiveType = e.target.value; render(); } },
         opts.map(([id, label]) => h('option', { value: id, selected: mode === id }, label)))
     : null;
   if (mode === 'ln') {
     return h('div', { class: 'card col', style: 'align-items:center;gap:14px' }, seg, ...lnReceiveContent());
+  }
+  if (mode === 'ark') {
+    const arkAddr = ark.address();
+    return h(
+      'div',
+      { class: 'card col', style: 'align-items:center;gap:14px' },
+      seg,
+      h('p', { class: 'small muted', style: 'margin:0;text-align:center' }, t('arkReceiveIntro')),
+      h('div', { html: qrSvg(arkAddr) }),
+      h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, arkAddr),
+      copyBtn(arkAddr, t('copyAddress'))
+    );
   }
   const addr = mode === 'sp' ? spAddr : fresh.address;
   return h(
@@ -2773,6 +2969,7 @@ function sendTab() {
   }
   if (ui.sendResult) return sendResultView();
   if (ui.broadcastTx) return broadcastConfirmView();
+  if (ui.arkSent || ui.arkSend) return arkSendReview();
   if (ui.lnSent || ui.lnSend) return lnSendReview();
   if (ui.lnSendBusy) return h('div', { class: 'card col', style: 'align-items:center;gap:14px;padding:32px 14px' }, h('span', { class: 'spinner' }), h('p', { class: 'muted', style: 'margin:0' }, t('lnQuoting')));
   if (ui.draft) return reviewView();
@@ -3034,7 +3231,7 @@ function addrVerifyNodes(a) {
 // auto-advances to its own confirmation, so it never needs them.
 function destReady(a) {
   a = (a || '').trim();
-  return !!a && (wallet.isOnchainAddress(a) || isSilentPaymentAddress(a));
+  return !!a && (wallet.isOnchainAddress(a) || isSilentPaymentAddress(a) || (isArkAddress(a) && !!ark));
 }
 
 // One recipient: address + amount. Max is only offered for a single recipient.
@@ -3255,6 +3452,14 @@ function reviewSend() {
     // submarine swap, shown with an itemized cost. To the user it's just a payment.
     const lnTarget = s.recipients.length === 1 ? (s.recipients[0].address || '').trim().replace(/^lightning:/i, '') : '';
     if (isLnInvoice(lnTarget)) { startLnSend(lnTarget); return; }
+    // An Ark address → instant off-chain send, no mining fee; its own confirmation.
+    if (s.recipients.length === 1 && isArkAddress(s.recipients[0].address)) {
+      if (!ark || !ark.state) throw new Error(t('arkNotConnected'));
+      const sats = parseAmount(s.recipients[0].amount, unit);
+      if (!sats || sats <= 0) throw new Error(t('enterValidAmtForN', { n: 1 }));
+      ui.arkSend = { address: s.recipients[0].address.trim(), amountSat: sats };
+      return render();
+    }
     const feeRate = currentFeeRate();
     let coinIds = null;
     if (s.manual) {
@@ -3282,6 +3487,51 @@ function reviewSend() {
     ui.sendError = e.message;
   }
   render();
+}
+
+// Ark send confirmation: amount + destination, zero fees, instant. After the
+// send, a simple success view (there is no on-chain txid to link).
+function arkSendReview() {
+  if (ui.arkSent) {
+    return h(
+      'div',
+      { class: 'card col', style: 'align-items:center;text-align:center;gap:14px;padding:40px 20px' },
+      h('div', { class: 'check-badge' }, '✓'),
+      h('h2', { style: 'margin:0' }, t('arkSentTitle')),
+      h('div', { class: 'amount-pos', style: 'font-size:18px' }, '-' + fmtAmount(ui.arkSent.amountSat) + ' ' + unitLabel()),
+      h('button', { class: 'btn-primary btn-block', onClick: () => { ui.arkSent = null; ui.send = blankSend(); render(); } }, t('done'))
+    );
+  }
+  const a = ui.arkSend;
+  const row = (k, v) => h('div', { class: 'row between' }, h('span', { class: 'small muted' }, k), h('span', { class: 'small' }, v));
+  return h(
+    'div',
+    { class: 'card col', style: 'gap:12px' },
+    h('h3', {}, t('arkSendTitle')),
+    row(t('lnPayAmount'), fmtAmount(a.amountSat) + ' ' + unitLabel()),
+    row(t('arkPayTo'), shortAddr(a.address, 14)),
+    row(t('networkFee'), t('arkNoFee')),
+    ui.sendError ? h('div', { class: 'notice err' }, ui.sendError) : null,
+    h('div', { class: 'row gap6' },
+      h('button', { class: 'btn-ghost', onClick: () => { ui.arkSend = null; ui.sendError = ''; render(); } }, t('back')),
+      ui.busy
+        ? h('button', { class: 'btn-primary grow', disabled: true }, h('span', { class: 'spinner' }))
+        : h('button', { class: 'btn-primary grow', onClick: doArkSend }, t('arkSendBtn'))
+    )
+  );
+}
+
+async function doArkSend() {
+  const a = ui.arkSend;
+  ui.busy = true; ui.sendError = ''; render();
+  try {
+    await ark.send(a.address, a.amountSat);
+    ui.arkSent = { amountSat: a.amountSat };
+    ui.arkSend = null;
+  } catch (e) {
+    ui.sendError = e.message;
+  }
+  ui.busy = false; render();
 }
 
 // A bolt11 Lightning invoice (any network prefix); long ln-prefixed bech32 string.

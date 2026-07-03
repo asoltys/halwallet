@@ -181,6 +181,55 @@ const deriveBoltzWs = (api) => api ? api.replace(/^http/, 'ws').replace(/\/+$/, 
 export function getBoltzApi() { return getBoltzProvider().api; }
 export function getBoltzWs() { const p = getBoltzProvider(); return p.ws || deriveBoltzWs(p.api); }
 
+// Ark server (ASP) — Second's bark/captaind protocol, spoken natively over
+// gRPC-web (src/ark). Off by default: enabling Ark is an explicit opt-in per
+// network. The esplora URL is the chain source the Ark client checks anchors
+// and confirmations against (independent from the wallet's own data source so
+// each preset ships a known-good pairing).
+const ARK_PRESETS_BY_NET = {
+  mainnet: [
+    { id: 'off', label: 'Off', ark: '', esplora: '' },
+    { id: 'second', label: 'Second (ark.second.tech)', ark: 'https://ark.second.tech', esplora: 'https://mempool.second.tech/api' },
+    { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
+  ],
+  regtest: [
+    { id: 'off', label: 'Off', ark: '', esplora: '' },
+    { id: 'local', label: 'Local (regtest)', ark: 'http://localhost:3535', esplora: 'http://localhost:30002' },
+    { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
+  ],
+};
+const ARK_PROVIDER_KEY = 'btc-wallet-ark-provider'; // selected preset id, per network
+const ARK_CUSTOM_KEY = 'btc-wallet-ark-custom';     // { ark, esplora } for custom, per network
+
+export function arkPresets(net = getNetwork()) {
+  return ARK_PRESETS_BY_NET[net] || ARK_PRESETS_BY_NET.mainnet;
+}
+export function getArkProviderId(net = getNetwork()) {
+  try {
+    const id = localStorage.getItem(nk(ARK_PROVIDER_KEY, net));
+    if (id && arkPresets(net).some((p) => p.id === id)) return id;
+  } catch {}
+  return 'off';
+}
+export function setArkProviderId(id, net = getNetwork()) {
+  try { localStorage.setItem(nk(ARK_PROVIDER_KEY, net), id); } catch {}
+}
+export function getArkCustom(net = getNetwork()) {
+  try { const c = JSON.parse(localStorage.getItem(nk(ARK_CUSTOM_KEY, net)) || 'null'); if (c) return { ark: c.ark || '', esplora: c.esplora || '' }; } catch {}
+  return { ark: '', esplora: '' };
+}
+export function setArkCustom({ ark, esplora }, net = getNetwork()) {
+  try { localStorage.setItem(nk(ARK_CUSTOM_KEY, net), JSON.stringify({ ark: (ark || '').trim(), esplora: (esplora || '').trim() })); } catch {}
+}
+// The active Ark endpoints, or null when Ark is off / incompletely configured.
+export function getArkConfig(net = getNetwork()) {
+  const id = getArkProviderId(net);
+  if (id === 'off') return null;
+  const p = arkPresets(net).find((x) => x.id === id);
+  const cfg = p.id === 'custom' ? getArkCustom(net) : { ark: p.ark, esplora: p.esplora };
+  return cfg.ark && cfg.esplora ? cfg : null;
+}
+
 // Silent-payment (BIP-352) tweak indexer — a separate, optional endpoint used
 // only for SP receiving. It serves public tweak/UTXO data (the scan key never
 // leaves the device), but a public one can observe which blocks hold your

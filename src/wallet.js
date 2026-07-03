@@ -1191,7 +1191,7 @@ export class Wallet {
   // recipients: [{ address, amount(sats) }]
   // coinIds: optional array of "txid:vout" to force manual coin control.
   // sendMax: drain all selected coins to the single recipient.
-  buildTx({ recipients, feeRate, coinIds = null, sendMax = false }) {
+  buildTx({ recipients, feeRate, coinIds = null, sendMax = false, noSort = false }) {
     const pool_ = coinIds
       ? this.utxos.filter((u) => coinIds.includes(utxoId(u)))
       : this.utxos.filter((u) => !this.isReserved(utxoId(u))); // skip coins set aside for gifts
@@ -1282,7 +1282,10 @@ export class Wallet {
       feePerByte,
       network: this.netCfg.net,
       createTx: true,
-        bip69: true,
+        // noSort keeps recipients at their given indexes (change appended last) —
+        // required when an output's position is protocol-relevant (Ark board
+        // funding must sit at vout 0).
+        bip69: !noSort,
         disableScriptCheck: true,
     });
     if (!sel || !sel.tx)
@@ -1531,6 +1534,17 @@ export class Wallet {
   }
   _saveReclaimed() {
     try { localStorage.setItem(this._reclaimedKey(), JSON.stringify([...this.reclaimedSet()])); } catch {}
+  }
+
+  // ---- Ark support -------------------------------------------------------
+  // Persisted ArkManager state (vtxos, in-flight action checkpoints, movement
+  // history — no secrets: vtxo keys are re-derived from the seed).
+  _arkKey() { return this._cacheKey() + ':ark'; }
+  loadArkState() {
+    try { return JSON.parse(localStorage.getItem(this._arkKey()) || 'null'); } catch { return null; }
+  }
+  saveArkState(state) {
+    try { localStorage.setItem(this._arkKey(), JSON.stringify(state)); } catch {}
   }
 
   // ---- Boltz swap support ----------------------------------------------
