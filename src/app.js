@@ -3761,6 +3761,26 @@ function giftHistoryItem(g) {
   );
 }
 
+// An Ark movement (receive / send / board) as a history row. No txid to open —
+// these are off-chain; the Settings card shows the fuller activity detail.
+function arkHistoryItem(m) {
+  const incoming = m.type !== 'send';
+  const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded') : t('sent');
+  return h(
+    'div',
+    { class: 'item' },
+    h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, incoming ? '↓' : '↑'),
+    h('div', { class: 'grow' },
+      h('div', { class: 'row gap6' },
+        label,
+        h('span', { class: 'tag' }, 'Ark'),
+        m.status !== 'complete' ? h('span', { class: 'tag pending' }, m.status) : null),
+      h('div', { class: 'small faint' }, timeAgo(m.ts / 1000))),
+    h('div', { style: 'text-align:right' },
+      h('div', { class: incoming ? 'amount-pos' : 'amount-neg' }, (incoming ? '+' : '-') + fmtAmount(m.amountSat)))
+  );
+}
+
 function txHistoryItem(tx) {
   const incoming = tx.net >= 0;
   const stuck = !tx.confirmed && wallet.isStuck(tx);
@@ -3837,26 +3857,35 @@ function historyTab() {
     ? [...wallet.outstandingGifts(), ...wallet.claimedGifts().map((c) => ({ ...c, claimed: true }))]
     : [];
   if (ui.giftsAll && gifts.length) return giftsAllView(gifts);
-  if (!txs.length && !gifts.length)
+  // Ark receives/sends/boards interleave with on-chain txs by time. (Refreshes
+  // are internal churn — they stay in the Settings activity list only.)
+  const arkMoves = ark && ark.state
+    ? ark.movements().filter((m) => ['receive', 'send', 'board'].includes(m.type) && m.status === 'complete')
+    : [];
+  if (!txs.length && !gifts.length && !arkMoves.length)
     return h('div', { class: 'card' }, h('p', { class: 'muted center', style: 'margin:0' }, t('noTxYet')));
 
   // Show at most 3 gifts inline; the rest live behind "View all". Transactions
-  // paginate 10 at a time.
+  // and Ark movements merge into one timeline, paginated 10 at a time.
   const giftsHead = gifts.slice(0, 3);
-  const txPages = Math.ceil(txs.length / PAGE_SIZE);
+  const entries = [
+    ...txs.map((tx) => ({ time: tx.confirmed ? (tx.blockTime || 0) * 1000 : Date.now(), render: () => txHistoryItem(tx) })),
+    ...arkMoves.map((m) => ({ time: m.ts, render: () => arkHistoryItem(m) })),
+  ].sort((a, b) => b.time - a.time);
+  const txPages = Math.ceil(entries.length / PAGE_SIZE);
   const txPage = Math.min(ui.txPage, Math.max(0, txPages - 1));
-  const txSlice = txs.slice(txPage * PAGE_SIZE, txPage * PAGE_SIZE + PAGE_SIZE);
+  const txSlice = entries.slice(txPage * PAGE_SIZE, txPage * PAGE_SIZE + PAGE_SIZE);
   return h(
     'div',
     { class: 'card' },
     h('div', { class: 'list' },
       ...giftsHead.map(giftHistoryItem),
-      ...txSlice.map(txHistoryItem)
+      ...txSlice.map((e) => e.render())
     ),
     gifts.length > 3
       ? h('button', { class: 'btn-sm btn-block', style: 'margin-top:8px', onClick: () => { ui.giftsAll = true; ui.giftsPage = 0; ui.revokeId = null; render(); } }, t('viewAllGifts', { n: gifts.length }))
       : null,
-    pager(txPage, txs.length, (p) => { ui.txPage = p; render(); }),
+    pager(txPage, entries.length, (p) => { ui.txPage = p; render(); }),
     wallet.historyLoading
       ? h(
           'div',

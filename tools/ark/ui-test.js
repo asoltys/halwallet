@@ -129,6 +129,13 @@ try {
   check('sent view', await waitText('Sent!', 15000));
   check('alice +7000', aliceBalance() === before + 7000, String(aliceBalance() - before));
 
+  // history shows both ark movements
+  await clickText('.tabs button', 'History');
+  await sleep(400);
+  const hist = await bodyText();
+  check('history shows ark receive', /received\s*\n?\s*ark/i.test(hist));
+  check('history shows ark send', /sent\s*\n?\s*ark/i.test(hist));
+
   // --- board from settings ---
   console.log('\n[4] board');
   await clickText('.tabs button', 'Receive');

@@ -371,6 +371,7 @@ const STR = {
     arkNoFee: 'none — instant off-chain send',
     arkSendBtn: 'Send',
     arkSentTitle: 'Sent!',
+    arkBoarded: 'Boarded to Ark',
     lnReceiveIntro: 'Receive over Lightning — paid into this wallet on-chain, non-custodial.',
     lnReceiveAwaiting: 'Share this invoice. When it’s paid, the sats land here automatically.',
     lnReceiveWatching: 'Waiting for payment…',
