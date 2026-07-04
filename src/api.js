@@ -192,12 +192,25 @@ const ARK_PRESETS_BY_NET = {
     { id: 'second', label: 'Second (ark.second.tech)', ark: 'https://ark.second.tech', esplora: 'https://mempool.second.tech/api' },
     { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
   ],
+  // No public ASP on these networks (Second runs signet + mainnet only) —
+  // custom lets you point at a self-hosted captaind.
+  testnet: [
+    { id: 'off', label: 'Off', ark: '', esplora: '' },
+    { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
+  ],
+  mutinynet: [
+    { id: 'off', label: 'Off', ark: '', esplora: '' },
+    { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
+  ],
   regtest: [
     { id: 'off', label: 'Off', ark: '', esplora: '' },
     { id: 'local', label: 'Local (regtest)', ark: 'http://localhost:3535', esplora: 'http://localhost:30002' },
     { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
   ],
 };
+// On by default where a known-good server exists; the Settings card can
+// always turn it off.
+const ARK_DEFAULT = { mainnet: 'second', testnet: 'off', mutinynet: 'off', regtest: 'local' };
 const ARK_PROVIDER_KEY = 'btc-wallet-ark-provider'; // selected preset id, per network
 const ARK_CUSTOM_KEY = 'btc-wallet-ark-custom';     // { ark, esplora } for custom, per network
 
@@ -209,7 +222,7 @@ export function getArkProviderId(net = getNetwork()) {
     const id = localStorage.getItem(nk(ARK_PROVIDER_KEY, net));
     if (id && arkPresets(net).some((p) => p.id === id)) return id;
   } catch {}
-  return 'off';
+  return ARK_DEFAULT[net] || 'off';
 }
 export function setArkProviderId(id, net = getNetwork()) {
   try { localStorage.setItem(nk(ARK_PROVIDER_KEY, net), id); } catch {}

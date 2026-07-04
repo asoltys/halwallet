@@ -351,7 +351,7 @@ const STR = {
     receiveSpTab: 'Silent payment',
     receiveArkTab: 'Ark',
     arkReceiveIntro: 'Receive instantly over Ark — off-chain, self-custodial, no fees.',
-    arkDesc: 'Off-chain payments via an Ark server: instant, no mining fees, self-custodial (you can always exit on-chain). Off unless you pick a server.',
+    arkDesc: 'Off-chain payments via an Ark server: instant, no mining fees, self-custodial (you can always exit on-chain).',
     arkServerUrl: 'Ark server URL',
     arkEsploraUrl: 'Esplora URL (chain source)',
     arkWatchOnly: 'Ark needs the wallet keys — load the seed to use it.',
