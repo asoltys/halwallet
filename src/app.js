@@ -3577,11 +3577,15 @@ function arkSendReview() {
   if (ui.arkSent) {
     return h(
       'div',
-      { class: 'card col', style: 'align-items:center;text-align:center;gap:14px;padding:40px 20px' },
+      {
+        class: 'card col',
+        style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
+        onClick: () => { ui.arkSent = null; ui.send = blankSend(); render(); },
+      },
       h('div', { class: 'check-badge' }, '✓'),
       h('h2', { style: 'margin:0' }, t('arkSentTitle')),
-      h('div', { class: 'amount-pos', style: 'font-size:18px' }, '-' + fmtAmount(ui.arkSent.amountSat) + ' ' + unitLabel()),
-      h('button', { class: 'btn-primary btn-block', onClick: () => { ui.arkSent = null; ui.send = blankSend(); render(); } }, t('done'))
+      h('div', { class: 'amount-neg', style: 'font-size:18px' }, '-' + fmtAmount(ui.arkSent.amountSat) + ' ' + unitLabel()),
+      h('div', { class: 'small muted' }, t('tapToProceed'))
     );
   }
   const a = ui.arkSend;

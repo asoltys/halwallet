@@ -133,6 +133,8 @@ try {
   await clickText('button.btn-primary', 'Send');
   check('sent view', await waitText('Sent!', 15000));
   check('alice +7000', aliceBalance() === before + 7000, String(aliceBalance() - before));
+  await clickText('.card', 'Sent!'); // tap anywhere to proceed
+  await sleep(300);
 
   // history shows both ark movements
   await clickText('.tabs button', 'History');
