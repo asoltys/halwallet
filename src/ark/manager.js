@@ -20,6 +20,7 @@ import * as musig2 from '@scure/btc-signer/musig2';
 import {
   getArkInfo, handshake, encodeAddress, decodeAddress, blindMailboxId,
   readMailbox, decodeVtxo, arkIdFromServerPubkey, GrpcError,
+  grpcStream, decodeMailboxMessage, mailboxRequestBytes,
 } from './proto.js';
 import {
   buildArkoorSend, cosignWithServer, buildSignedVtxoBytes,
@@ -145,31 +146,72 @@ export class ArkManager {
   async sync() {
     const mailbox = this._mailboxKey();
     const { messages } = await readMailbox(this.arkUrl, mailbox, this.state.mailboxCheckpoint);
-    const ourKeys = [hex.encode(this._key(0).pubkey)];
     let changed = false;
-    for (const m of messages) {
-      if (m.checkpoint > this.state.mailboxCheckpoint) this.state.mailboxCheckpoint = m.checkpoint;
-      if (m.kind !== 'arkoor') { changed = true; continue; }
-      for (const v of m.vtxos) {
-        if (this._vtxo(v.id)) continue;
-        try {
-          await validateVtxo(v, { serverPubkey: this.serverPub, chain: this.chain, expectPubkeys: ourKeys });
-        } catch (e) {
-          if (e instanceof VtxoValidationError) {
-            this._movement({ type: 'receive', amountSat: v.amountSat, status: 'rejected', detail: e.message });
-            changed = true;
-            continue;
-          }
-          throw e; // network errors etc: retry next sync
-        }
-        this._addVtxo(v, v._raw.bytes, 0);
-        this._movement({ type: 'receive', amountSat: v.amountSat, status: 'complete', vtxoId: v.id });
-        changed = true;
-      }
-      changed = true;
-    }
+    for (const m of messages) changed = (await this._processMailboxMessage(m)) || changed;
     if (changed) this._save();
     await this.resumePending();
+  }
+
+  // Handle one mailbox message (from a poll or the live stream). Returns
+  // whether state changed; the caller saves. Duplicate-safe: vtxos dedupe by
+  // id and the checkpoint only moves forward.
+  async _processMailboxMessage(m) {
+    let changed = false;
+    if (m.checkpoint > this.state.mailboxCheckpoint) { this.state.mailboxCheckpoint = m.checkpoint; changed = true; }
+    if (m.kind !== 'arkoor') return changed;
+    const ourKeys = [hex.encode(this._key(0).pubkey)];
+    for (const v of m.vtxos) {
+      if (this._vtxo(v.id)) continue;
+      try {
+        await validateVtxo(v, { serverPubkey: this.serverPub, chain: this.chain, expectPubkeys: ourKeys });
+      } catch (e) {
+        if (e instanceof VtxoValidationError) {
+          this._movement({ type: 'receive', amountSat: v.amountSat, status: 'rejected', detail: e.message });
+          changed = true;
+          continue;
+        }
+        throw e; // network errors etc: retry next sync
+      }
+      this._addVtxo(v, v._raw.bytes, 0);
+      this._movement({ type: 'receive', amountSat: v.amountSat, status: 'complete', vtxoId: v.id });
+      changed = true;
+    }
+    return changed;
+  }
+
+  // Live mailbox push via the SubscribeMailbox gRPC stream — receives land the
+  // moment the sender delivers, instead of on the next poll. Reconnects with a
+  // short backoff until stopMailboxStream().
+  startMailboxStream() {
+    if (this._streaming) return;
+    this._streaming = true;
+    const loop = async () => {
+      while (this._streaming) {
+        try {
+          this._streamAbort = new AbortController();
+          await grpcStream(
+            this.arkUrl,
+            'mailbox_server.MailboxService/SubscribeMailbox',
+            mailboxRequestBytes(this._mailboxKey(), this.state.mailboxCheckpoint),
+            {
+              signal: this._streamAbort.signal,
+              onMessage: (bytes) => {
+                this._processMailboxMessage(decodeMailboxMessage(bytes))
+                  .then((changed) => { if (changed) this._save(); })
+                  .catch(() => {}); // validation retried by the next poll
+              },
+            },
+          );
+        } catch {}
+        if (this._streaming) await new Promise((r) => setTimeout(r, 3000));
+      }
+    };
+    loop();
+  }
+  stopMailboxStream() {
+    this._streaming = false;
+    try { this._streamAbort?.abort(); } catch {}
+    this._streamAbort = null;
   }
 
   async resumePending() {

@@ -42,6 +42,7 @@ function stopArk() {
   arkInitGen++;
   if (arkTimer) clearInterval(arkTimer);
   arkTimer = null;
+  if (ark) ark.stopMailboxStream();
   ark = null;
   arkConnectPromise = null;
 }
@@ -89,7 +90,9 @@ function connectArk() {
     ark = mgr;
     const tick = () => mgr.sync().catch(() => {});
     tick();
-    // Regtest rounds are seconds apart; on mainnet a slower poll is plenty.
+    // Receives arrive in real time over the mailbox stream; the poll is the
+    // fallback and what drives in-flight boards/refreshes forward.
+    mgr.startMailboxStream();
     arkTimer = setInterval(() => { if (ark === mgr) tick(); }, getNetwork() === 'regtest' ? 5000 : 30000);
     render();
     return mgr;

@@ -116,6 +116,47 @@ export async function grpcCall(base, method, reqBytes) {
   return data ?? new Uint8Array(0);
 }
 
+// Server-streaming gRPC-web call: onMessage fires per data frame as it
+// arrives; resolves when the stream ends (throws GrpcError on bad status).
+export async function grpcStream(base, method, reqBytes, { onMessage, signal }) {
+  const frame = new Uint8Array(5 + reqBytes.length);
+  new DataView(frame.buffer).setUint32(1, reqBytes.length);
+  frame.set(reqBytes, 5);
+  const resp = await fetch(`${base}/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/grpc-web+proto', 'x-grpc-web': '1', 'pver': String(PVER) },
+    body: frame,
+    signal,
+  });
+  if (!resp.ok) throw new Error(`${method}: http ${resp.status}`);
+  const reader = resp.body.getReader();
+  let buf = new Uint8Array(0);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf = concatBytes(buf, value);
+    for (;;) {
+      if (buf.length < 5) break;
+      const len = new DataView(buf.buffer, buf.byteOffset + 1, 4).getUint32(0);
+      if (buf.length < 5 + len) break;
+      const flag = buf[0];
+      const payload = buf.slice(5, 5 + len);
+      buf = buf.slice(5 + len);
+      if (flag & 0x80) {
+        const trailers = {};
+        for (const line of td.decode(payload).trim().split('\r\n')) {
+          const c = line.indexOf(':');
+          if (c > 0) trailers[line.slice(0, c).trim()] = line.slice(c + 1).trim();
+        }
+        const status = Number(trailers['grpc-status'] ?? 0);
+        if (status !== 0) throw new GrpcError(status, decodeURIComponent(trailers['grpc-message'] || ''), method);
+      } else {
+        onMessage(payload);
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // byte reader + bitcoin primitives (CompactSize, OutPoint, TxOut)
 // ---------------------------------------------------------------------------
@@ -379,30 +420,39 @@ export async function handshake(ark, version = 'hal-ark-spike/0.0.1') {
 
 // Read the mailbox; returns { messages: [{checkpoint, vtxos: [decoded]}], haveMore }
 export async function readMailbox(ark, mailbox, checkpoint = 0) {
+  const data = await grpcCall(ark, 'mailbox_server.MailboxService/ReadMailbox', mailboxRequestBytes(mailbox, checkpoint));
+
+  const messages = [];
+  let haveMore = false;
+  for (const { field, value } of pbFields(data)) {
+    if (field === 2) haveMore = Number(value) !== 0;
+    if (field === 1) messages.push(decodeMailboxMessage(value));
+  }
+  return { messages, haveMore };
+}
+
+// Decode one MailboxMessage (also the unit of the SubscribeMailbox stream).
+export function decodeMailboxMessage(value) {
+  const msg = { checkpoint: 0, vtxos: [], kind: 'other' };
+  for (const f of pbFields(value)) {
+    if (f.field === 2) msg.checkpoint = Number(f.value);
+    if (f.field === 1) { // ArkoorMessage
+      msg.kind = 'arkoor';
+      for (const a of pbFields(f.value)) {
+        if (a.field === 1) msg.vtxos.push(decodeVtxo(a.value));
+      }
+    }
+  }
+  return msg;
+}
+
+// Build an authenticated MailboxRequest (shared by read + subscribe).
+export function mailboxRequestBytes(mailbox, checkpoint = 0) {
   const expiry = Math.floor(Date.now() / 1000) + 60;
   const auth = mailboxAuthorization(mailbox.privkey, mailbox.pubkey, expiry);
   const w = pbWriter();
   w.bytesField(1, mailbox.pubkey);
   w.bytesField(2, auth);
   if (checkpoint) w.varintField(3, checkpoint);
-  const data = await grpcCall(ark, 'mailbox_server.MailboxService/ReadMailbox', w.finish());
-
-  const messages = [];
-  let haveMore = false;
-  for (const { field, value } of pbFields(data)) {
-    if (field === 2) haveMore = Number(value) !== 0;
-    if (field !== 1) continue;
-    const msg = { checkpoint: 0, vtxos: [], kind: 'other' };
-    for (const f of pbFields(value)) {
-      if (f.field === 2) msg.checkpoint = Number(f.value);
-      if (f.field === 1) { // ArkoorMessage
-        msg.kind = 'arkoor';
-        for (const a of pbFields(f.value)) {
-          if (a.field === 1) msg.vtxos.push(decodeVtxo(a.value));
-        }
-      }
-    }
-    messages.push(msg);
-  }
-  return { messages, haveMore };
+  return w.finish();
 }
