@@ -291,6 +291,7 @@ const STR = {
     claimBodyExisting: 'Claim it into your wallet \u201c{name}\u201d.',
     claimIntoPrompt: 'Choose where to receive it.',
     claimNewWallet: 'Receive into a new wallet',
+    giftClaimedContext: 'This transaction delivered your gift',
     claimIntoExisting: 'Receive into one of your wallets:',
     claimOr: 'or',
     goToWallet: 'Go to wallet',

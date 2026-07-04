@@ -164,8 +164,6 @@ const ui = {
   receiveSeenIndex: null, // fresh receive index the user has acknowledged
   txDetail: null, // txid being viewed in the history detail view
   txPage: 0, // History: current page of transactions (10 per page)
-  giftsAll: false, // History: showing the full paginated list of sent gifts
-  giftsPage: 0, // History: current page within the all-gifts list
   addrScan: false, // Settings: showing the per-address rescan list
   addrScanPage: 0, // Settings: current page within the address list
   rescanning: new Set(), // 'chain/index' ids queued/in-flight for rescan
@@ -394,7 +392,7 @@ wallet.subscribe(render);
 // buttons (and Android/system back) move between screens we've actually viewed.
 // We snapshot only the navigation-relevant `ui` fields, so incidental re-renders
 // (typing, polling, balance updates) don't create history entries.
-const NAV_FIELDS = ['screen', 'tab', 'txDetail', 'bump', 'giftsAll', 'giftMode', 'claimStep'];
+const NAV_FIELDS = ['screen', 'tab', 'txDetail', 'bump', 'giftMode', 'claimStep'];
 function navSnapshot() {
   const s = {};
   for (const f of NAV_FIELDS) s[f] = ui[f] ?? null;
@@ -2791,7 +2789,7 @@ function tabsBar() {
         ui.revealShown = false; // re-mask the recovery phrase whenever tabs change
         ui.txDetail = null; // back to the history list when leaving/returning
         ui.arkMoveDetail = null;
-        ui.giftsAll = false; // and back to the paged history, not the all-gifts view
+        ui.giftDetail = null;
         ui.addrScan = false; // and back to the main Settings, not the address list
         ui.bump = null;
         ui.giftMode = false;
@@ -3851,33 +3849,54 @@ function sendResultView() {
 // coin for a future payment, or revoke the link on-chain) without going through
 // the Send → gift card. Reuses the same confirm state and handlers.
 function giftHistoryItem(g) {
-  if (ui.revokeId === g.id) {
-    return h('div', { class: 'item col', style: 'align-items:stretch;gap:8px' },
-      h('span', { class: 'small muted' }, g.reserved ? t('giftReclaimPrompt') : t('giftRevokeConfirm')),
-      ui.busy
-        ? h('button', { class: 'btn-primary btn-block', disabled: true }, h('span', { class: 'spinner' }))
-        : h('div', { class: 'row gap6' },
-            g.reserved ? h('button', { class: 'btn-ghost grow', onClick: () => doReclaim(g.id) }, t('giftReclaim')) : null,
-            h('button', { class: 'btn-primary grow', onClick: () => doRevoke(g.id) }, t('giftRevoke'))
-          ),
-      ui.busy ? null : h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.revokeId = null; render(); } }, t('back'))
-    );
-  }
   const amt = g.value != null ? g.value : g.amount;
-  const rec = g.claimed ? null : wallet.giftLink(g.id);
-  return h('div', { class: 'item' },
+  const created = (wallet.loaded && (wallet.giftRecords()[g.id] || {}).created) || g.created;
+  return h('div', { class: 'item', style: 'cursor:pointer', onClick: () => { ui.giftDetail = g.id; render(); } },
     h('div', { class: 'ico out' }, '🎁'),
     h('div', { class: 'grow' },
       h('div', { class: 'row gap6' }, t('giftHistoryTitle'),
         h('span', { class: 'tag ' + (g.claimed ? 'conf' : 'pending') }, g.claimed ? t('giftClaimedTag') : g.reserved ? t('giftUnclaimedTag') : t('giftReclaimedTag'))),
-      !g.claimed && g.reserved ? h('div', { class: 'small faint' }, t('lockedInGifts')) : null
+      h('div', { class: 'small faint' }, created ? timeAgo(created / 1000) : (!g.claimed && g.reserved ? t('lockedInGifts') : ''))
     ),
     h('div', { style: 'text-align:right' },
-      amt != null ? h('div', { class: 'amount' }, fmtAmount(amt)) : null,
-      g.claimed ? null : h('div', { class: 'row gap6', style: 'justify-content:flex-end;margin-top:4px' },
-        rec ? h('button', { class: 'btn-sm', onClick: () => { ui.viewGift = rec; render(); } }, t('giftView')) : null,
-        h('button', { class: 'btn-sm', onClick: () => { ui.revokeId = g.id; render(); } }, t('giftCancel')))
-    )
+      amt != null ? h('div', { class: 'amount' }, fmtAmount(amt)) : null)
+  );
+}
+
+// Gift detail page: status + the link itself (unclaimed), cancel/reclaim.
+function giftDetailView(g) {
+  const amt = g.value != null ? g.value : g.amount;
+  const created = (wallet.loaded && (wallet.giftRecords()[g.id] || {}).created) || g.created;
+  const rec = g.claimed ? null : wallet.giftLink(g.id);
+  const line = (k, v) => h('div', { class: 'line' }, h('span', { class: 'k' }, k), h('span', { class: 'v' }, v));
+  const back = () => { ui.giftDetail = null; ui.revokeId = null; render(); };
+  return h(
+    'div',
+    { class: 'card col' },
+    h('div', { class: 'row between' },
+      h('h3', {}, '🎁 ' + t('giftHistoryTitle')),
+      h('span', { class: 'tag ' + (g.claimed ? 'conf' : 'pending') }, g.claimed ? t('giftClaimedTag') : g.reserved ? t('giftUnclaimedTag') : t('giftReclaimedTag'))),
+    amt != null
+      ? h('div', { class: 'amt', style: 'font-size:30px' }, h('span', { class: 'amount' }, fmtAmount(amt)), ' ', unitTag('unit'))
+      : null,
+    h('div', { class: 'summary col', style: 'gap:0' },
+      created ? line(t('dateLabel'), new Date(created).toLocaleString()) : null,
+      !g.claimed && g.reserved ? line(t('status'), t('lockedInGifts')) : null),
+    ui.revokeId === g.id
+      ? h('div', { class: 'col', style: 'gap:8px' },
+          h('span', { class: 'small muted' }, g.reserved ? t('giftReclaimPrompt') : t('giftRevokeConfirm')),
+          ui.busy
+            ? h('button', { class: 'btn-primary btn-block', disabled: true }, h('span', { class: 'spinner' }))
+            : h('div', { class: 'row gap6' },
+                g.reserved ? h('button', { class: 'btn-ghost grow', onClick: () => doReclaim(g.id) }, t('giftReclaim')) : null,
+                h('button', { class: 'btn-primary grow', onClick: () => doRevoke(g.id) }, t('giftRevoke'))),
+          ui.busy ? null : h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.revokeId = null; render(); } }, t('back')))
+      : g.claimed
+        ? null
+        : h('div', { class: 'row gap6' },
+            rec ? h('button', { class: 'grow', onClick: () => { ui.viewGift = rec; render(); } }, t('giftView')) : null,
+            h('button', { class: 'grow', onClick: () => { ui.revokeId = g.id; render(); } }, t('giftCancel'))),
+    ui.revokeId === g.id ? null : h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back'))
   );
 }
 
@@ -3938,12 +3957,15 @@ function arkHistoryItem(m) {
 function txHistoryItem(tx) {
   const incoming = tx.net >= 0;
   const stuck = !tx.confirmed && wallet.isStuck(tx);
+  const gift = !incoming && wallet.loaded
+    ? wallet.claimedGifts().find((c) => c.claimTxid === tx.txid) : null;
   return h(
     'div',
     { class: 'item', style: 'cursor:pointer', onClick: () => openTx(tx.txid) },
-    h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, incoming ? '↓' : '↑'),
+    h('div', { class: `ico ${gift ? 'out' : incoming ? 'in' : 'out'}` }, gift ? '🎁' : incoming ? '↓' : '↑'),
     h('div', { class: 'grow' },
       h('div', { class: 'row gap6' },
+        gift ? h('span', {}, t('giftHistoryTitle'), ' ', h('span', { class: 'tag conf' }, t('giftClaimedTag'))) :
         incoming ? t('received') : t('sent'),
         tx.confirmed ? null
           : stuck ? h('span', { class: 'tag', style: 'background:var(--red-soft);color:var(--red)' }, t('stuckTag'))
@@ -3970,24 +3992,6 @@ function pager(page, total, onPage) {
   );
 }
 
-// Full paginated list of outstanding sent gifts, reached via "View all" when
-// there are more than fit inline on the History page.
-function giftsAllView(gifts) {
-  const pages = Math.ceil(gifts.length / PAGE_SIZE);
-  const page = Math.min(ui.giftsPage, Math.max(0, pages - 1));
-  const slice = gifts.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-  return h(
-    'div',
-    { class: 'card col', style: 'gap:12px' },
-    h('div', { class: 'row between' },
-      h('h3', { style: 'margin:0' }, t('giftReserved', { n: gifts.length })),
-      h('button', { class: 'btn-sm', onClick: () => { ui.revokeId = null; goBack(() => { ui.giftsAll = false; }); } }, t('back'))
-    ),
-    h('div', { class: 'list' }, ...slice.map(giftHistoryItem)),
-    pager(page, gifts.length, (p) => { ui.giftsPage = p; render(); })
-  );
-}
-
 function historyTab() {
   if (ui.bump) return bumpView();
   const txs = wallet.history; // BIP84 txs + silent-payment receipts, newest first
@@ -3995,6 +3999,14 @@ function historyTab() {
     const m = ark && ark.state ? ark.movements().find((x) => x.id === ui.arkMoveDetail) : null;
     if (m) return arkMoveDetailView(m);
     ui.arkMoveDetail = null;
+  }
+  if (ui.giftDetail) {
+    const g = wallet.loaded
+      ? [...wallet.outstandingGifts(), ...wallet.claimedGifts().map((c) => ({ ...c, claimed: true }))]
+          .find((x) => x.id === ui.giftDetail)
+      : null;
+    if (g) return giftDetailView(g);
+    ui.giftDetail = null;
   }
   if (ui.txDetail) {
     const tx = txs.find((x) => x.txid === ui.txDetail);
@@ -4012,10 +4024,23 @@ function historyTab() {
     );
   // Outstanding sent gifts (reserved/reclaimed but unclaimed) sit above the
   // on-chain history; they aren't transactions until claimed or revoked.
+  // A claimed gift merges into its claim transaction's row once we know which
+  // tx spent it (resolved lazily below) — no duplicate gift + Sent entries.
+  const txids = new Set(txs.map((x) => x.txid));
+  const claimed = wallet.loaded ? wallet.claimedGifts() : [];
+  for (const c of claimed) {
+    if (c.claimTxid || !c.outpoints || !c.outpoints.length) continue;
+    if (!ui._giftClaimResolving) ui._giftClaimResolving = new Set();
+    if (ui._giftClaimResolving.has(c.id) || wallet.offline) continue;
+    ui._giftClaimResolving.add(c.id);
+    const [txid, vout] = c.outpoints[0].split(':');
+    wallet.api.outspend(txid, Number(vout)).then((res) => {
+      if (res && res.spent && res.txid) { wallet.setGiftClaimTx(c.id, res.txid); render(); }
+    }).catch(() => {}).finally(() => ui._giftClaimResolving.delete(c.id));
+  }
   const gifts = wallet.loaded
-    ? [...wallet.outstandingGifts(), ...wallet.claimedGifts().map((c) => ({ ...c, claimed: true }))]
+    ? [...wallet.outstandingGifts(), ...claimed.filter((c) => !(c.claimTxid && txids.has(c.claimTxid))).map((c) => ({ ...c, claimed: true }))]
     : [];
-  if (ui.giftsAll && gifts.length) return giftsAllView(gifts);
   // Ark receives/sends/boards interleave with on-chain txs by time. (Refreshes
   // are internal churn — they stay in the Settings activity list only.)
   const arkMoves = ark && ark.state
@@ -4024,12 +4049,14 @@ function historyTab() {
   if (!txs.length && !gifts.length && !arkMoves.length)
     return h('div', { class: 'card' }, h('p', { class: 'muted center', style: 'margin:0' }, t('noTxYet')));
 
-  // Show at most 3 gifts inline; the rest live behind "View all". Transactions
-  // and Ark movements merge into one timeline, paginated 10 at a time.
-  const giftsHead = gifts.slice(0, 3);
+  // Gifts, transactions, and Ark movements merge into one timeline (claimed
+  // gifts whose claim tx is in the list ride that tx's row instead).
+  const recs = wallet.loaded ? wallet.giftRecords() : {};
+  const giftTime = (g) => (recs[g.id] && recs[g.id].created) || g.created || Date.now();
   const entries = [
     ...txs.map((tx) => ({ time: tx.confirmed ? (tx.blockTime || 0) * 1000 : Date.now(), render: () => txHistoryItem(tx) })),
     ...arkMoves.map((m) => ({ time: m.ts, render: () => arkHistoryItem(m) })),
+    ...gifts.map((g) => ({ time: giftTime(g), render: () => giftHistoryItem(g) })),
   ].sort((a, b) => b.time - a.time);
   const txPages = Math.ceil(entries.length / PAGE_SIZE);
   const txPage = Math.min(ui.txPage, Math.max(0, txPages - 1));
@@ -4038,12 +4065,8 @@ function historyTab() {
     'div',
     { class: 'card' },
     h('div', { class: 'list' },
-      ...giftsHead.map(giftHistoryItem),
       ...txSlice.map((e) => e.render())
     ),
-    gifts.length > 3
-      ? h('button', { class: 'btn-sm btn-block', style: 'margin-top:8px', onClick: () => { ui.giftsAll = true; ui.giftsPage = 0; ui.revokeId = null; render(); } }, t('viewAllGifts', { n: gifts.length }))
-      : null,
     pager(txPage, entries.length, (p) => { ui.txPage = p; render(); }),
     wallet.historyLoading
       ? h(
@@ -4111,6 +4134,7 @@ function swapTxDetailSection(swap, tx) {
 function txDetailView(tx) {
   const incoming = tx.net >= 0;
   const swap = swaps.findByTxid(tx.txid); // this tx's swap (Lightning), if any
+  const gift = wallet.loaded ? wallet.claimedGifts().find((c) => c.claimTxid === tx.txid) : null;
   const line = (k, v) => h('div', { class: 'line' }, h('span', { class: 'k' }, k), h('span', { class: 'v' }, v));
   return h(
     'div',
@@ -4130,6 +4154,11 @@ function txDetailView(tx) {
       tx.fee ? line(t('networkFee'), fmtAmount(tx.fee) + ' ' + unitLabel()) : null
     ),
     swap ? swapTxDetailSection(swap, tx) : null,
+    gift
+      ? h('div', { class: 'summary col', style: 'gap:0' },
+          h('div', { style: 'font-weight:600;margin:12px 0 2px' }, '🎁 ' + t('giftClaimedContext')),
+          gift.amount != null ? h('div', { class: 'line' }, h('span', { class: 'k' }, t('giftAmountLabel')), h('span', { class: 'v' }, fmtAmount(gift.amount) + ' ' + unitLabel())) : null)
+      : null,
     !tx.confirmed && wallet.isStuck(tx)
       ? h('div', { class: 'warn-box' }, incoming ? t('stuckIncomingNote') : t('stuckOutgoingNote'))
       : null,

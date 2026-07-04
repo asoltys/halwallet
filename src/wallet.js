@@ -1638,8 +1638,18 @@ export class Wallet {
     const live = new Set(this.utxos.map((u) => utxoId(u)));
     return Object.values(this.giftRecords())
       .filter((r) => !r.revoked && r.outpoints && !r.outpoints.some((o) => live.has(o)))
-      .map((r) => ({ id: r.id, amount: r.amount, locked: r.locked, created: r.created }))
+      .map((r) => ({ id: r.id, amount: r.amount, locked: r.locked, created: r.created, claimTxid: r.claimTxid || null, outpoints: r.outpoints }))
       .sort((a, b) => (b.created || 0) - (a.created || 0));
+  }
+
+  // Remember which tx claimed a gift (resolved lazily via outspend) so the
+  // history can merge the gift row with its claim transaction.
+  setGiftClaimTx(id, txid) {
+    const recs = this.giftRecords();
+    if (recs[id] && recs[id].claimTxid !== txid) {
+      recs[id].claimTxid = txid;
+      this._saveGiftRecords();
+    }
   }
 
   // Best-fit coin selection for a gift of `gift` sats (needs gift + a dust

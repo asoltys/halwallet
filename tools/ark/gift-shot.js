@@ -90,6 +90,23 @@ const t0 = Date.now();
 const celebrated = await waitText('Payment received', 10000);
 console.log('celebration:', celebrated, 'after', Date.now() - t0, 'ms');
 await page.screenshot({ path: '/tmp/gift-claimed.png' });
+
+// tap through, mine so the claim settles, then check History
+await clickText('.card', 'Payment received');
+await sleep(400);
+sh(`${BCLI} generatetoaddress 1 $(${BCLI} getnewaddress) >/dev/null`);
+await sleep(4000); // scan + outspend resolution
+await clickText('.tabs button', 'History');
+await sleep(2500);
+const rows = await page.evaluate(() => [...document.querySelectorAll('.item')].map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+console.log('history rows:', JSON.stringify(rows.slice(0, 5), null, 1));
+const giftRows = rows.filter((r) => r.toLowerCase().includes('gift link'));
+console.log('gift rows in timeline:', giftRows.length);
+await page.evaluate(() => { const el = [...document.querySelectorAll('.item')].find((e) => e.textContent.toLowerCase().includes('gift link')); if (el) el.click(); });
+await sleep(800);
+const detail = await page.evaluate(() => document.body.innerText);
+console.log('gift detail page:', /🎁 Gift link/.test(detail), '| link+cancel actions:', detail.includes('View link') || detail.includes('Cancel'));
+await page.screenshot({ path: '/tmp/gift-history.png' });
 console.log('done');
 await browser.close();
 dev.kill();
