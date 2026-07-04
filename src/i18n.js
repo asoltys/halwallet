@@ -290,6 +290,8 @@ const STR = {
     claimBody: 'Claim it into a brand-new wallet that only you control.',
     claimIntoPrompt: 'Choose where to receive it.',
     claimNewWallet: 'Receive into a new wallet',
+    claimIntoExisting: 'Receive into one of your wallets:',
+    claimOr: 'or',
     goToWallet: 'Go to wallet',
     giftClaimedToast: 'Gift claimed',
     claimBtn: 'Claim it',

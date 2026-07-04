@@ -2302,11 +2302,15 @@ function claimChooseView() {
       h('p', { class: 'muted', style: 'margin:0' }, t('claimIntoPrompt'))
     ),
     h('div', { class: 'card col gap6' },
+      h('div', { class: 'small muted' }, t('claimIntoExisting')),
       ...accounts.map((a) =>
-        h('button', { class: 'btn-block', style: 'text-align:left', onClick: () => claimIntoAccount(a, code) },
-          a.label,
-          a.type === 'watch' ? h('span', { class: 'small faint', style: 'margin-left:6px' }, '(' + t('watchOnly') + ')') : null)
+        h('button', { class: 'btn-block', style: 'display:flex;justify-content:space-between;align-items:center;text-align:left', onClick: () => claimIntoAccount(a, code) },
+          h('span', {},
+            a.label,
+            a.type === 'watch' ? h('span', { class: 'small faint', style: 'margin-left:6px' }, '(' + t('watchOnly') + ')') : null),
+          h('span', { class: 'muted', style: 'font-size:18px;line-height:1' }, '\u203a'))
       ),
+      h('div', { class: 'small faint', style: 'text-align:center' }, t('claimOr')),
       h('button', { class: 'btn-primary btn-block', onClick: () => { ui.claimChoose = null; enterWallet(newMnemonic(), '', { gift: code }); } }, t('claimNewWallet'))
     )
   );
