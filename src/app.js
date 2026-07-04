@@ -2758,6 +2758,7 @@ function tabsBar() {
         ui.tab = id;
         ui.revealShown = false; // re-mask the recovery phrase whenever tabs change
         ui.txDetail = null; // back to the history list when leaving/returning
+        ui.arkMoveDetail = null;
         ui.giftsAll = false; // and back to the paged history, not the all-gifts view
         ui.addrScan = false; // and back to the main Settings, not the address list
         ui.bump = null;
@@ -3821,14 +3822,48 @@ function giftHistoryItem(g) {
   );
 }
 
-// An Ark movement (receive / send / board) as a history row. No txid to open —
-// these are off-chain; the Settings card shows the fuller activity detail.
+// Detail view for an Ark movement. Off-chain payments have no on-chain txid;
+// we show what exists: amount, time, status, destination (sends), the vtxo id,
+// and — for boards — the funding txid with an explorer link.
+function arkMoveDetailView(m) {
+  const incoming = m.type !== 'send';
+  const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded') : t('sent');
+  const row = (k, v) => h('div', { class: 'row between', style: 'gap:12px' },
+    h('span', { class: 'small muted', style: 'flex-shrink:0' }, k), h('span', { class: 'small', style: 'text-align:right;word-break:break-all' }, v));
+  const url = m.txid ? wallet.api.explorerTx(m.txid) : null;
+  return h(
+    'div',
+    { class: 'card col', style: 'gap:10px' },
+    h('div', { class: 'row gap6', style: 'align-items:center' },
+      h('h3', { style: 'margin:0' }, label),
+      h('span', { class: 'tag' }, 'Ark'),
+      m.status !== 'complete' ? h('span', { class: 'tag pending' }, m.status) : null),
+    h('div', { class: incoming ? 'amount-pos' : 'amount-neg', style: 'font-size:20px' },
+      (incoming ? '+' : '-') + fmtAmount(m.amountSat) + ' ' + unitLabel()),
+    row(t('dateLabel'), new Date(m.ts).toLocaleString()),
+    m.to ? row(t('arkPayTo'), shortAddr(m.to, 16, 12)) : null,
+    m.vtxoId ? row(t('arkVtxoId'), shortTxid(m.vtxoId)) : null,
+    m.detail ? row(t('detailsLabel'), m.detail) : null,
+    m.txid
+      ? h('div', { class: 'col', style: 'gap:6px' },
+          h('div', { class: 'small muted' }, t('transactionId')),
+          h('div', { class: 'addr-box', style: 'width:100%' }, m.txid),
+          h('div', { class: 'row gap6' },
+            copyBtn(m.txid, t('copyTxid')),
+            h('a', { class: 'btn btn-sm', href: url, target: '_blank', rel: 'noopener', onClick: (e) => { e.preventDefault(); openExternal(url); } }, t('viewOnMempool'))))
+      : null,
+    m.to ? copyBtn(m.to, t('copyAddress')) : null,
+    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.arkMoveDetail = null; render(); } }, t('back'))
+  );
+}
+
+// An Ark movement (receive / send / board) as a history row.
 function arkHistoryItem(m) {
   const incoming = m.type !== 'send';
   const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded') : t('sent');
   return h(
     'div',
-    { class: 'item' },
+    { class: 'item', style: 'cursor:pointer', onClick: () => { ui.arkMoveDetail = m.id; render(); } },
     h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, incoming ? '↓' : '↑'),
     h('div', { class: 'grow' },
       h('div', { class: 'row gap6' },
@@ -3897,6 +3932,11 @@ function giftsAllView(gifts) {
 function historyTab() {
   if (ui.bump) return bumpView();
   const txs = wallet.history; // BIP84 txs + silent-payment receipts, newest first
+  if (ui.arkMoveDetail) {
+    const m = ark && ark.state ? ark.movements().find((x) => x.id === ui.arkMoveDetail) : null;
+    if (m) return arkMoveDetailView(m);
+    ui.arkMoveDetail = null;
+  }
   if (ui.txDetail) {
     const tx = txs.find((x) => x.txid === ui.txDetail);
     if (tx) return txDetailView(tx);

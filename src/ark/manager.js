@@ -163,7 +163,7 @@ export class ArkManager {
           throw e; // network errors etc: retry next sync
         }
         this._addVtxo(v, v._raw.bytes, 0);
-        this._movement({ type: 'receive', amountSat: v.amountSat, status: 'complete' });
+        this._movement({ type: 'receive', amountSat: v.amountSat, status: 'complete', vtxoId: v.id });
         changed = true;
       }
       changed = true;
@@ -211,7 +211,7 @@ export class ArkManager {
     const changeSat = input.amountSat - amountSat;
     const action = {
       id: `send-${Date.now()}`, type: 'send', step: 'created',
-      inputId: input.id, amountSat,
+      inputId: input.id, amountSat, destAddress: addrString,
       destPubkey: dest.userPubkey, destBlindedId: mailboxDelivery.data,
       changeIndex: changeSat > 0 ? this.state.nextKeyIndex++ : null, changeSat,
     };
@@ -278,7 +278,10 @@ export class ArkManager {
         if (change) change.state = 'spendable';
       }
       action.step = 'done';
-      this._movement({ type: 'send', amountSat: action.amountSat, status: 'complete' });
+      this._movement({
+        type: 'send', amountSat: action.amountSat, status: 'complete',
+        to: action.destAddress, vtxoId: decodeVtxo(hex.decode(action.destBytes)).id,
+      });
       this._save();
     }
   }
@@ -359,7 +362,7 @@ export class ArkManager {
       const decoded = decodeVtxo(bytes);
       this._addVtxo(decoded, bytes, action.keyIndex);
       action.step = 'done';
-      this._movement({ type: 'board', amountSat: decoded.amountSat, status: 'complete' });
+      this._movement({ type: 'board', amountSat: decoded.amountSat, status: 'complete', txid: action.fundingTxid, vtxoId: decoded.id });
       this._save();
     }
   }

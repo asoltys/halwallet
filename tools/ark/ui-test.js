@@ -141,6 +141,14 @@ try {
   check('history shows ark receive', /received\s*\n?\s*ark/i.test(hist));
   check('history shows ark send', /sent\s*\n?\s*ark/i.test(hist));
 
+  // rows open a detail view
+  await clickText('.item', 'sent');
+  await sleep(300);
+  check('ark detail view', await waitText('Coin (VTXO)', 5000));
+  check('detail shows destination', (await bodyText()).includes('tark1'));
+  await clickText('button', 'Back');
+  await sleep(300);
+
   // --- board from settings ---
   console.log('\n[4] board');
   await clickText('.tabs button', 'Receive');
