@@ -104,7 +104,7 @@ try {
   // --- receive over ark ---
   console.log('\n[2] receive over Ark');
   await page.select('select', 'ark');
-  await sleep(300);
+  check('lazy connect on first use', await waitText('tark1', 15000));
   const arkAddr = await page.evaluate(() => document.querySelector('.addr-box')?.textContent.trim() || '');
   check('ark address shown', /^tark1[a-z0-9]+$/.test(arkAddr), arkAddr.slice(0, 24) + '…');
   sh(`${ALICE} -q send ${arkAddr} "25000 sat"`);
@@ -172,7 +172,14 @@ try {
     return false;
   })();
   check('refresh consolidated to 1 coin', done, String(await labeledNumber('coins (vtxos)')));
-  console.log(`   final ark balance: ${await labeledNumber('ark balance')} sats`);
+  const finalBal = await labeledNumber('ark balance');
+  console.log(`   final ark balance: ${finalBal} sats`);
+
+  // --- reload: a wallet holding vtxos reconnects on its own ---
+  console.log('\n[6] reload auto-connects (has vtxos)');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  check('ark balance back without interaction', await waitLabeledNumber('ark balance', finalBal, 20000),
+    String(await labeledNumber('ark balance')));
 
   console.log(ok ? '\n✅ SUCCESS: Ark UI — receive, send, board, refresh all work in the browser'
                 : '\n❌ some checks failed');

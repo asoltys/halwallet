@@ -35,6 +35,7 @@ const swaps = new SwapManager({
 // still connecting. State persists under the wallet's cache key.
 let ark = null;
 let arkTimer = null;
+let arkConnectPromise = null;
 let arkInitGen = 0; // guards against a stale init() resolving after a wallet switch
 
 function stopArk() {
@@ -42,13 +43,37 @@ function stopArk() {
   if (arkTimer) clearInterval(arkTimer);
   arkTimer = null;
   ark = null;
+  arkConnectPromise = null;
+}
+
+// Ark is available (a server is configured and we hold keys), even if we
+// haven't dialed the server yet — gates the UI entry points.
+function arkAvailable() {
+  return !!getArkConfig() && !wallet.watchOnly && !!wallet.account;
+}
+
+// Whether this wallet has used Ark before (coins, unfinished operations, or
+// history). Only then does opening the wallet dial the server on its own —
+// fresh wallets stay silent until the user first touches an Ark feature.
+function arkWanted() {
+  const st = wallet.loadArkState();
+  return !!(st && ((st.vtxos || []).length || (st.movements || []).length
+    || (st.actions || []).some((a) => !['done', 'failed'].includes(a.step))));
 }
 
 function initArk() {
   stopArk();
   ui.arkError = '';
+  if (arkAvailable() && arkWanted()) connectArk().catch(() => {});
+}
+
+// Connect on demand; idempotent (returns the live manager or the in-flight
+// connection). Callers surface ui.arkError on failure.
+function connectArk() {
+  if (ark) return Promise.resolve(ark);
+  if (arkConnectPromise) return arkConnectPromise;
+  if (!arkAvailable()) return Promise.reject(new Error(t('arkNotConnected')));
   const cfg = getArkConfig();
-  if (!cfg || wallet.watchOnly || !wallet.account) return;
   const gen = arkInitGen;
   const mgr = new ArkManager({
     account: wallet.account(),
@@ -58,19 +83,22 @@ function initArk() {
     network: getNetwork(),
     onUpdate: () => render(),
   });
-  mgr.init().then(() => {
-    if (gen !== arkInitGen) return; // superseded by a newer initArk()/stopArk()
+  ui.arkError = '';
+  arkConnectPromise = mgr.init().then(() => {
+    if (gen !== arkInitGen) throw new Error('superseded'); // wallet switched mid-connect
     ark = mgr;
     const tick = () => mgr.sync().catch(() => {});
     tick();
     // Regtest rounds are seconds apart; on mainnet a slower poll is plenty.
     arkTimer = setInterval(() => { if (ark === mgr) tick(); }, getNetwork() === 'regtest' ? 5000 : 30000);
     render();
+    return mgr;
   }).catch((e) => {
-    if (gen !== arkInitGen) return;
-    ui.arkError = e.message;
-    render();
-  });
+    if (gen === arkInitGen) { ui.arkError = e.message; render(); }
+    throw e;
+  }).finally(() => { arkConnectPromise = null; });
+  render();
+  return arkConnectPromise;
 }
 
 // The spendable Ark balance (sats), or null when Ark isn't active.
@@ -1855,8 +1883,10 @@ function arkCard() {
   }
   if (!ark || !ark.state) {
     return h('div', { class: 'card col' }, ...head,
-      ui.arkError ? null : h('div', { class: 'row gap6', style: 'align-items:center' },
-        h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting'))));
+      arkConnectPromise
+        ? h('div', { class: 'row gap6', style: 'align-items:center' },
+            h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting')))
+        : h('button', { class: 'btn-ghost btn-block', onClick: () => connectArk().catch(() => {}) }, t('arkConnectBtn')));
   }
 
   const bal = ark.balance();
@@ -2826,13 +2856,13 @@ function receiveTab() {
   let mode = ui.receiveType || 'address';
   if (mode === 'sp' && !spAddr) mode = 'address';
   if (mode === 'ln' && !canLn) mode = 'address';
-  if (mode === 'ark' && !(ark && ark.state)) mode = 'address';
+  if (mode === 'ark' && !arkAvailable()) mode = 'address';
   // A compact dropdown (not a 3-button segmented control) so it fits on mobile and
   // scales if more address types are added.
   const opts = [['address', t('receiveAddressTab')]];
   if (canLn) opts.push(['ln', t('receiveLnTab')]);
   if (spAddr) opts.push(['sp', t('receiveSpTab')]);
-  if (ark && ark.state) opts.push(['ark', t('receiveArkTab')]);
+  if (arkAvailable()) opts.push(['ark', t('receiveArkTab')]);
   const seg = opts.length > 1
     ? h('select', { style: 'width:100%', onChange: (e) => { ui.receiveType = e.target.value; render(); } },
         opts.map(([id, label]) => h('option', { value: id, selected: mode === id }, label)))
@@ -2841,6 +2871,18 @@ function receiveTab() {
     return h('div', { class: 'card col', style: 'align-items:center;gap:14px' }, seg, ...lnReceiveContent());
   }
   if (mode === 'ark') {
+    if (!ark) {
+      connectArk().catch(() => {});
+      return h(
+        'div',
+        { class: 'card col', style: 'align-items:center;gap:14px' },
+        seg,
+        ui.arkError
+          ? h('div', { class: 'notice err', style: 'width:100%' }, ui.arkError)
+          : h('div', { class: 'row gap6', style: 'align-items:center;padding:24px 0' },
+              h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting')))
+      );
+    }
     const arkAddr = ark.address();
     return h(
       'div',
@@ -3241,7 +3283,7 @@ function addrVerifyNodes(a) {
 // auto-advances to its own confirmation, so it never needs them.
 function destReady(a) {
   a = (a || '').trim();
-  return !!a && (wallet.isOnchainAddress(a) || isSilentPaymentAddress(a) || (isArkAddress(a) && !!ark));
+  return !!a && (wallet.isOnchainAddress(a) || isSilentPaymentAddress(a) || (isArkAddress(a) && arkAvailable()));
 }
 
 // One recipient: address + amount. Max is only offered for a single recipient.
@@ -3464,7 +3506,7 @@ function reviewSend() {
     if (isLnInvoice(lnTarget)) { startLnSend(lnTarget); return; }
     // An Ark address → instant off-chain send, no mining fee; its own confirmation.
     if (s.recipients.length === 1 && isArkAddress(s.recipients[0].address)) {
-      if (!ark || !ark.state) throw new Error(t('arkNotConnected'));
+      if (!arkAvailable()) throw new Error(t('arkNotConnected'));
       const sats = parseAmount(s.recipients[0].amount, unit);
       if (!sats || sats <= 0) throw new Error(t('enterValidAmtForN', { n: 1 }));
       ui.arkSend = { address: s.recipients[0].address.trim(), amountSat: sats };
@@ -3535,7 +3577,8 @@ async function doArkSend() {
   const a = ui.arkSend;
   ui.busy = true; ui.sendError = ''; render();
   try {
-    await ark.send(a.address, a.amountSat);
+    const mgr = await connectArk();
+    await mgr.send(a.address, a.amountSat);
     ui.arkSent = { amountSat: a.amountSat };
     ui.arkSend = null;
   } catch (e) {

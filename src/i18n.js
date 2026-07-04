@@ -356,6 +356,7 @@ const STR = {
     arkEsploraUrl: 'Esplora URL (chain source)',
     arkWatchOnly: 'Ark needs the wallet keys — load the seed to use it.',
     arkConnecting: 'Connecting to the Ark server…',
+    arkConnectBtn: 'Connect',
     arkNotConnected: 'Ark is not connected — pick a server in Settings.',
     arkBalance: 'Ark balance',
     arkVtxos: 'Coins (VTXOs)',
