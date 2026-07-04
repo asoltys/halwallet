@@ -2779,6 +2779,25 @@ function hasRecentIncoming() {
 
 // ---------------------------------------------------------------- Receive
 function receiveTab() {
+  // An Ark payment landed — same celebration as an on-chain receive, dismissed
+  // with a tap (the ack persists in the ark state so it shows exactly once).
+  const arkUnseen = ark && ark.state ? ark.unseenReceives() : [];
+  if (arkUnseen.length) {
+    const amt = arkUnseen.reduce((n, m) => n + m.amountSat, 0);
+    return h(
+      'div',
+      {
+        class: 'card col',
+        style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
+        onClick: () => { ark.ackReceives(); render(); },
+      },
+      h('div', { class: 'check-badge' }, '✓'),
+      h('h2', { style: 'margin:0' }, t('paymentReceived')),
+      amt ? h('div', { class: 'amount-pos', style: 'font-size:18px' }, '+' + fmtAmount(amt) + ' ' + unitLabel()) : null,
+      h('div', { class: 'small muted' }, t('tapToProceed'))
+    );
+  }
+
   // A payment landed on the shown address (the fresh index advanced past what
   // the user last saw) — celebrate, and wait for a tap before showing the next.
   // Until receiveSeenIndex has been baselined (post-scan, in enterWallet) it

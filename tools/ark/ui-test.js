@@ -109,6 +109,10 @@ try {
   check('ark address shown', /^tark1[a-z0-9]+$/.test(arkAddr), arkAddr.slice(0, 24) + '…');
   sh(`${ALICE} -q send ${arkAddr} "25000 sat"`);
   check('ark balance shows 25,000', await waitLabeledNumber('ark balance', 25000, 30000), String(await labeledNumber('ark balance')));
+  check('payment celebration shown', await waitText('Payment received', 10000));
+  await clickText('.card', 'Payment received'); // tap to acknowledge
+  await sleep(400);
+  check('back to receive card after tap', await waitText('tark1', 5000));
 
   // --- send over ark ---
   console.log('\n[3] send over Ark');

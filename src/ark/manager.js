@@ -122,6 +122,20 @@ export class ArkManager {
     const sum = (st) => this.state.vtxos.filter((v) => v.state === st).reduce((n, v) => n + v.amountSat, 0);
     return { spendableSat: sum('spendable'), pendingSat: sum('pending') };
   }
+
+  // Receives newer than the last acknowledgement — the UI's "Payment
+  // received!" celebration. Recency-guarded like the on-chain equivalent so an
+  // old payment never celebrates when a wallet is opened much later.
+  unseenReceives() {
+    const ack = this.state.receiveAckTs || 0;
+    const cutoff = Date.now() - 2 * 3600 * 1000;
+    return this.state.movements.filter((m) =>
+      m.type === 'receive' && m.status === 'complete' && m.ts > ack && m.ts > cutoff);
+  }
+  ackReceives() {
+    this.state.receiveAckTs = Date.now();
+    this._save();
+  }
   vtxos() { return this.state.vtxos.slice(); }
   movements() { return this.state.movements.slice(); }
   pendingActions() { return this.state.actions.filter((a) => !['done', 'failed'].includes(a.step)); }
