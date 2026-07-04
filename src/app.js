@@ -1862,7 +1862,6 @@ function arkCard() {
   const bal = ark.balance();
   const spendables = ark.vtxos().filter((v) => v.state === 'spendable');
   const pendingActions = ark.pendingActions();
-  const moves = ark.movements().slice(-5).reverse();
   const row = (k, v) => h('div', { class: 'row between' }, h('span', { class: 'small muted' }, k), h('span', { class: 'small' }, v));
 
   return h(
@@ -1888,14 +1887,6 @@ function arkCard() {
     spendables.length >= 1
       ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkRefresh },
           ui.arkBusy === 'refresh' ? h('span', { class: 'spinner sm' }) : t('arkRefreshBtn', { n: spendables.length }))
-      : null,
-
-    moves.length
-      ? h('div', { class: 'col', style: 'gap:4px' },
-          h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' }, t('arkActivity')),
-          moves.map((m) => row(
-            `${m.type}${m.detail ? ' · ' + m.detail : ''}`,
-            `${m.type === 'send' ? '-' : '+'}${fmtAmount(m.amountSat)} · ${m.status}`)))
       : null
   );
 }

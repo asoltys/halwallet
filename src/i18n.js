@@ -365,7 +365,6 @@ const STR = {
     arkBoardStarted: 'Boarding — spendable in the Ark after 1 confirmation.',
     arkRefreshBtn: 'Refresh / consolidate {n} coin(s)',
     arkRefreshStarted: 'Refresh submitted — completes with the next round.',
-    arkActivity: 'Ark activity',
     arkSendTitle: 'Send over Ark',
     arkPayTo: 'To',
     arkNoFee: 'none — instant off-chain send',
