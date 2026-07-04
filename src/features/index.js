@@ -8,9 +8,10 @@ import { giftsFeature } from './gifts.js';
 import { swapsFeature } from './swaps.js';
 import { arkFeature } from './ark.js';
 import { spFeature } from './sp.js';
+import { syncFeature } from './sync.js';
 
 // NB order is meaningful where hooks stack: gifts' receive takeover and
 // balance line come before ark's, matching the pre-plugin layout.
 export function buildFeatures(ctx) {
-  return [giftsFeature(ctx), swapsFeature(ctx), arkFeature(ctx), spFeature(ctx)];
+  return [giftsFeature(ctx), swapsFeature(ctx), arkFeature(ctx), spFeature(ctx), syncFeature(ctx)];
 }

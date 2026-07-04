@@ -3,12 +3,14 @@
 // in wallet.js/silentpay.js and ships with the core wallet for now.)
 
 import { isSilentPaymentAddress } from '../silentpay.js';
+import { installSpWallet } from './sp-wallet.js';
 import { getNetwork, getSpIndexerConfig, setSpIndexerConfig, spIndexerPresets } from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 
 export function spFeature(ctx) {
   const { h, ui, render, wallet, copyBtn } = ctx;
+  installSpWallet(wallet); // the BIP-352 engine lives outside the core wallet
 
   function spIndexerCard() {
     if (!wallet.silentPaymentKeys || !wallet.silentPaymentKeys()) return null;

@@ -7,7 +7,6 @@
 import { Wallet, newMnemonic, isValidMnemonic, accountXpubFor, cacheKeyFor, utxoId, parseExtendedKey, xpubToZpub, encryptVault, decryptVault } from './wallet.js';
 import { qrSvg } from './qr.js';
 import { scanQr } from './scan.js';
-import { getSyncConfig, setSyncConfig, parseNostrPubkey, npubOf, fetchNostrProfile, decryptWithCode } from './nostr.js';
 import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS } from './api.js';
 import { buildFeatures } from './features/index.js';
 import { t, LANGS, getLang, setLang, isRTL, loadLocale } from './i18n.js';
@@ -416,29 +415,6 @@ function download(filename, text, mime = 'application/json') {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// --- nostr profiles (avatar + name) — cached, lazily fetched, re-renders ----
-const _profileCache = new Map(); // pubkeyHex -> profile | null | 'loading'
-function nostrProfile(pkHex) {
-  if (_profileCache.has(pkHex)) return _profileCache.get(pkHex);
-  _profileCache.set(pkHex, 'loading');
-  fetchNostrProfile(pkHex).then((p) => { _profileCache.set(pkHex, p || null); render(); }).catch(() => { _profileCache.set(pkHex, null); render(); });
-  return 'loading';
-}
-// A row showing the recipient's avatar + name (or a shortened npub fallback).
-function profileChip(pkHex, { size = 30 } = {}) {
-  const p = nostrProfile(pkHex);
-  const npub = npubOf(pkHex) || pkHex;
-  const short = npub.slice(0, 12) + '…' + npub.slice(-4);
-  const avatar = (pic) =>
-    pic
-      ? h('img', { src: pic, style: `width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex:0 0 auto`, onError: (e) => { e.target.style.visibility = 'hidden'; } })
-      : h('div', { style: `width:${size}px;height:${size}px;border-radius:50%;background:#9993;flex:0 0 auto` });
-  if (p === 'loading') return h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, short));
-  const name = (p && p.name) || short;
-  return h('div', { class: 'row gap6', style: 'align-items:center;min-width:0' },
-    avatar(p && p.picture),
-    h('span', { class: p && p.name ? '' : 'small muted', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name));
-}
 
 function copyBtn(text, label = t('copy')) {
   return h('button', { class: 'btn-sm', onClick: () => copy(text) }, label);
@@ -853,7 +829,7 @@ async function activateAccount(acc, opts = {}) {
     // scan runs ONLY when we have neither (e.g. a seed imported on a fresh device
     // with no synced state); that's what discovers the used addresses. Otherwise
     // the socket + frontier poll keep us current with no refresh-time burst.
-    const hadNostr = wallet.watchOnly ? false : await wallet.syncFromNostr();
+    const hadNostr = wallet.watchOnly || !wallet.syncFromNostr ? false : await wallet.syncFromNostr();
     if (!hadCache && !hadNostr) {
       await wallet.scan({ silent: false });
     }
@@ -1454,7 +1430,7 @@ function settingsTab() {
     ...featureAll('settingsCards'),
     consolidateCard(),
     explorerCard(),
-    wallet.watchOnly || !wallet.mnemonic ? null : syncCard()
+    null
   );
 }
 
@@ -1560,48 +1536,6 @@ function explorerCard() {
   );
 }
 
-// Cross-device sync settings: toggle + editable relay list (default coinos).
-function syncCard() {
-  const cfg = getSyncConfig();
-  const setEnabled = (enabled) => {
-    if (enabled === cfg.enabled) return;
-    setSyncConfig({ enabled, relays: cfg.relays });
-    render();
-    // On enable, pull anything newer from the relays, then push our copy up.
-    if (enabled && !wallet.offline) {
-      wallet.syncFromNostr().catch(() => {}).finally(() => wallet.saveCache());
-    }
-  };
-  return h(
-    'div',
-    { class: 'card col' },
-    h('h3', {}, t('deviceSync')),
-    h('p', { class: 'small muted', style: 'margin:0' }, t('deviceSyncDesc')),
-    h('div', { class: 'row between' },
-      h('span', { class: 'lab', style: 'margin:0' }, t('syncAcross')),
-      h('div', { class: 'seg' },
-        h('button', { type: 'button', class: cfg.enabled ? 'active' : '', onClick: () => setEnabled(true) }, t('syncOn')),
-        h('button', { type: 'button', class: !cfg.enabled ? 'active' : '', onClick: () => setEnabled(false) }, t('syncOff'))
-      )
-    ),
-    cfg.enabled
-      ? h('label', { class: 'field' },
-          h('span', { class: 'lab' }, t('relaysLabel')),
-          h('textarea', {
-            placeholder: 'wss://relay.example.com',
-            autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
-            style: 'min-height:64px',
-            value: cfg.relays.join('\n'),
-            onInput: (e) => {
-              const relays = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean);
-              setSyncConfig({ enabled: true, relays });
-            },
-          }),
-          h('div', { class: 'small faint' }, t('relaysHint'))
-        )
-      : null
-  );
-}
 
 // Language selector. Changing it persists the choice, flips text direction for
 // RTL languages, and re-renders the whole app in the new language.
@@ -1859,7 +1793,7 @@ function accountSettingsScreen() {
         : h('button', { class: 'btn-block', onClick: () => { ui.pubkeyShown = true; render(); } }, t('showPublicKey'))
     ),
     // Nostr address — share it so others can send you locked gifts.
-    (a.id === activeId && wallet.nostrNpub())
+    (a.id === activeId && wallet.nostrNpub && wallet.nostrNpub())
       ? h('div', { class: 'card col' },
           h('h3', {}, t('nostrKeyTitle')),
           h('p', { class: 'small muted', style: 'margin:0' }, t('nostrKeyDesc')),
@@ -2969,7 +2903,7 @@ async function importSnapshotFile(e) {
 const ctx = {
   h, ui, render, wallet, toast, copyBtn, pasteBtn, blankSend, goBack, openExternal,
   fmtAmount, unitLabel, unitTag, parseAmount, getUnit: () => unit, toggleUnit, download,
-  brandHeader, profileChip, activeAccount, setAccounts: (list) => { accounts = list; },
+  brandHeader, activeAccount, setAccounts: (list) => { accounts = list; },
   getAccounts: () => accounts,
   claimTargets, enterWallet, activateAccount, commitAccount,
 };

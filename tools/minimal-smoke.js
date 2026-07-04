@@ -28,6 +28,8 @@ check('meaningfully smaller than full', html.length < full.length * 0.9);
 check('no ark protocol code', !html.includes('Ark VTXO mailbox authorization'));
 check('no swap protocol code', !html.includes('swap/reverse'));
 check('no musig code', !html.includes('MuSig/noncecoef'));
+check('no silent-payment engine', !html.includes('BIP0352') && !html.includes('__SP_WORKER__'));
+check('no nostr sync code', !html.includes('30078') && !html.includes('relay.coinos.io'));
 
 const server = Bun.serve({ port: 5198, fetch: () => new Response(html, { headers: { 'content-type': 'text/html' } }) });
 
@@ -79,6 +81,7 @@ try {
   check('no swap provider card', !settings.includes('Swap provider'));
   check('no ark card', !/⚔ Ark/.test(settings));
   check('no sp indexer card', !settings.includes('Silent payment indexer'));
+  check('no sync card', !settings.toLowerCase().includes('sync'));
 
   console.log('\n[3] core receive still works');
   await clickText('.tabs button', 'Receive');
@@ -87,7 +90,9 @@ try {
   check('onchain address shown', /^bcrt1/.test(addr || ''), (addr || '').slice(0, 16) + '…');
   sh(`${BCLI} sendtoaddress ${addr} 0.0004`);
   sh(`${BCLI} generatetoaddress 1 $(${BCLI} getnewaddress) >/dev/null`);
-  check('payment lands', await waitText('40,000', 30000));
+  const landed = await waitText('40,000', 30000);
+  if (!landed) console.log('  [balance area]', (await bodyText()).slice(0, 200).replace(/\n+/g, ' | '));
+  check('payment lands', landed);
   check('no page errors', errs.length === 0, errs.join(' | '));
 
   console.log(ok ? '\n✅ SUCCESS: minimal profile is a working on-chain-only wallet'

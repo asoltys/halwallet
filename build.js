@@ -141,7 +141,7 @@ export async function buildSpWorker({ minify = true } = {}) {
 // on-chain-only wallet. A build plugin swaps src/features/index.js for a
 // generated module that only imports the enabled features, so a disabled
 // feature's code (and its network endpoints) never enters the bundle.
-const ALL_FEATURES = { gifts: 'giftsFeature', swaps: 'swapsFeature', ark: 'arkFeature', sp: 'spFeature' };
+const ALL_FEATURES = { gifts: 'giftsFeature', swaps: 'swapsFeature', ark: 'arkFeature', sp: 'spFeature', sync: 'syncFeature' };
 
 export function enabledFeatures(spec = process.env.HAL_FEATURES) {
   if (spec == null) return Object.keys(ALL_FEATURES);
