@@ -9,10 +9,7 @@ import { qrSvg } from './qr.js';
 import { scanQr } from './scan.js';
 import { getSyncConfig, setSyncConfig, parseNostrPubkey, npubOf, fetchNostrProfile, decryptWithCode } from './nostr.js';
 import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS } from './api.js';
-import { swapsFeature } from './features/swaps.js';
-import { giftsFeature } from './features/gifts.js';
-import { arkFeature } from './features/ark.js';
-import { spFeature } from './features/sp.js';
+import { buildFeatures } from './features/index.js';
 import { t, LANGS, getLang, setLang, isRTL, loadLocale } from './i18n.js';
 import {
   fmtBtc,
@@ -2976,7 +2973,7 @@ const ctx = {
   getAccounts: () => accounts,
   claimTargets, enterWallet, activateAccount, commitAccount,
 };
-const FEATURES = [giftsFeature, swapsFeature, arkFeature, spFeature].map((f) => f(ctx));
+const FEATURES = buildFeatures(ctx);
 
 // apply text direction, then restore a wallet left open in this tab — otherwise
 // show the unlock screen.

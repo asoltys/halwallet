@@ -136,11 +136,39 @@ export async function buildSpWorker({ minify = true } = {}) {
   return result.outputs[0].text();
 }
 
-export async function buildHtml({ minify = true, pwa = minify } = {}) {
+// Optional-feature selection: HAL_FEATURES is a comma list of enabled
+// features (gifts,swaps,ark,sp). Unset means all; "none"/"" means a minimal
+// on-chain-only wallet. A build plugin swaps src/features/index.js for a
+// generated module that only imports the enabled features, so a disabled
+// feature's code (and its network endpoints) never enters the bundle.
+const ALL_FEATURES = { gifts: 'giftsFeature', swaps: 'swapsFeature', ark: 'arkFeature', sp: 'spFeature' };
+
+export function enabledFeatures(spec = process.env.HAL_FEATURES) {
+  if (spec == null) return Object.keys(ALL_FEATURES);
+  return spec.split(',').map((x) => x.trim().toLowerCase()).filter((x) => x in ALL_FEATURES);
+}
+
+function featureIndexSource(enabled) {
+  return enabled.map((f) => `import { ${ALL_FEATURES[f]} } from './${f}.js';`).join('\n')
+    + `\nexport function buildFeatures(ctx) { return [${enabled.map((f) => `${ALL_FEATURES[f]}(ctx)`).join(', ')}]; }\n`;
+}
+
+const featurePlugin = (enabled) => ({
+  name: 'hal-features',
+  setup(b) {
+    b.onLoad({ filter: /src[\/\\]features[\/\\]index\.js$/ }, () => ({
+      contents: featureIndexSource(enabled),
+      loader: 'js',
+    }));
+  },
+});
+
+export async function buildHtml({ minify = true, pwa = minify, features = process.env.HAL_FEATURES } = {}) {
   const result = await Bun.build({
     entrypoints: ['./src/app.js'],
     target: 'browser',
     minify,
+    plugins: [featurePlugin(enabledFeatures(features))],
   });
   if (!result.success) {
     for (const log of result.logs) console.error(log);

@@ -3,10 +3,11 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Hal Wallet — offline-capable, single-file self-custody Bitcoin wallet for the browser, in memory of Hal Finney",
+  "description": "Hal Wallet \u2014 offline-capable, single-file self-custody Bitcoin wallet for the browser, in memory of Hal Finney",
   "scripts": {
     "dev": "bun run dev.js",
-    "build": "bun run build.js"
+    "build": "bun run build.js",
+    "build:minimal": "HAL_FEATURES=none bun run build.js"
   },
   "dependencies": {
     "@noble/ciphers": "^2.1.1",
