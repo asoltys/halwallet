@@ -3378,7 +3378,7 @@ function recipientRow(s, r, i) {
         },
       }),
       h('button', { type: 'button', title: t('switchUnit'), onClick: toggleUnit }, unitLabel()),
-      single && h('button', { type: 'button', class: s.max ? 'btn-primary' : '', onClick: () => { s.max = !s.max; render(); } }, t('max'))
+      single && !isArkAddress(r.address) && h('button', { type: 'button', class: s.max ? 'btn-primary' : '', onClick: () => { s.max = !s.max; render(); } }, t('max'))
     ) : null
   );
   syncCheck();
@@ -3390,6 +3390,7 @@ function sendForm() {
   // Progressive disclosure: until the destination is a valid on-chain/SP address,
   // show only the destination input (a Lightning invoice auto-advances instead).
   const ready = destReady((s.recipients[0] || {}).address);
+  const arkDest = s.recipients.length === 1 && isArkAddress((s.recipients[0] || {}).address);
   const feeOpts = [
     ['economyFee', t('feeEconomy')],
     ['halfHourFee', t('feeNormal')],
@@ -3406,13 +3407,14 @@ function sendForm() {
       h('div', { class: 'col', style: 'gap:14px' },
         s.recipients.map((r, i) => recipientRow(s, r, i))
       ),
-      ready && s.recipients.length < 10 &&
+      ready && !arkDest && s.recipients.length < 10 &&
         h('button', {
           type: 'button', class: 'linklike small mt8',
           onClick: () => { s.recipients.push({ address: '', amount: '' }); s.max = false; render(); },
         }, t('addRecipient'))
     ),
-    ready && h(
+    ready && arkDest && h('div', { class: 'small faint' }, t('arkSendHint')),
+    ready && !arkDest && h(
       'div',
       { class: 'field' },
       h('span', { class: 'lab' }, t('feeRate')),
@@ -3440,7 +3442,7 @@ function sendForm() {
       s.feeChoice !== 'custom' &&
         h('div', { class: 'small faint mt8' }, t('selectedRate', { n: currentFeeRate() }))
     ),
-    ready ? coinControl() : null,
+    ready && !arkDest ? coinControl() : null,
     ui.sendError && h('div', { class: 'notice err' }, ui.sendError),
     ready && h('button', { class: 'btn-primary btn-block', onClick: reviewSend }, t('reviewTx')),
     h('button', { class: 'linklike small', style: 'align-self:center;margin-top:2px', onClick: () => { ui.giftMode = true; ui.sendError = ''; render(); } }, '🎁 ' + t('giftLink'))

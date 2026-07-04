@@ -371,6 +371,7 @@ const STR = {
     arkRefreshBtn: 'Refresh / consolidate {n} coin(s)',
     arkRefreshStarted: 'Refresh submitted — completes with the next round.',
     arkSendTitle: 'Send over Ark',
+    arkSendHint: 'Ark address — sent instantly off-chain, no mining fee.',
     arkPayTo: 'To',
     arkNoFee: 'none — instant off-chain send',
     arkSendBtn: 'Send',

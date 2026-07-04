@@ -123,6 +123,11 @@ try {
   await page.type('.mono-input', aliceAddr);
   await sleep(400); // destReady re-render reveals the amount input
   await page.type('input[type="number"]', '7000');
+  const noFeeUi = await page.evaluate(() => {
+    const txt = document.body.innerText.toLowerCase();
+    return !txt.includes('fee rate') && !txt.includes('coin control') && txt.includes('no mining fee');
+  });
+  check('no fee/coin controls for ark dest', noFeeUi);
   await clickText('button.btn-primary', 'Review transaction');
   check('ark review shown', await waitText('Send over Ark', 5000));
   await clickText('button.btn-primary', 'Send');
