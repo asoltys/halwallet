@@ -298,6 +298,7 @@ const STR = {
     claimBtn: 'Claim it',
     claimFeeNote: '~{n} fee',
     claimFailed: 'This gift has already been claimed or is no longer available.',
+    claimNotVisibleBody: 'The coins funding this gift aren\u2019t visible from this wallet\u2019s network/data source. Make sure this wallet uses the same network and data source as the sender, then try again.',
     claimedTitle: 'Claimed!',
     claimedBody: 'Your Bitcoin is on its way. Back up your recovery phrase to keep it safe.',
     recoveryWarn: '⚠ Anyone who can see these words can steal your funds. Make sure nobody is watching before you reveal them.',

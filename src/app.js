@@ -869,6 +869,7 @@ async function activateAccount(acc, opts = {}) {
   ui.claimCode = opts.gift || null;
   ui.claimError = '';
   ui.claimTaken = null;
+  ui.claimNotVisible = false;
   ui.claimChecking = !!opts.gift; // gate the Claim button until we've checked
   // Restore the tab / open tx from the last session so a refresh keeps the
   // user's place. A gift link always opens the claim screen instead.
@@ -2210,6 +2211,13 @@ async function checkGiftClaimed(code) {
   try {
     const res = await wallet.api.outspend(ops[0].txid, ops[0].vout);
     if (res && res.spent) ui.claimTaken = { txid: res.txid || null };
+    // Unknown txids don't 404 on the status/outspend endpoints, so verify the
+    // funding tx is actually visible — if not, the claimer is likely on a
+    // different network/data source than the sender (or it hasn't propagated).
+    if (!ui.claimTaken) {
+      const tx = await wallet.api.getTx(ops[0].txid).catch(() => null);
+      ui.claimNotVisible = !tx;
+    }
   } catch {
     // Couldn't check (offline/transient) — leave it claimable; the broadcast in
     // doClaim is the final guard (a double-spend is rejected by the network).
@@ -2251,7 +2259,11 @@ async function doClaim() {
         if (res && res.spent) ui.claimTaken = { txid: res.txid || null };
       } catch {}
     }
-    if (!ui.claimTaken) ui.claimError = t('claimFailed');
+    if (!ui.claimTaken) {
+      ui.claimError = /missing.?inputs|missingorspent|bad-txns-inputs/i.test(String(e && e.message))
+        ? t('claimNotVisibleBody') // funding tx unknown here: wrong chain/source
+        : t('claimFailed');
+    }
   }
   ui.busy = false;
   render();
@@ -2443,6 +2455,7 @@ function claimScreen() {
           return acc && !acc.provisional ? t('claimBodyExisting', { name: acc.label }) : t('claimBody'); })())
     ),
     ui.claimError && h('div', { class: 'notice err' }, ui.claimError),
+    !ui.claimError && ui.claimNotVisible && h('div', { class: 'notice info' }, t('claimNotVisibleBody')),
     ui.busy || ui.claimChecking
       ? h('button', { class: 'btn-primary btn-block', disabled: true }, h('span', { class: 'spinner' }))
       : h('button', { class: 'btn-primary btn-block', onClick: doClaim },
