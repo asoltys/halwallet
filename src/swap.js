@@ -231,6 +231,44 @@ export function decodeBolt11(invoice) {
 // Orchestrates non-custodial swaps: creates them via Boltz, verifies the lockup
 // address locally before any funds move, then polls the chain (via the wallet's
 // esplora api) to claim (reverse) or detect success/refund (submarine). DOM-free.
+// Wallet storage/key helpers for this feature, installed onto the core
+// wallet instance so a build without the feature ships none of it.
+export function installSwapWallet(wallet) {
+  if (wallet.loadSwaps) return; // already installed
+  Object.assign(wallet, {
+    // ---- Boltz swap support ----------------------------------------------
+    // Persisted swap records (public metadata only — keys/preimage are re-derived
+    // deterministically from the seed via swapNode, so nothing secret is stored).
+    _swapKey() { return this._cacheKey() + ':swaps'; },
+    loadSwaps() {
+      try { return JSON.parse(localStorage.getItem(this._swapKey()) || '[]'); } catch { return []; }
+    },
+    saveSwaps(list) {
+      try { localStorage.setItem(this._swapKey(), JSON.stringify(list)); } catch {}
+    },
+    _swapIdxKey() { return this._cacheKey() + ':swapidx'; },
+    // Reserve the next swap index: monotonic + persisted on every call. A reverse/
+    // submarine attempt that fails AFTER Boltz created the swap (a later validation
+    // throw, a dropped response) still burns its index, so a retry can't reuse the
+    // same deterministic preimage (Boltz rejects "swap with this preimage exists").
+    // Seeded from saved swaps so existing wallets don't regress.
+    nextSwapIndex() {
+      const fromSaved = this.loadSwaps().reduce((m, s) => Math.max(m, (s.swapIndex ?? -1) + 1), 0);
+      let stored = 0;
+      try { stored = parseInt(localStorage.getItem(this._swapIdxKey()) || '0', 10) || 0; } catch {}
+      const idx = Math.max(fromSaved, stored);
+      try { localStorage.setItem(this._swapIdxKey(), String(idx + 1)); } catch {}
+      return idx;
+    },
+    // Deterministic swap keypair on a dedicated chain (2) so swap keys never
+    // collide with receive (0) / change (1). Returns the HDKey node (has
+    // privateKey + publicKey, 33-byte compressed).
+    swapNode(index) {
+      return this.account().deriveChild(2).deriveChild(index);
+    },
+  });
+}
+
 export class SwapManager {
   constructor({ wallet, network = 'regtest', getApi, feeRate = 2, onUpdate }) {
     this.wallet = wallet;

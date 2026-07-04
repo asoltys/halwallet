@@ -2,7 +2,7 @@
 // pay bolt11 invoices, provider settings. Extracted from app.js; the
 // protocol layer lives in ../swap.js.
 
-import { SwapManager } from '../swap.js';
+import { SwapManager, installSwapWallet } from '../swap.js';
 import { getNetwork, getBoltzApi, BOLTZ_PRESETS, getBoltzProviderId, setBoltzProviderId, getBoltzCustom, setBoltzCustom } from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
@@ -13,6 +13,7 @@ function isLnInvoice(v) { v = (v || '').trim(); return /^ln[a-z0-9]+$/i.test(v) 
 
 export function swapsFeature(ctx) {
   const { h, ui, render, wallet, blankSend, fmtAmount, unitLabel, copyBtn } = ctx;
+  installSwapWallet(wallet); // swap storage/keys live outside the core wallet
 
   // Boltz swap orchestrator (reverse = receive over LN, submarine = spend over LN).
   const swaps = new SwapManager({

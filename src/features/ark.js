@@ -11,8 +11,27 @@ import { shortAddr, shortTxid, timeAgo } from '../format.js';
 // t?ark1… bech32m — an Ark address for this or another ASP.
 export function isArkAddress(a) { return /^t?ark1[a-z0-9]{20,}$/i.test((a || '').trim()); }
 
+// Wallet storage/key helpers for this feature, installed onto the core
+// wallet instance so a build without the feature ships none of it.
+export function installArkWallet(wallet) {
+  if (wallet.loadArkState) return; // already installed
+  Object.assign(wallet, {
+    // ---- Ark support -------------------------------------------------------
+    // Persisted ArkManager state (vtxos, in-flight action checkpoints, movement
+    // history — no secrets: vtxo keys are re-derived from the seed).
+    _arkKey() { return this._cacheKey() + ':ark'; },
+    loadArkState() {
+      try { return JSON.parse(localStorage.getItem(this._arkKey()) || 'null'); } catch { return null; }
+    },
+    saveArkState(state) {
+      try { localStorage.setItem(this._arkKey(), JSON.stringify(state)); } catch {}
+    },
+  });
+}
+
 export function arkFeature(ctx) {
   const { h, ui, render, wallet, blankSend, fmtAmount, unitLabel, unitTag, copyBtn, toast, openExternal } = ctx;
+  installArkWallet(wallet); // ark state storage lives outside the core wallet
 
   // One manager per open wallet; null when Ark is off in Settings, watch-only,
   // or not yet dialed (lazy: fresh wallets connect on first use).

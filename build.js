@@ -177,7 +177,10 @@ export async function buildHtml({ minify = true, pwa = minify, features = proces
   let js = await result.outputs[0].text();
   // Guard against a literal </script> inside the bundle closing our tag early.
   js = js.replaceAll('</script', '<\\/script');
-  const workerB64 = Buffer.from(await buildSpWorker({ minify })).toString('base64');
+  // The silent-payment scan worker only ships when the sp feature does.
+  const workerB64 = enabledFeatures(features).includes('sp')
+    ? Buffer.from(await buildSpWorker({ minify })).toString('base64')
+    : '';
   const css = await Bun.file('./src/style.css').text();
 
   return `<!doctype html>
@@ -193,7 +196,7 @@ ${pwa ? PWA_HEAD : ''}<style>${css}</style>
 </head>
 <body>
 <div id="app"></div>
-<script>globalThis.__SP_WORKER__=${JSON.stringify(workerB64)}</script>
+${workerB64 ? `<script>globalThis.__SP_WORKER__=${JSON.stringify(workerB64)}</script>` : ''}
 <script>${js}</script>
 ${pwa ? SW_REGISTER + '\n' : ''}</body>
 </html>`;

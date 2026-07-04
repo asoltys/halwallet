@@ -17,6 +17,7 @@ for (let i = 0; i < 30; i++) { try { if ((await fetch(APP)).ok) break; } catch {
 
 const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox'] });
 const page = await browser.newPage();
+page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 await page.setViewport({ width: 420, height: 860, deviceScaleFactor: 2 });
 const clickText = (sel, text) => page.evaluate((sel, text) => {
   const el = [...document.querySelectorAll(sel)].find((e) => e.textContent.trim().toLowerCase().includes(text.toLowerCase()));

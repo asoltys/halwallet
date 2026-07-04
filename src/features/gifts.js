@@ -2,7 +2,8 @@
 // reclaim) and the claim flow (fresh or existing wallet, nostr-locked gifts,
 // claim codes / NIP-07 extension). Gift primitives live in ../wallet.js.
 
-import { newMnemonic, previewGift, giftOutpoints, buildClaimTx, giftMinimum, lockGift, previewLockedGift } from '../wallet.js';
+import { newMnemonic } from '../wallet.js';
+import { installGiftWallet, previewGift, giftOutpoints, buildClaimTx, giftMinimum, lockGift, previewLockedGift } from './gifts-wallet.js';
 import { parseNostrPubkey, npubOf, fetchNostrProfile, decryptWithCode } from '../nostr.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
@@ -15,6 +16,7 @@ export function giftsFeature(ctx) {
     brandHeader, profileChip, activeAccount, setAccounts, getAccounts, claimTargets,
     enterWallet, activateAccount, commitAccount,
   } = ctx;
+  installGiftWallet(wallet); // gift primitives live outside the core wallet
 
   // ================================================================ GIFT / CLAIM
   // Read a gift link, returning the code (and scrubbing it from the URL so the
@@ -747,7 +749,7 @@ export function giftsFeature(ctx) {
       return h('button', { class: 'linklike small', style: 'align-self:center;margin-top:2px', onClick: () => { ui.giftMode = true; ui.sendError = ''; render(); } }, '🎁 ' + t('giftLink'));
     },
     balanceLines() {
-      const locked = wallet.lockedValue;
+      const locked = wallet.giftLockedValue();
       return locked > 0 ? [{ label: t('lockedInGifts'), sat: locked }] : [];
     },
     historyEntries(txs) {
