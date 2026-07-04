@@ -8,10 +8,10 @@ import { Wallet, newMnemonic, isValidMnemonic, accountXpubFor, cacheKeyFor, utxo
 import { qrSvg } from './qr.js';
 import { scanQr } from './scan.js';
 import { getSyncConfig, setSyncConfig, parseNostrPubkey, npubOf, fetchNostrProfile, decryptWithCode } from './nostr.js';
-import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS, getSpIndexerConfig, setSpIndexerConfig, spIndexerPresets, getBoltzApi, BOLTZ_PRESETS, getBoltzProviderId, setBoltzProviderId, getBoltzCustom, setBoltzCustom, arkPresets, getArkProviderId, setArkProviderId, getArkCustom, setArkCustom, getArkConfig } from './api.js';
-import { SwapManager } from './swap.js';
-import { ArkManager } from './ark/manager.js';
-import { isSilentPaymentAddress } from './silentpay.js';
+import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS } from './api.js';
+import { swapsFeature } from './features/swaps.js';
+import { arkFeature } from './features/ark.js';
+import { spFeature } from './features/sp.js';
 import { t, LANGS, getLang, setLang, isRTL, loadLocale } from './i18n.js';
 import {
   fmtBtc,
@@ -24,94 +24,29 @@ import {
 } from './format.js';
 
 const wallet = new Wallet();
-// Boltz swap orchestrator (reverse = receive over LN, submarine = spend over LN).
-const swaps = new SwapManager({
-  wallet, network: getNetwork(), getApi: getBoltzApi,
-  feeRate: 2, onUpdate: () => render(),
-});
 
-// Ark (off-chain payments via an ASP, spoken natively — see src/ark). One
-// manager per open wallet; null when Ark is off in Settings, watch-only, or
-// still connecting. State persists under the wallet's cache key.
-let ark = null;
-let arkTimer = null;
-let arkConnectPromise = null;
-let arkInitGen = 0; // guards against a stale init() resolving after a wallet switch
+// ---- optional features ------------------------------------------------
+// Swaps, Ark, and silent payments plug into fixed seams (receive modes, send
+// matchers, history entries, balance lines, settings cards, lifecycle hooks).
+// FEATURES/ctx are assembled near the bottom of this file, once every helper
+// they capture exists; the hooks below are only ever called at runtime.
+const featureHook = (name, ...args) => {
+  for (const f of FEATURES) {
+    if (!f[name]) continue;
+    const v = f[name](...args);
+    if (v) return v;
+  }
+  return null;
+};
+const featureAll = (name, ...args) => FEATURES.flatMap((f) => (f[name] ? f[name](...args) : []));
+const featureMatchSend = (text) => FEATURES.some((f) => f.matchSendText && f.matchSendText(text));
 
-function stopArk() {
-  arkInitGen++;
-  if (arkTimer) clearInterval(arkTimer);
-  arkTimer = null;
-  if (ark) ark.stopMailboxStream();
-  ark = null;
-  arkConnectPromise = null;
-}
 
-// Ark is available (a server is configured and we hold keys), even if we
-// haven't dialed the server yet — gates the UI entry points.
-function arkAvailable() {
-  return !!getArkConfig() && !wallet.watchOnly && !!wallet.account;
-}
 
-// Whether this wallet has used Ark before (coins, unfinished operations, or
-// history). Only then does opening the wallet dial the server on its own —
-// fresh wallets stay silent until the user first touches an Ark feature.
-function arkWanted() {
-  const st = wallet.loadArkState();
-  return !!(st && ((st.vtxos || []).length || (st.movements || []).length
-    || (st.actions || []).some((a) => !['done', 'failed'].includes(a.step))));
-}
 
-function initArk() {
-  stopArk();
-  ui.arkError = '';
-  if (arkAvailable() && arkWanted()) connectArk().catch(() => {});
-}
 
-// Connect on demand; idempotent (returns the live manager or the in-flight
-// connection). Callers surface ui.arkError on failure.
-function connectArk() {
-  if (ark) return Promise.resolve(ark);
-  if (arkConnectPromise) return arkConnectPromise;
-  if (!arkAvailable()) return Promise.reject(new Error(t('arkNotConnected')));
-  const cfg = getArkConfig();
-  const gen = arkInitGen;
-  const mgr = new ArkManager({
-    account: wallet.account(),
-    storage: { load: () => wallet.loadArkState(), save: (s) => wallet.saveArkState(s) },
-    arkUrl: cfg.ark,
-    esploraUrl: cfg.esplora,
-    network: getNetwork(),
-    onUpdate: () => render(),
-  });
-  ui.arkError = '';
-  arkConnectPromise = mgr.init().then(() => {
-    if (gen !== arkInitGen) throw new Error('superseded'); // wallet switched mid-connect
-    ark = mgr;
-    const tick = () => mgr.sync().catch(() => {});
-    tick();
-    // Receives arrive in real time over the mailbox stream; the poll is the
-    // fallback and what drives in-flight boards/refreshes forward.
-    mgr.startMailboxStream();
-    arkTimer = setInterval(() => { if (ark === mgr) tick(); }, getNetwork() === 'regtest' ? 5000 : 30000);
-    render();
-    return mgr;
-  }).catch((e) => {
-    if (gen === arkInitGen) { ui.arkError = e.message; render(); }
-    throw e;
-  }).finally(() => { arkConnectPromise = null; });
-  render();
-  return arkConnectPromise;
-}
 
-// The spendable Ark balance (sats), or null when Ark isn't active.
-function arkBalance() {
-  if (!ark || !ark.state) return null;
-  return ark.balance();
-}
 
-// t?ark1… bech32m — an Ark address for this or another ASP.
-function isArkAddress(a) { return /^t?ark1[a-z0-9]{20,}$/i.test((a || '').trim()); }
 
 const ui = {
   screen: 'unlock', // 'unlock' | 'wallet' | 'claim' | 'howItWorks'
@@ -857,9 +792,7 @@ async function activateAccount(acc, opts = {}) {
   // balance/history and re-enter the seed to spend again.
   if (acc.type !== 'watch' && !acc.provisional) acc.xpub = wallet.accountXpub();
   persistAccounts();
-  swaps.network = getNetwork();
-  if (!wallet.watchOnly) { try { swaps.resumeAll(); } catch {} } // re-attach in-flight swap watchers
-  initArk(); // connect to the Ark server (no-op when Ark is off in Settings)
+  for (const f of FEATURES) { try { f.init && f.init(); } catch {} } // per-feature wallet lifecycle
   const hadCache = wallet.restoreCache(); // show last-known balance/history instantly
   // An opened gift link starts on a claim/back-up screen instead of the wallet.
   ui.screen = opts.gift ? 'claim' : 'wallet';
@@ -1527,11 +1460,9 @@ function settingsTab() {
         : h('button', { onClick: () => { ui.addrScan = true; ui.addrScanPage = 0; render(); } }, t('rescanAddresses'))
     ),
     networkCard(),
-    boltzProviderCard(),
-    arkCard(),
+    ...featureAll('settingsCards'),
     consolidateCard(),
     explorerCard(),
-    spIndexerCard(),
     wallet.watchOnly || !wallet.mnemonic ? null : syncCard()
   );
 }
@@ -1803,146 +1734,14 @@ async function doRevoke(id) {
 function changeNetwork(net) {
   if (net === getNetwork()) return;
   setNetwork(net);
-  swaps.network = net;
-  ui.swapLimits = null; // limits differ per network's provider
+  for (const f of FEATURES) { try { f.networkChanged && f.networkChanged(net); } catch {} }
   const acc = accounts.find((a) => a.id === activeId);
   if (acc) activateAccount(acc); else render();
 }
 
-// Swap provider selector. Boltz-compatible providers (from SwapMarket) plus a
-// custom option. Swaps stay non-custodial regardless of provider.
-function boltzProviderCard() {
-  const id = getBoltzProviderId();
-  const custom = getBoltzCustom();
-  return h(
-    'div',
-    { class: 'card col' },
-    h('h3', {}, '⚡ Swap provider'),
-    h('p', { class: 'small muted', style: 'margin:0' }, 'Boltz-compatible provider for Lightning swaps. Non-custodial: a provider can fail a swap but never take your funds.'),
-    h('select', { onChange: (e) => { setBoltzProviderId(e.target.value); ui.swapLimits = null; render(); } },
-      BOLTZ_PRESETS.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
-    id === 'custom'
-      ? h('div', { class: 'col', style: 'gap:8px' },
-          h('label', { class: 'field' },
-            h('span', { class: 'lab' }, 'API URL'),
-            h('input', {
-              type: 'text', class: 'mono-input', placeholder: 'https://api.example.com',
-              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: custom.api,
-              onChange: (e) => { setBoltzCustom({ api: e.target.value.trim(), ws: custom.ws }); ui.swapLimits = null; render(); },
-            })),
-          h('label', { class: 'field' },
-            h('span', { class: 'lab' }, 'WebSocket URL (optional)'),
-            h('input', {
-              type: 'text', class: 'mono-input', placeholder: 'wss://api.example.com/v2/ws',
-              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: custom.ws,
-              onChange: (e) => { setBoltzCustom({ api: custom.api, ws: e.target.value.trim() }); render(); },
-            }),
-            h('div', { class: 'small faint' }, 'Left blank, the WS is derived from the API URL.')))
-      : h('div', { class: 'small faint', style: 'word-break:break-all' }, getBoltzApi())
-  );
-}
 
-// Ark server selector + wallet panel. Off by default; picking a server spins
-// up the ArkManager for this wallet (off-chain balance, board, refresh).
-function arkCard() {
-  const net = getNetwork();
-  const id = getArkProviderId(net);
-  const custom = getArkCustom(net);
-  const presets = arkPresets(net);
-  const applyProvider = (v) => {
-    setArkProviderId(v, net);
-    ui.receiveType = null;
-    initArk();
-    render();
-  };
-  const head = [
-    h('h3', {}, '⚔ Ark'),
-    h('p', { class: 'small muted', style: 'margin:0' }, t('arkDesc')),
-    h('select', { onChange: (e) => applyProvider(e.target.value) },
-      presets.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
-    id === 'custom'
-      ? h('div', { class: 'col', style: 'gap:8px' },
-          h('label', { class: 'field' },
-            h('span', { class: 'lab' }, t('arkServerUrl')),
-            h('input', {
-              type: 'text', class: 'mono-input', placeholder: 'https://ark.example.com',
-              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: custom.ark,
-              onChange: (e) => { setArkCustom({ ark: e.target.value.trim(), esplora: custom.esplora }, net); initArk(); render(); },
-            })),
-          h('label', { class: 'field' },
-            h('span', { class: 'lab' }, t('arkEsploraUrl')),
-            h('input', {
-              type: 'text', class: 'mono-input', placeholder: 'https://mempool.example.com/api',
-              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: custom.esplora,
-              onChange: (e) => { setArkCustom({ ark: custom.ark, esplora: e.target.value.trim() }, net); initArk(); render(); },
-            })))
-      : null,
-    ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null,
-  ];
-  if (id === 'off' || wallet.watchOnly) {
-    return h('div', { class: 'card col' }, ...head,
-      wallet.watchOnly && id !== 'off' ? h('div', { class: 'small faint' }, t('arkWatchOnly')) : null);
-  }
-  if (!ark || !ark.state) {
-    return h('div', { class: 'card col' }, ...head,
-      arkConnectPromise
-        ? h('div', { class: 'row gap6', style: 'align-items:center' },
-            h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting')))
-        : h('button', { class: 'btn-ghost btn-block', onClick: () => connectArk().catch(() => {}) }, t('arkConnectBtn')));
-  }
 
-  const spendables = ark.vtxos().filter((v) => v.state === 'spendable');
-  const pendingActions = ark.pendingActions();
-  const row = (k, v) => h('div', { class: 'row between' }, h('span', { class: 'small muted' }, k), h('span', { class: 'small' }, v));
 
-  return h(
-    'div',
-    { class: 'card col', style: 'gap:10px' },
-    ...head,
-    spendables.length ? row(t('arkVtxos'), String(spendables.length)) : null,
-    pendingActions.length
-      ? h('div', { class: 'small muted' }, t('arkPendingActions', { n: pendingActions.length }) + ' — ' + pendingActions.map((a) => `${a.type}:${a.step}`).join(', '))
-      : null,
-    spendables.length >= 1
-      ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkRefresh },
-          ui.arkBusy === 'refresh' ? h('span', { class: 'spinner sm' }) : t('arkRefreshBtn', { n: spendables.length }))
-      : null
-  );
-}
-
-// Board: startBoard() gives the funding address; hal's own on-chain wallet pays
-// it (recipient pinned to vout 0 — the ASP requires the board output there),
-// then the manager waits for confirmations and registers via the sync loop.
-async function doArkBoard() {
-  const sats = parseInt((ui.arkBoardAmt || '').trim(), 10);
-  if (!sats) return;
-  ui.arkBusy = 'board'; ui.arkError = ''; render();
-  try {
-    const { actionId, fundingAddress, feeSat } = await ark.startBoard(sats);
-    const feeRate = (wallet.feeRates && wallet.feeRates.halfHourFee) || 5;
-    const draft = wallet.buildTx({ recipients: [{ address: fundingAddress, amount: sats }], feeRate, noSort: true });
-    const hexTx = wallet.sign(draft.tx);
-    const txid = await wallet.broadcast(hexTx);
-    await ark.completeBoard(actionId, txid);
-    ui.arkBoardAmt = '';
-    ui.arkBoarded = { txid, netSat: sats - feeSat };
-    wallet.scan().catch(() => {});
-  } catch (e) {
-    ui.arkError = e.message;
-  }
-  ui.arkBusy = null; render();
-}
-
-async function doArkRefresh() {
-  ui.arkBusy = 'refresh'; ui.arkError = ''; render();
-  try {
-    await ark.refresh();
-    toast(t('arkRefreshStarted'), 5000);
-  } catch (e) {
-    ui.arkError = e.message;
-  }
-  ui.arkBusy = null; render();
-}
 
 // Network selector. Per-network endpoints (Electrum server / block explorer) are
 // configured in the Data source card below — no duplicate URL fields here.
@@ -2727,8 +2526,7 @@ function balanceCard() {
   const firstLoad = wallet.scanning && !wallet.loaded;
   const locked = wallet.lockedValue;
   const pending = wallet.pendingIncoming;
-  const b = arkBalance();
-  const arkBal = b && (b.spendableSat + b.pendingSat) > 0 ? b : null;
+  const featLines = featureAll('balanceLines');
   return h(
     'div',
     { class: 'card balance' },
@@ -2737,7 +2535,7 @@ function balanceCard() {
     // change, minus gift locks — so a pending spend debits immediately, while a
     // pending incoming receive stays out of it until it confirms.
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' }, fmtAmount(wallet.spendable), ' ', unitTag('unit')),
-    pending > 0 || locked > 0 || arkBal
+    pending > 0 || locked > 0 || featLines.length
       ? h(
           'div',
           { class: 'split' },
@@ -2747,30 +2545,14 @@ function balanceCard() {
           locked > 0
             ? h('div', {}, h('div', { class: 'k' }, t('lockedInGifts')), h('div', { class: 'v' }, fmtAmount(locked), ' ', unitTag()))
             : null,
-          arkBal
-            ? h('div', {}, h('div', { class: 'k' }, t('arkBalance')), h('div', { class: 'v' }, fmtAmount(arkBal.spendableSat + arkBal.pendingSat), ' ', unitTag()))
-            : null
+          ...featLines.map((l) =>
+            h('div', {}, h('div', { class: 'k' }, l.label), h('div', { class: 'v' }, fmtAmount(l.sat), ' ', unitTag())))
         )
       : null
   );
 }
 
-async function doReverse() {
-  const amt = parseInt((ui.swapReverseAmt || '').trim(), 10);
-  const lim = ui.swapLimits || (ui.swapLimits = await swaps.reverseLimits());
-  if (!amt || amt < lim.min || amt > lim.max) { ui.swapError = `Enter ${lim.min.toLocaleString()}–${lim.max.toLocaleString()} sats`; return render(); }
-  ui.swapError = ''; ui.swapBusy = true; render();
-  try { const rec = await swaps.startReverse(amt); ui.lnReceiveId = rec.id; ui.swapReverseAmt = ''; }
-  catch (e) { ui.swapError = e.message; }
-  ui.swapBusy = false; render();
-}
 
-async function doRefund(id) {
-  ui.swapError = ''; ui.swapBusy = true; render();
-  try { await swaps.refundSubmarine(id); }
-  catch (e) { ui.swapError = e.message; }
-  ui.swapBusy = false; render();
-}
 
 function tabsBar() {
   const tabs = [
@@ -2841,43 +2623,9 @@ function receiveTab() {
     );
   }
 
-  // A board just broadcast — show its success screen until dismissed.
-  if (ui.arkBoarded) {
-    const b = ui.arkBoarded;
-    const url = wallet.api.explorerTx(b.txid);
-    return h(
-      'div',
-      { class: 'card col', style: 'align-items:center;text-align:center;gap:14px;padding:40px 20px' },
-      h('div', { class: 'check-badge' }, '✓'),
-      h('h2', { style: 'margin:0' }, t('arkBoardedTitle')),
-      h('div', { class: 'amount-pos', style: 'font-size:18px' }, '+' + fmtAmount(b.netSat) + ' ' + unitLabel()),
-      h('p', { class: 'small muted', style: 'margin:0' }, t('arkBoardedNote')),
-      h('div', { class: 'addr-box', style: 'width:100%' }, b.txid),
-      h('div', { class: 'row gap6' },
-        copyBtn(b.txid, t('copyTxid')),
-        h('a', { class: 'btn btn-sm', href: url, target: '_blank', rel: 'noopener', onClick: (e) => { e.preventDefault(); openExternal(url); } }, t('viewOnMempool'))),
-      h('button', { class: 'btn-primary btn-block', onClick: () => { ui.arkBoarded = null; render(); } }, t('done'))
-    );
-  }
-
-  // An Ark payment landed — same celebration as an on-chain receive, dismissed
-  // with a tap (the ack persists in the ark state so it shows exactly once).
-  const arkUnseen = ark && ark.state ? ark.unseenReceives() : [];
-  if (arkUnseen.length) {
-    const amt = arkUnseen.reduce((n, m) => n + m.amountSat, 0);
-    return h(
-      'div',
-      {
-        class: 'card col',
-        style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
-        onClick: () => { ark.ackReceives(); render(); },
-      },
-      h('div', { class: 'check-badge' }, '✓'),
-      h('h2', { style: 'margin:0' }, t('paymentReceived')),
-      amt ? h('div', { class: 'amount-pos', style: 'font-size:18px' }, '+' + fmtAmount(amt) + ' ' + unitLabel()) : null,
-      h('div', { class: 'small muted' }, t('tapToProceed'))
-    );
-  }
+  // Feature takeovers: boarding success, Ark receive celebration, etc.
+  const takeover = featureHook('receiveTakeover');
+  if (takeover) return takeover;
 
   // A payment landed on the shown address (the fresh index advanced past what
   // the user last saw) — celebrate, and wait for a tap before showing the next.
@@ -2908,146 +2656,31 @@ function receiveTab() {
     );
   }
 
-  // One card with a toggle: on-chain address, Lightning (a Boltz reverse swap),
-  // and the silent-payment address — each shown only when available.
+  // One card with a toggle: the on-chain address plus whatever receive modes
+  // the enabled features contribute (Lightning, silent payment, Ark, ...).
   const fresh = wallet.freshReceive();
-  const spAddr = wallet.silentPaymentsAvailable() ? wallet.silentPaymentAddress() : null;
-  const canLn = !wallet.watchOnly; // a reverse swap needs our keys to claim on-chain
+  const featModes = featureAll('receiveModes');
   let mode = ui.receiveType || 'address';
-  if (mode === 'sp' && !spAddr) mode = 'address';
-  if (mode === 'ln' && !canLn) mode = 'address';
-  if (mode === 'ark' && !arkAvailable()) mode = 'address';
-  // A compact dropdown (not a 3-button segmented control) so it fits on mobile and
-  // scales if more address types are added.
-  const opts = [['address', t('receiveAddressTab')]];
-  if (canLn) opts.push(['ln', t('receiveLnTab')]);
-  if (spAddr) opts.push(['sp', t('receiveSpTab')]);
-  if (arkAvailable()) opts.push(['ark', t('receiveArkTab')]);
+  if (mode !== 'address' && !featModes.some((m) => m.id === mode)) mode = 'address';
+  const opts = [['address', t('receiveAddressTab')], ...featModes.map((m) => [m.id, m.label])];
   const seg = opts.length > 1
     ? h('select', { style: 'width:100%', onChange: (e) => { ui.receiveType = e.target.value; render(); } },
         opts.map(([id, label]) => h('option', { value: id, selected: mode === id }, label)))
     : null;
-  if (mode === 'ln') {
-    return h('div', { class: 'card col', style: 'align-items:center;gap:14px' }, seg, ...lnReceiveContent());
-  }
-  if (mode === 'ark') {
-    if (!ark) {
-      connectArk().catch(() => {});
-      return h(
-        'div',
-        { class: 'card col', style: 'align-items:center;gap:14px' },
-        seg,
-        ui.arkError
-          ? h('div', { class: 'notice err', style: 'width:100%' }, ui.arkError)
-          : h('div', { class: 'row gap6', style: 'align-items:center;padding:24px 0' },
-              h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting')))
-      );
-    }
-    const arkAddr = ark.address();
-    const minBoard = ark.info.minBoardAmountSat || 0;
-    const canBoard = wallet.spendable >= minBoard;
-    return h(
-      'div',
-      { class: 'card col', style: 'align-items:center;gap:14px' },
-      seg,
-      h('p', { class: 'small muted', style: 'margin:0;text-align:center' }, t('arkReceiveIntro')),
-      h('div', { html: qrSvg(arkAddr) }),
-      h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, arkAddr),
-      copyBtn(arkAddr, t('copyAddress')),
-      // Board: fund your Ark balance from this wallet's on-chain coins.
-      h('div', { class: 'col', style: 'width:100%;gap:8px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:14px' },
-        h('div', { class: 'small muted', style: 'text-align:center' }, t('arkBoardIntro')),
-        h('div', { class: 'input-group' },
-          h('input', {
-            type: 'number', inputmode: 'numeric', min: '0',
-            placeholder: t('arkBoardPlaceholder', { n: minBoard.toLocaleString() }),
-            value: ui.arkBoardAmt || '',
-            onInput: (e) => { ui.arkBoardAmt = e.target.value; },
-          }),
-          h('button', { class: 'btn-sm', disabled: !!ui.arkBusy || !canBoard, onClick: doArkBoard },
-            ui.arkBusy === 'board' ? h('span', { class: 'spinner sm' }) : t('arkBoardBtn'))),
-        canBoard
-          ? h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardAvailable', { n: fmtAmount(wallet.spendable) + ' ' + unitLabel() }))
-          : h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardNoFunds', { n: minBoard.toLocaleString() })),
-        ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null)
-    );
-  }
-  const addr = mode === 'sp' ? spAddr : fresh.address;
+  const fm = featModes.find((m) => m.id === mode);
+  if (fm) return fm.render(seg);
+  const addr = fresh.address;
   return h(
     'div',
     { class: 'card col', style: 'align-items:center;gap:14px' },
     seg,
     h('div', { html: qrSvg(addr) }),
-    h('div', { class: 'addr-box' + (mode === 'sp' ? ' break' : ''), style: 'width:100%' + (mode === 'sp' ? ';font-size:12px' : '') }, addr),
+    h('div', { class: 'addr-box', style: 'width:100%' }, addr),
     copyBtn(addr, t('copyAddress'))
   );
 }
 
-// Lightning receive = a Boltz reverse swap: show a bolt11 the user shares; when
-// it's paid, Boltz locks up on-chain and the SwapManager claims it into this
-// wallet automatically. Returns the card's inner children.
-function lnReceiveContent() {
-  if (!ui.swapLimits && !ui._swapLimitsLoading) {
-    ui._swapLimitsLoading = true;
-    swaps.reverseLimits().then((l) => { ui.swapLimits = l; ui._swapLimitsLoading = false; render(); }).catch(() => { ui._swapLimitsLoading = false; });
-  }
-  const lim = ui.swapLimits;
-  let rec = ui.lnReceiveId ? swaps.list().find((s) => s.id === ui.lnReceiveId) : null;
-  if (rec && ['claimed', 'success'].includes(rec.status)) {
-    // Claimed — the coin is credited on-chain (swap.js → creditReceive), so the
-    // generic "Payment received!" celebration shows it like any receive. Just
-    // reset the Lightning flow back to its form.
-    ui.lnReceiveId = null;
-    rec = null;
-  }
-  if (rec) {
-    let svg = null;
-    try { svg = qrSvg(rec.invoice.toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }); } catch {}
-    return [
-      h('p', { class: 'small muted', style: 'margin:0;text-align:center' }, t('lnReceiveAwaiting')),
-      svg ? h('div', { html: svg }) : null,
-      h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, rec.invoice),
-      copyBtn(rec.invoice, t('copyInvoice')),
-      h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('lnReceiveWatching'))),
-      h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.lnReceiveId = null; ui.swapReverseAmt = ''; ui.swapError = ''; render(); } }, t('back')),
-    ];
-  }
-  return [
-    h('p', { class: 'small muted', style: 'margin:0;text-align:center' }, t('lnReceiveIntro')),
-    h('label', { class: 'field', style: 'width:100%' },
-      h('span', { class: 'lab' }, t('amountSatsLabel')),
-      h('input', { type: 'number', inputmode: 'numeric', placeholder: '', value: ui.swapReverseAmt || '', onInput: (e) => { ui.swapReverseAmt = e.target.value; } }),
-      lim ? h('span', { class: 'small muted' }, `Min ${lim.min.toLocaleString()} · max ${lim.max.toLocaleString()} sats`) : null),
-    ui.swapError ? h('div', { class: 'notice err' }, ui.swapError) : null,
-    h('button', { class: 'btn-primary btn-block', disabled: !!ui.swapBusy, onClick: doReverse }, ui.swapBusy ? h('span', { class: 'spinner' }) : t('lnCreateInvoice')),
-  ];
-}
 
-// Silent-payment tweak indexer picker (per network) — the endpoint used to scan
-// for received silent payments. Only shown for wallets that can derive SP keys.
-function spIndexerCard() {
-  if (!wallet.silentPaymentKeys || !wallet.silentPaymentKeys()) return null;
-  const net = getNetwork();
-  const cfg = getSpIndexerConfig(net);
-  return h(
-    'div',
-    { class: 'card col' },
-    h('h3', {}, t('spIndexerTitle')),
-    h('p', { class: 'small muted', style: 'margin:0' }, t('spIndexerDesc')),
-    h('select', { onChange: (e) => { setSpIndexerConfig({ server: e.target.value, url: cfg.url }, net); render(); } },
-      spIndexerPresets(net).map((o) => h('option', { value: o.id, selected: o.id === cfg.server }, o.id === 'custom' ? o.label : o.url.replace(/^\w+:\/\//, '')))),
-    cfg.server === 'custom'
-      ? h('label', { class: 'field' },
-          h('span', { class: 'lab' }, t('spIndexerUrl')),
-          h('input', {
-            type: 'text', class: 'mono-input', placeholder: 'https://your-indexer:8888',
-            autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: cfg.url,
-            onChange: (e) => { setSpIndexerConfig({ server: 'custom', url: e.target.value.trim() }, net); render(); },
-          }),
-          h('div', { class: 'small faint' }, t('spIndexerHint')))
-      : null
-  );
-}
 
 // ---------------------------------------------------------------- Send
 // Form to enter a recovery phrase / xprv and make a watch-only wallet spendable.
@@ -3099,9 +2732,8 @@ function sendTab() {
   }
   if (ui.sendResult) return sendResultView();
   if (ui.broadcastTx) return broadcastConfirmView();
-  if (ui.arkSent || ui.arkSend) return arkSendReview();
-  if (ui.lnSent || ui.lnSend) return lnSendReview();
-  if (ui.lnSendBusy) return h('div', { class: 'card col', style: 'align-items:center;gap:14px;padding:32px 14px' }, h('span', { class: 'spinner' }), h('p', { class: 'muted', style: 'margin:0' }, t('lnQuoting')));
+  const featView = featureHook('sendView');
+  if (featView) return featView;
   if (ui.draft) return reviewView();
   if (ui.giftMode) return giftView();
   return sendForm();
@@ -3142,8 +2774,7 @@ function handleScanned(raw) {
   ui.sendError = '';
 
   // A scanned bolt11 (optionally lightning:-prefixed) → pay it over Lightning.
-  const lnInv = text.replace(/^lightning:/i, '');
-  if (isLnInvoice(lnInv)) { startLnSend(lnInv); return; }
+  if (featureMatchSend(text)) return;
 
   if (/^bitcoin:/i.test(text)) {
     const { address, amount } = parseBip21(text);
@@ -3361,7 +2992,7 @@ function addrVerifyNodes(a) {
 // auto-advances to its own confirmation, so it never needs them.
 function destReady(a) {
   a = (a || '').trim();
-  return !!a && (wallet.isOnchainAddress(a) || isSilentPaymentAddress(a) || (isArkAddress(a) && arkAvailable()));
+  return !!a && (wallet.isOnchainAddress(a) || FEATURES.some((f) => f.isSendDest && f.isSendDest(a)));
 }
 
 // One recipient: address + amount. Max is only offered for a single recipient.
@@ -3380,20 +3011,16 @@ function recipientRow(s, r, i) {
     check.style.display = a ? '' : 'none';
   };
 
-  // A pasted/typed/scanned bolt11 → jump straight to the Lightning confirmation
-  // (a submarine swap), so its baked-in amount is used and the amount field skipped.
-  const tryLn = (v) => {
-    const inv = (v || '').trim().replace(/^lightning:/i, '');
-    if (s.recipients.length === 1 && !ui.lnSendBusy && !ui.lnSend && isLnInvoice(inv)) { startLnSend(inv); return true; }
-    return false;
-  };
+  // A pasted/typed/scanned payload a feature recognizes (e.g. a bolt11) jumps
+  // straight to that feature's own confirmation flow.
+  const tryFeature = (v) => featureMatchSend(v);
   const addrInput = h('input', {
     type: 'text', class: 'mono-input grow', placeholder: i === 0 ? t('destPlaceholder') : 'bc1q…',
     autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: r.address,
     onInput: (e) => {
       const v = e.target.value;
       r.address = v; syncCheck();
-      if (tryLn(v)) return;                    // a bolt11 advances to its own confirmation
+      if (tryFeature(v)) return;                    // a bolt11 advances to its own confirmation
       if (destReady(v) !== r._ready) render();  // reveal/hide amount + controls as validity flips
     },
   });
@@ -3402,7 +3029,7 @@ function recipientRow(s, r, i) {
     { class: 'col gap6' },
     h('div', { class: 'input-group' },
       addrInput,
-      pasteBtn((text) => { addrInput.value = text; r.address = text; syncCheck(); if (!tryLn(text) && destReady(text) !== r._ready) render(); }),
+      pasteBtn((text) => { addrInput.value = text; r.address = text; syncCheck(); if (!tryFeature(text) && destReady(text) !== r._ready) render(); }),
       i === 0 && canScan() && h('button', {
         type: 'button', class: 'btn-sm', title: t('scanQr'), onClick: scanIntoSend,
         html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/></svg>',
@@ -3432,7 +3059,7 @@ function recipientRow(s, r, i) {
         },
       }),
       h('button', { type: 'button', title: t('switchUnit'), onClick: toggleUnit }, unitLabel()),
-      single && !isArkAddress(r.address) && h('button', { type: 'button', class: s.max ? 'btn-primary' : '', onClick: () => { s.max = !s.max; render(); } }, t('max'))
+      single && !featureHook('hideSendControls', r.address) && h('button', { type: 'button', class: s.max ? 'btn-primary' : '', onClick: () => { s.max = !s.max; render(); } }, t('max'))
     ) : null
   );
   syncCheck();
@@ -3444,7 +3071,8 @@ function sendForm() {
   // Progressive disclosure: until the destination is a valid on-chain/SP address,
   // show only the destination input (a Lightning invoice auto-advances instead).
   const ready = destReady((s.recipients[0] || {}).address);
-  const arkDest = s.recipients.length === 1 && isArkAddress((s.recipients[0] || {}).address);
+  const plainAddr = (s.recipients[0] || {}).address;
+  const arkDest = s.recipients.length === 1 && !!featureHook('hideSendControls', plainAddr);
   const feeOpts = [
     ['economyFee', t('feeEconomy')],
     ['halfHourFee', t('feeNormal')],
@@ -3467,7 +3095,7 @@ function sendForm() {
           onClick: () => { s.recipients.push({ address: '', amount: '' }); s.max = false; render(); },
         }, t('addRecipient'))
     ),
-    ready && arkDest && h('div', { class: 'small faint' }, t('arkSendHint')),
+    ready && arkDest && (featureHook('sendFormNote', plainAddr) || null),
     ready && !arkDest && h(
       'div',
       { class: 'field' },
@@ -3580,17 +3208,10 @@ function reviewSend() {
   ui.sendError = '';
   try {
     const s = ui.send;
-    // A bolt11 invoice in the recipient field → pay it over Lightning via a Boltz
-    // submarine swap, shown with an itemized cost. To the user it's just a payment.
-    const lnTarget = s.recipients.length === 1 ? (s.recipients[0].address || '').trim().replace(/^lightning:/i, '') : '';
-    if (isLnInvoice(lnTarget)) { startLnSend(lnTarget); return; }
-    // An Ark address → instant off-chain send, no mining fee; its own confirmation.
-    if (s.recipients.length === 1 && isArkAddress(s.recipients[0].address)) {
-      if (!arkAvailable()) throw new Error(t('arkNotConnected'));
-      const sats = parseAmount(s.recipients[0].amount, unit);
-      if (!sats || sats <= 0) throw new Error(t('enterValidAmtForN', { n: 1 }));
-      ui.arkSend = { address: s.recipients[0].address.trim(), amountSat: sats };
-      return render();
+    // Feature destinations (bolt11 → Lightning swap, ark1 → Ark send, ...)
+    // divert to their own confirmation flows.
+    for (const f of FEATURES) {
+      if (f.interceptReview && f.interceptReview(s)) return;
     }
     const feeRate = currentFeeRate();
     let coinIds = null;
@@ -3621,103 +3242,11 @@ function reviewSend() {
   render();
 }
 
-// Ark send confirmation: amount + destination, zero fees, instant. After the
-// send, a simple success view (there is no on-chain txid to link).
-function arkSendReview() {
-  if (ui.arkSent) {
-    return h(
-      'div',
-      {
-        class: 'card col',
-        style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
-        onClick: () => { ui.arkSent = null; ui.send = blankSend(); render(); },
-      },
-      h('div', { class: 'check-badge' }, '✓'),
-      h('h2', { style: 'margin:0' }, t('arkSentTitle')),
-      h('div', { class: 'amount-neg', style: 'font-size:18px' }, '-' + fmtAmount(ui.arkSent.amountSat) + ' ' + unitLabel()),
-      h('div', { class: 'small muted' }, t('tapToProceed'))
-    );
-  }
-  const a = ui.arkSend;
-  const row = (k, v) => h('div', { class: 'row between' }, h('span', { class: 'small muted' }, k), h('span', { class: 'small' }, v));
-  return h(
-    'div',
-    { class: 'card col', style: 'gap:12px' },
-    h('h3', {}, t('arkSendTitle')),
-    row(t('lnPayAmount'), fmtAmount(a.amountSat) + ' ' + unitLabel()),
-    row(t('arkPayTo'), shortAddr(a.address, 14)),
-    row(t('networkFee'), t('arkNoFee')),
-    ui.sendError ? h('div', { class: 'notice err' }, ui.sendError) : null,
-    h('div', { class: 'row gap6' },
-      h('button', { class: 'btn-ghost', onClick: () => { ui.arkSend = null; ui.sendError = ''; render(); } }, t('back')),
-      ui.busy
-        ? h('button', { class: 'btn-primary grow', disabled: true }, h('span', { class: 'spinner' }))
-        : h('button', { class: 'btn-primary grow', onClick: doArkSend }, t('arkSendBtn'))
-    )
-  );
-}
 
-async function doArkSend() {
-  const a = ui.arkSend;
-  ui.busy = true; ui.sendError = ''; render();
-  try {
-    const mgr = await connectArk();
-    await mgr.send(a.address, a.amountSat);
-    ui.arkSent = { amountSat: a.amountSat };
-    ui.arkSend = null;
-  } catch (e) {
-    ui.sendError = e.message;
-  }
-  ui.busy = false; render();
-}
 
-// A bolt11 Lightning invoice (any network prefix); long ln-prefixed bech32 string.
-function isLnInvoice(t) { t = (t || '').trim(); return /^ln[a-z0-9]+$/i.test(t) && t.length > 50; }
 
-// Quote a submarine swap for a pasted invoice, then show the itemized cost.
-async function startLnSend(invoice) {
-  ui.sendError = ''; ui.lnSend = null; ui.lnSent = null; ui.lnSendBusy = true; render();
-  try { ui.lnSend = await swaps.quoteSubmarine(invoice); }
-  catch (e) { ui.sendError = e.message; }
-  ui.lnSendBusy = false; render();
-}
 
-async function doLnPay() {
-  if (!ui.lnSend) return;
-  ui.sendError = ''; ui.lnSendBusy = true; render();
-  try { const rec = await swaps.fundQuotedSubmarine(ui.lnSend); ui.lnSent = { amount: ui.lnSend.invoiceAmount, id: rec.id }; }
-  catch (e) { ui.sendError = e.message; }
-  ui.lnSendBusy = false; render();
-}
 
-// Lightning send review: itemized cost (amount + Boltz fee + network fee → total),
-// then a success card once funded. The provider pays the invoice after it confirms.
-function lnSendReview() {
-  const u = ' ' + unitLabel();
-  if (ui.lnSent) {
-    return h('div', { class: 'col', style: 'gap:16px' },
-      h('div', { class: 'card col', style: 'align-items:center;text-align:center;gap:8px' },
-        h('div', { class: 'check-badge' }, '⚡'),
-        h('h2', { style: 'margin:0' }, t('lnPaySentTitle')),
-        ui.lnSent.amount ? h('div', { class: 'amount-pos', style: 'font-size:18px' }, fmtAmount(ui.lnSent.amount) + u) : null,
-        h('p', { class: 'muted', style: 'margin:0' }, t('lnPaySentBody'))),
-      h('button', { class: 'btn-primary btn-block', onClick: () => { ui.lnSent = null; ui.lnSend = null; ui.send = blankSend(); ui.tab = 'history'; render(); } }, t('done')));
-  }
-  const q = ui.lnSend;
-  const row = (label, sats, bold) => h('div', { class: 'row', style: 'justify-content:space-between' + (bold ? ';font-weight:600' : '') },
-    h('span', { class: bold ? '' : 'small muted' }, label), h('span', {}, fmtAmount(sats) + u));
-  return h('div', { class: 'col', style: 'gap:12px' },
-    h('div', { class: 'card col', style: 'gap:10px' },
-      h('h3', { style: 'margin:0' }, t('lnPayTitle')),
-      q.invoiceAmount != null ? row(t('lnPayAmount'), q.invoiceAmount) : null,
-      q.boltzFee != null ? row(t('lnPayBoltzFee'), q.boltzFee) : null,
-      row(t('lnPayNetworkFee'), q.networkFee),
-      h('div', { style: 'border-top:1px solid var(--line, #ddd);margin:2px 0' }),
-      row(t('lnPayTotal'), q.total, true)),
-    ui.sendError ? h('div', { class: 'notice err' }, ui.sendError) : null,
-    h('button', { class: 'btn-primary btn-block', disabled: !!ui.lnSendBusy, onClick: doLnPay }, ui.lnSendBusy ? h('span', { class: 'spinner' }) : t('lnPayConfirm')),
-    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.lnSend = null; ui.sendError = ''; render(); } }, t('back')));
-}
 
 function reviewView() {
   const d = ui.draft;
@@ -3900,59 +3429,7 @@ function giftDetailView(g) {
   );
 }
 
-// Detail view for an Ark movement. Off-chain payments have no on-chain txid;
-// we show what exists: amount, time, status, destination (sends), the vtxo id,
-// and — for boards — the funding txid with an explorer link.
-function arkMoveDetailView(m) {
-  const incoming = m.type !== 'send';
-  const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded') : t('sent');
-  const row = (k, v) => h('div', { class: 'row between', style: 'gap:12px' },
-    h('span', { class: 'small muted', style: 'flex-shrink:0' }, k), h('span', { class: 'small', style: 'text-align:right;word-break:break-all' }, v));
-  const url = m.txid ? wallet.api.explorerTx(m.txid) : null;
-  return h(
-    'div',
-    { class: 'card col', style: 'gap:10px' },
-    h('div', { class: 'row gap6', style: 'align-items:center' },
-      h('h3', { style: 'margin:0' }, label),
-      h('span', { class: 'tag' }, 'Ark'),
-      m.status !== 'complete' ? h('span', { class: 'tag pending' }, m.status) : null),
-    h('div', { class: incoming ? 'amount-pos' : 'amount-neg', style: 'font-size:20px' },
-      (incoming ? '+' : '-') + fmtAmount(m.amountSat) + ' ' + unitLabel()),
-    row(t('dateLabel'), new Date(m.ts).toLocaleString()),
-    m.to ? row(t('arkPayTo'), shortAddr(m.to, 16, 12)) : null,
-    m.vtxoId ? row(t('arkVtxoId'), shortTxid(m.vtxoId)) : null,
-    m.detail ? row(t('detailsLabel'), m.detail) : null,
-    m.txid
-      ? h('div', { class: 'col', style: 'gap:6px' },
-          h('div', { class: 'small muted' }, t('transactionId')),
-          h('div', { class: 'addr-box', style: 'width:100%' }, m.txid),
-          h('div', { class: 'row gap6' },
-            copyBtn(m.txid, t('copyTxid')),
-            h('a', { class: 'btn btn-sm', href: url, target: '_blank', rel: 'noopener', onClick: (e) => { e.preventDefault(); openExternal(url); } }, t('viewOnMempool'))))
-      : null,
-    m.to ? copyBtn(m.to, t('copyAddress')) : null,
-    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.arkMoveDetail = null; render(); } }, t('back'))
-  );
-}
 
-// An Ark movement (receive / send / board) as a history row.
-function arkHistoryItem(m) {
-  const incoming = m.type !== 'send';
-  const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded') : t('sent');
-  return h(
-    'div',
-    { class: 'item', style: 'cursor:pointer', onClick: () => { ui.arkMoveDetail = m.id; render(); } },
-    h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, incoming ? '↓' : '↑'),
-    h('div', { class: 'grow' },
-      h('div', { class: 'row gap6' },
-        label,
-        h('span', { class: 'tag' }, 'Ark'),
-        m.status !== 'complete' ? h('span', { class: 'tag pending' }, m.status) : null),
-      h('div', { class: 'small faint' }, timeAgo(m.ts / 1000))),
-    h('div', { style: 'text-align:right' },
-      h('div', { class: incoming ? 'amount-pos' : 'amount-neg' }, (incoming ? '+' : '-') + fmtAmount(m.amountSat)))
-  );
-}
 
 function txHistoryItem(tx) {
   const incoming = tx.net >= 0;
@@ -3995,11 +3472,8 @@ function pager(page, total, onPage) {
 function historyTab() {
   if (ui.bump) return bumpView();
   const txs = wallet.history; // BIP84 txs + silent-payment receipts, newest first
-  if (ui.arkMoveDetail) {
-    const m = ark && ark.state ? ark.movements().find((x) => x.id === ui.arkMoveDetail) : null;
-    if (m) return arkMoveDetailView(m);
-    ui.arkMoveDetail = null;
-  }
+  const featDetail = featureHook('historyDetail');
+  if (featDetail) return featDetail;
   if (ui.giftDetail) {
     const g = wallet.loaded
       ? [...wallet.outstandingGifts(), ...wallet.claimedGifts().map((c) => ({ ...c, claimed: true }))]
@@ -4041,12 +3515,10 @@ function historyTab() {
   const gifts = wallet.loaded
     ? [...wallet.outstandingGifts(), ...claimed.filter((c) => !(c.claimTxid && txids.has(c.claimTxid))).map((c) => ({ ...c, claimed: true }))]
     : [];
-  // Ark receives/sends/boards interleave with on-chain txs by time. (Refreshes
-  // are internal churn — they stay in the Settings activity list only.)
-  const arkMoves = ark && ark.state
-    ? ark.movements().filter((m) => ['receive', 'send', 'board'].includes(m.type) && m.status === 'complete')
-    : [];
-  if (!txs.length && !gifts.length && !arkMoves.length)
+  // Feature movements (Ark receives/sends/boards, ...) interleave with
+  // on-chain txs by time.
+  const featEntries = featureAll('historyEntries', txs);
+  if (!txs.length && !gifts.length && !featEntries.length)
     return h('div', { class: 'card' }, h('p', { class: 'muted center', style: 'margin:0' }, t('noTxYet')));
 
   // Gifts, transactions, and Ark movements merge into one timeline (claimed
@@ -4055,7 +3527,7 @@ function historyTab() {
   const giftTime = (g) => (recs[g.id] && recs[g.id].created) || g.created || Date.now();
   const entries = [
     ...txs.map((tx) => ({ time: tx.confirmed ? (tx.blockTime || 0) * 1000 : Date.now(), render: () => txHistoryItem(tx) })),
-    ...arkMoves.map((m) => ({ time: m.ts, render: () => arkHistoryItem(m) })),
+    ...featEntries,
     ...gifts.map((g) => ({ time: giftTime(g), render: () => giftHistoryItem(g) })),
   ].sort((a, b) => b.time - a.time);
   const txPages = Math.ceil(entries.length / PAGE_SIZE);
@@ -4103,37 +3575,9 @@ async function openTx(txid) {
   } catch {}
 }
 
-// Lightning-swap context shown inside a tx's detail screen (the on-chain tx is the
-// swap's lockup funding, claim, or refund). Replaces the old standalone Swap list.
-function swapTxDetailSection(swap, tx) {
-  const u = ' ' + unitLabel();
-  const line = (k, v) => h('div', { class: 'line' }, h('span', { class: 'k' }, k), h('span', { class: 'v' }, v));
-  const head = (txt) => h('div', { style: 'font-weight:600;margin:12px 0 2px' }, txt);
-  if (swap.refundTxid === tx.txid)
-    return h('div', { class: 'summary col', style: 'gap:0' }, head('↩ Lightning swap refund'), line(t('status'), 'Refunded ✓'));
-  if (swap.kind === 'submarine') {
-    const fee = (swap.expectedAmount || 0) - (swap.invoiceAmount || 0);
-    const st = swap.status === 'success' ? 'Invoice paid ✓'
-      : swap.status === 'refundable' ? 'Payment failed — refundable'
-      : swap.status === 'refunded' ? 'Refunded' : 'Paying…';
-    return h('div', { class: 'summary col', style: 'gap:0' },
-      head('⚡ Paid over Lightning'),
-      swap.invoiceAmount != null ? line('Invoice', fmtAmount(swap.invoiceAmount) + u) : null,
-      fee > 0 ? line('Swap fee', fmtAmount(fee) + u) : null,
-      line(t('status'), st),
-      swap.status === 'refundable'
-        ? h('button', { class: 'btn-sm btn-block', style: 'margin-top:8px', disabled: !!ui.swapBusy, onClick: () => doRefund(swap.id) }, 'Refund on-chain')
-        : null);
-  }
-  // reverse swap claim
-  return h('div', { class: 'summary col', style: 'gap:0' },
-    head('⚡ Received over Lightning'),
-    line(t('status'), swap.status === 'claimed' ? 'Settled ✓' : swap.status));
-}
 
 function txDetailView(tx) {
   const incoming = tx.net >= 0;
-  const swap = swaps.findByTxid(tx.txid); // this tx's swap (Lightning), if any
   const gift = wallet.loaded ? wallet.claimedGifts().find((c) => c.claimTxid === tx.txid) : null;
   const line = (k, v) => h('div', { class: 'line' }, h('span', { class: 'k' }, k), h('span', { class: 'v' }, v));
   return h(
@@ -4153,7 +3597,7 @@ function txDetailView(tx) {
       tx.confirmed && tx.blockTime ? line(t('date'), new Date(tx.blockTime * 1000).toLocaleString()) : null,
       tx.fee ? line(t('networkFee'), fmtAmount(tx.fee) + ' ' + unitLabel()) : null
     ),
-    swap ? swapTxDetailSection(swap, tx) : null,
+    featureHook('txDetailSection', tx),
     gift
       ? h('div', { class: 'summary col', style: 'gap:0' },
           h('div', { style: 'font-weight:600;margin:12px 0 2px' }, '🎁 ' + t('giftClaimedContext')),
@@ -4223,6 +3667,16 @@ async function importSnapshotFile(e) {
 
 // ================================================================ start
 // Load the active language's strings (English is inline; others are fetched),
+// ---- feature registry -------------------------------------------------
+// Optional features receive the app context and plug into fixed seams. This
+// sits just before boot so every helper it captures is defined; the hooks are
+// only invoked at runtime (first render happens after loadLocale below).
+const ctx = {
+  h, ui, render, wallet, toast, copyBtn, pasteBtn, blankSend, goBack, openExternal,
+  fmtAmount, unitLabel, unitTag, parseAmount, getUnit: () => unit,
+};
+const FEATURES = [swapsFeature, arkFeature, spFeature].map((f) => f(ctx));
+
 // apply text direction, then restore a wallet left open in this tab — otherwise
 // show the unlock screen.
 applyDir();
