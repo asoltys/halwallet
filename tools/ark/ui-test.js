@@ -146,12 +146,17 @@ try {
   sh(`${BCLI} sendtoaddress ${onchainAddr} 0.001`);
   mine(1);
   check('onchain funds arrive', await waitText('100,000', 30000));
-
-  await clickText('.tabs button', 'Settings');
-  await sleep(300);
+  // the on-chain receive celebration takes over the tab — tap through it
+  if ((await bodyText()).toLowerCase().includes('payment received')) {
+    await clickText('.card', 'Payment received');
+    await sleep(400);
+  }
+  await page.select('select', 'ark');
+  await sleep(400);
   const preBoard = await labeledNumber('ark balance');
   const boardInput = await page.evaluateHandle(() =>
     [...document.querySelectorAll('input')].find((i) => (i.placeholder || '').toLowerCase().startsWith('board amount')));
+  check('board form on receive/ark', !!(await boardInput.asElement()));
   await boardInput.asElement().type('30000');
   await clickText('button', 'Board');
   check('board started', await waitText('Boarding', 20000));
@@ -161,6 +166,8 @@ try {
 
   // --- refresh / consolidate ---
   console.log('\n[5] refresh');
+  await clickText('.tabs button', 'Settings');
+  await sleep(300);
   await clickText('button', 'Refresh / consolidate');
   check('refresh submitted', await waitText('Refresh submitted', 10000));
   const done = await (async () => {

@@ -1889,7 +1889,6 @@ function arkCard() {
         : h('button', { class: 'btn-ghost btn-block', onClick: () => connectArk().catch(() => {}) }, t('arkConnectBtn')));
   }
 
-  const bal = ark.balance();
   const spendables = ark.vtxos().filter((v) => v.state === 'spendable');
   const pendingActions = ark.pendingActions();
   const row = (k, v) => h('div', { class: 'row between' }, h('span', { class: 'small muted' }, k), h('span', { class: 'small' }, v));
@@ -1898,22 +1897,10 @@ function arkCard() {
     'div',
     { class: 'card col', style: 'gap:10px' },
     ...head,
-    row(t('arkBalance'), fmtAmount(bal.spendableSat) + ' ' + unitLabel() + (bal.pendingSat ? ` (+${fmtAmount(bal.pendingSat)} ${t('pending').toLowerCase()})` : '')),
     spendables.length ? row(t('arkVtxos'), String(spendables.length)) : null,
     pendingActions.length
       ? h('div', { class: 'small muted' }, t('arkPendingActions', { n: pendingActions.length }) + ' — ' + pendingActions.map((a) => `${a.type}:${a.step}`).join(', '))
       : null,
-
-    // Board: move on-chain sats into the Ark (one on-chain tx, then confirms).
-    h('div', { class: 'input-group' },
-      h('input', {
-        type: 'number', inputmode: 'numeric', min: '0',
-        placeholder: t('arkBoardPlaceholder', { n: (ark.info.minBoardAmountSat || 0).toLocaleString() }),
-        value: ui.arkBoardAmt || '',
-        onInput: (e) => { ui.arkBoardAmt = e.target.value; },
-      }),
-      h('button', { class: 'btn-sm', disabled: !!ui.arkBusy, onClick: doArkBoard }, ui.arkBusy === 'board' ? h('span', { class: 'spinner sm' }) : t('arkBoardBtn'))),
-
     spendables.length >= 1
       ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkRefresh },
           ui.arkBusy === 'refresh' ? h('span', { class: 'spinner sm' }) : t('arkRefreshBtn', { n: spendables.length }))
@@ -2884,6 +2871,8 @@ function receiveTab() {
       );
     }
     const arkAddr = ark.address();
+    const minBoard = ark.info.minBoardAmountSat || 0;
+    const canBoard = wallet.spendable >= minBoard;
     return h(
       'div',
       { class: 'card col', style: 'align-items:center;gap:14px' },
@@ -2891,7 +2880,23 @@ function receiveTab() {
       h('p', { class: 'small muted', style: 'margin:0;text-align:center' }, t('arkReceiveIntro')),
       h('div', { html: qrSvg(arkAddr) }),
       h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, arkAddr),
-      copyBtn(arkAddr, t('copyAddress'))
+      copyBtn(arkAddr, t('copyAddress')),
+      // Board: fund your Ark balance from this wallet's on-chain coins.
+      h('div', { class: 'col', style: 'width:100%;gap:8px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:14px' },
+        h('div', { class: 'small muted', style: 'text-align:center' }, t('arkBoardIntro')),
+        h('div', { class: 'input-group' },
+          h('input', {
+            type: 'number', inputmode: 'numeric', min: '0',
+            placeholder: t('arkBoardPlaceholder', { n: minBoard.toLocaleString() }),
+            value: ui.arkBoardAmt || '',
+            onInput: (e) => { ui.arkBoardAmt = e.target.value; },
+          }),
+          h('button', { class: 'btn-sm', disabled: !!ui.arkBusy || !canBoard, onClick: doArkBoard },
+            ui.arkBusy === 'board' ? h('span', { class: 'spinner sm' }) : t('arkBoardBtn'))),
+        canBoard
+          ? h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardAvailable', { n: fmtAmount(wallet.spendable) + ' ' + unitLabel() }))
+          : h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardNoFunds', { n: minBoard.toLocaleString() })),
+        ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null)
     );
   }
   const addr = mode === 'sp' ? spAddr : fresh.address;
