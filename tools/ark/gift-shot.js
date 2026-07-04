@@ -83,6 +83,13 @@ await waitText('Claim it', 15000);
 await sleep(400);
 await page.screenshot({ path: '/tmp/gift-claim-existing.png' });
 console.log('claim copy:', await page.evaluate(() => [...document.querySelectorAll('p')].map((e) => e.textContent).find((x) => x.includes('Claim it'))));
+
+// claim it — the celebration should be instant (no scan wait)
+await clickText('button', 'Claim it');
+const t0 = Date.now();
+const celebrated = await waitText('Payment received', 10000);
+console.log('celebration:', celebrated, 'after', Date.now() - t0, 'ms');
+await page.screenshot({ path: '/tmp/gift-claimed.png' });
 console.log('done');
 await browser.close();
 dev.kill();

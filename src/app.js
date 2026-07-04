@@ -2246,9 +2246,19 @@ async function doClaim() {
     } else {
       ui.screen = 'wallet'; // existing wallet — straight into it, no new seed to back up
       ui.claimStep = null;
-      toast(t('giftClaimedToast'));
+      ui.tab = 'receive';
+      ui.giftJustClaimed = claim.amount; // celebration shows instantly, no scan wait
     }
-    wallet.scan().catch(() => {});
+    wallet.scan().then(() => {
+      // The claim credit advances the fresh receive index in the background;
+      // ack it so the index-based celebration doesn't fire a second time
+      // behind the instant one we're already showing.
+      if (ui.giftJustClaimed != null) {
+        ui.receiveSeenIndex = wallet.nextReceiveIndex;
+        wallet.setReceiveAck(wallet.nextReceiveIndex);
+        render();
+      }
+    }).catch(() => {});
   } catch (e) {
     // Broadcast failed — most likely someone claimed it in the race window.
     // Re-check the funding coin and, if spent, show the "already claimed" screen.
@@ -2810,6 +2820,29 @@ function hasRecentIncoming() {
 
 // ---------------------------------------------------------------- Receive
 function receiveTab() {
+  // A gift was just claimed into this wallet — celebrate immediately (the
+  // background scan credits the coin and advances the address meanwhile).
+  if (ui.giftJustClaimed != null) {
+    const amt = ui.giftJustClaimed;
+    return h(
+      'div',
+      {
+        class: 'card col',
+        style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
+        onClick: () => {
+          ui.giftJustClaimed = null;
+          ui.receiveSeenIndex = wallet.nextReceiveIndex;
+          wallet.setReceiveAck(wallet.nextReceiveIndex);
+          render();
+        },
+      },
+      h('div', { class: 'check-badge' }, '✓'),
+      h('h2', { style: 'margin:0' }, t('paymentReceived')),
+      amt ? h('div', { class: 'amount-pos', style: 'font-size:18px' }, '+' + fmtAmount(amt) + ' ' + unitLabel()) : null,
+      h('div', { class: 'small muted' }, t('tapToProceed'))
+    );
+  }
+
   // A board just broadcast — show its success screen until dismissed.
   if (ui.arkBoarded) {
     const b = ui.arkBoarded;
