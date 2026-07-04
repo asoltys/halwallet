@@ -2438,7 +2438,9 @@ function claimScreen() {
       h('div', { class: 'amt', style: 'font-size:30px' },
         h('span', { class: 'amount-pos' }, fmtAmount(total)), ' ', unitTag('unit')
       ),
-      h('p', { class: 'muted', style: 'margin:0' }, t('claimBody'))
+      h('p', { class: 'muted', style: 'margin:0' },
+        (() => { const acc = activeAccount(); // claiming into an existing wallet vs a brand-new one
+          return acc && !acc.provisional ? t('claimBodyExisting', { name: acc.label }) : t('claimBody'); })())
     ),
     ui.claimError && h('div', { class: 'notice err' }, ui.claimError),
     ui.busy || ui.claimChecking

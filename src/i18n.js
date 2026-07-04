@@ -288,6 +288,7 @@ const STR = {
     giftRevoked: 'Gift revoked',
     copyLink: 'Copy link',
     claimBody: 'Claim it into a brand-new wallet that only you control.',
+    claimBodyExisting: 'Claim it into your wallet \u201c{name}\u201d.',
     claimIntoPrompt: 'Choose where to receive it.',
     claimNewWallet: 'Receive into a new wallet',
     claimIntoExisting: 'Receive into one of your wallets:',

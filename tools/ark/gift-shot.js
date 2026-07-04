@@ -77,6 +77,12 @@ const shown = await waitText('Choose where', 15000);
 console.log('chooser shown:', shown);
 await sleep(400);
 await page.screenshot({ path: '/tmp/gift-choose.png' });
+// pick the existing wallet and capture the claim screen copy
+await clickText('button', 'Wallet 1');
+await waitText('Claim it', 15000);
+await sleep(400);
+await page.screenshot({ path: '/tmp/gift-claim-existing.png' });
+console.log('claim copy:', await page.evaluate(() => [...document.querySelectorAll('p')].map((e) => e.textContent).find((x) => x.includes('Claim it'))));
 console.log('done');
 await browser.close();
 dev.kill();
