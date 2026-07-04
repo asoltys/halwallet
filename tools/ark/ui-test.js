@@ -159,7 +159,11 @@ try {
   check('board form on receive/ark', !!(await boardInput.asElement()));
   await boardInput.asElement().type('30000');
   await clickText('button', 'Board');
-  check('board started', await waitText('Boarding', 20000));
+  check('boarding success screen', await waitText('Boarding!', 20000));
+  check('boarding txid link shown', await page.evaluate(() =>
+    !!document.querySelector('.addr-box') && /^[0-9a-f]{64}$/.test(document.querySelector('.addr-box').textContent.trim())));
+  await clickText('button.btn-primary', 'Done');
+  await sleep(300);
   mine(2);
   check('board vtxo lands (+29,670)', await waitLabeledNumber('ark balance', preBoard + 29670, 40000),
     String(await labeledNumber('ark balance')));

@@ -1916,14 +1916,14 @@ async function doArkBoard() {
   if (!sats) return;
   ui.arkBusy = 'board'; ui.arkError = ''; render();
   try {
-    const { actionId, fundingAddress } = await ark.startBoard(sats);
+    const { actionId, fundingAddress, feeSat } = await ark.startBoard(sats);
     const feeRate = (wallet.feeRates && wallet.feeRates.halfHourFee) || 5;
     const draft = wallet.buildTx({ recipients: [{ address: fundingAddress, amount: sats }], feeRate, noSort: true });
     const hexTx = wallet.sign(draft.tx);
     const txid = await wallet.broadcast(hexTx);
     await ark.completeBoard(actionId, txid);
     ui.arkBoardAmt = '';
-    toast(t('arkBoardStarted'), 5000);
+    ui.arkBoarded = { txid, netSat: sats - feeSat };
     wallet.scan().catch(() => {});
   } catch (e) {
     ui.arkError = e.message;
@@ -2787,6 +2787,25 @@ function hasRecentIncoming() {
 
 // ---------------------------------------------------------------- Receive
 function receiveTab() {
+  // A board just broadcast — show its success screen until dismissed.
+  if (ui.arkBoarded) {
+    const b = ui.arkBoarded;
+    const url = wallet.api.explorerTx(b.txid);
+    return h(
+      'div',
+      { class: 'card col', style: 'align-items:center;text-align:center;gap:14px;padding:40px 20px' },
+      h('div', { class: 'check-badge' }, '✓'),
+      h('h2', { style: 'margin:0' }, t('arkBoardedTitle')),
+      h('div', { class: 'amount-pos', style: 'font-size:18px' }, '+' + fmtAmount(b.netSat) + ' ' + unitLabel()),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('arkBoardedNote')),
+      h('div', { class: 'addr-box', style: 'width:100%' }, b.txid),
+      h('div', { class: 'row gap6' },
+        copyBtn(b.txid, t('copyTxid')),
+        h('a', { class: 'btn btn-sm', href: url, target: '_blank', rel: 'noopener', onClick: (e) => { e.preventDefault(); openExternal(url); } }, t('viewOnMempool'))),
+      h('button', { class: 'btn-primary btn-block', onClick: () => { ui.arkBoarded = null; render(); } }, t('done'))
+    );
+  }
+
   // An Ark payment landed — same celebration as an on-chain receive, dismissed
   // with a tap (the ack persists in the ark state so it shows exactly once).
   const arkUnseen = ark && ark.state ? ark.unseenReceives() : [];
