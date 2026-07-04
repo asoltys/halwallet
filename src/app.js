@@ -446,7 +446,7 @@ function goBack(toParent) {
 
 // ---------------------------------------------------------------- utilities
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 1600) {
   let t = document.querySelector('.toast');
   if (!t) {
     t = h('div', { class: 'toast' });
@@ -455,7 +455,7 @@ function toast(msg) {
   t.textContent = msg;
   requestAnimationFrame(() => t.classList.add('show'));
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 1600);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 
 async function copy(text) {
@@ -1923,7 +1923,7 @@ async function doArkBoard() {
     const txid = await wallet.broadcast(hexTx);
     await ark.completeBoard(actionId, txid);
     ui.arkBoardAmt = '';
-    toast(t('arkBoardStarted'));
+    toast(t('arkBoardStarted'), 5000);
     wallet.scan().catch(() => {});
   } catch (e) {
     ui.arkError = e.message;
@@ -1935,7 +1935,7 @@ async function doArkRefresh() {
   ui.arkBusy = 'refresh'; ui.arkError = ''; render();
   try {
     await ark.refresh();
-    toast(t('arkRefreshStarted'));
+    toast(t('arkRefreshStarted'), 5000);
   } catch (e) {
     ui.arkError = e.message;
   }
