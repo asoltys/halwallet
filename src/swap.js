@@ -25,7 +25,7 @@ export const REGTEST = { ...btc.TEST_NETWORK, bech32: 'bcrt' };
 // mutinynet is a signet — same address params as testnet (tb1…), matching Boltz's
 // bitcoinSignet. Without this entry netFor() falls back to mainnet and the swap
 // P2TR address is computed wrong → "lockup address mismatch".
-const NETS = { mainnet: btc.NETWORK, testnet: btc.TEST_NETWORK, mutinynet: btc.TEST_NETWORK, regtest: REGTEST };
+const NETS = { mainnet: btc.NETWORK, testnet: btc.TEST_NETWORK, signet: btc.TEST_NETWORK, mutinynet: btc.TEST_NETWORK, regtest: REGTEST };
 export const netFor = (name) => NETS[name] || btc.NETWORK;
 
 const TAP_LEAF_VERSION = 0xc0;

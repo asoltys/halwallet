@@ -55,8 +55,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const NETS = {
   mainnet: { net: btc.NETWORK, coin: 0 },
   testnet: { net: btc.TEST_NETWORK, coin: 1 },
-  // mutinynet is a signet — same address format / version bytes / coin type as
-  // testnet (`tb` HRP); only the chain + servers differ.
+  // signet + mutinynet share testnet's address format / version bytes / coin
+  // type (`tb` HRP); only the chain + servers differ.
+  signet: { net: btc.TEST_NETWORK, coin: 1 },
   mutinynet: { net: btc.TEST_NETWORK, coin: 1 },
   // Regtest shares testnet's version bytes / coin type; only the bech32 HRP
   // differs (`bcrt`). @scure/btc-signer derives addresses + validates from this.

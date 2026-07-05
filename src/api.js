@@ -32,6 +32,7 @@ const NETWORK_KEY = 'btc-wallet-network';
 export const NETWORKS = [
   { id: 'mainnet', label: 'Mainnet' },
   { id: 'testnet', label: 'Testnet' },
+  { id: 'signet', label: 'Signet' },
   { id: 'mutinynet', label: 'Mutinynet' },
   { id: 'regtest', label: 'Regtest' },
 ];
@@ -71,6 +72,11 @@ const DATA_SOURCES_BY_NET = {
     { id: 'blockstreamel', label: 'blockstream.info (Electrum)', type: 'electrum', url: 'wss://blockstream.info/testnet/electrum-websocket/' },
     { id: 'custom', label: 'Custom', type: 'auto', url: '' },
   ],
+  signet: [
+    { id: 'mempool', label: 'mempool.space', type: 'esplora', base: 'https://mempool.space/signet/api', web: 'https://mempool.space/signet', kind: 'mempool' },
+    { id: 'second', label: 'esplora.signet.2nd.dev', type: 'esplora', base: 'https://esplora.signet.2nd.dev', web: 'https://mempool.space/signet', kind: 'esplora' },
+    { id: 'custom', label: 'Custom', type: 'auto', url: '' },
+  ],
   mutinynet: [
     { id: 'mutinynet', label: 'mutinynet.com', type: 'esplora', base: 'https://mutinynet.com/api', web: 'https://mutinynet.com', kind: 'esplora' },
     { id: 'custom', label: 'Custom', type: 'auto', url: '' },
@@ -81,7 +87,7 @@ const DATA_SOURCES_BY_NET = {
     { id: 'custom', label: 'Custom', type: 'auto', url: '' },
   ],
 };
-const DATA_SOURCE_DEFAULT = { mainnet: 'coinos', testnet: 'mempool', mutinynet: 'mutinynet', regtest: 'local' };
+const DATA_SOURCE_DEFAULT = { mainnet: 'coinos', testnet: 'mempool', signet: 'mempool', mutinynet: 'mutinynet', regtest: 'local' };
 export function dataSources(net = getNetwork()) { return DATA_SOURCES_BY_NET[net] || DATA_SOURCES_BY_NET.mainnet; }
 const detectType = (url) => (/^wss?:\/\//i.test((url || '').trim()) ? 'electrum' : 'esplora');
 
@@ -90,6 +96,7 @@ const detectType = (url) => (/^wss?:\/\//i.test((url || '').trim()) ? 'electrum'
 const NET_DEFAULTS = {
   mainnet: { mode: 'electrum', electrum: 'coinos', explorer: 'mempool' },
   testnet: { mode: 'esplora', electrum: 'blockstreamel', explorer: 'mempool' },
+  signet: { mode: 'esplora', electrum: 'custom', explorer: 'mempool' },
   mutinynet: { mode: 'esplora', electrum: 'custom', explorer: 'mutinynet' },
   regtest: { mode: 'electrum', electrum: 'local', explorer: 'localesplora' },
 };
@@ -168,7 +175,8 @@ export function getBoltzProviderId() {
   const net = getNetwork(); // default per network
   // Mainnet defaults to public Boltz Exchange until our own swap.coinos.io
   // node ('coinos') has channel liquidity; flip this to 'coinos' once funded.
-  return net === 'regtest' ? 'local' : net === 'mutinynet' ? 'staging' : 'boltz';
+  // No Boltz-compatible instance runs on signet, so it defaults to custom/empty.
+  return net === 'regtest' ? 'local' : net === 'mutinynet' ? 'staging' : net === 'signet' ? 'custom' : 'boltz';
 }
 export function setBoltzProviderId(id) { try { localStorage.setItem(BOLTZ_PROVIDER_KEY, id); } catch {} }
 
@@ -198,6 +206,11 @@ const ARK_PRESETS_BY_NET = {
     { id: 'off', label: 'Off', ark: '', esplora: '' },
     { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
   ],
+  signet: [
+    { id: 'off', label: 'Off', ark: '', esplora: '' },
+    { id: 'second', label: 'Second (ark.signet.2nd.dev)', ark: 'https://ark.signet.2nd.dev', esplora: 'https://esplora.signet.2nd.dev' },
+    { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
+  ],
   mutinynet: [
     { id: 'off', label: 'Off', ark: '', esplora: '' },
     { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
@@ -210,7 +223,7 @@ const ARK_PRESETS_BY_NET = {
 };
 // On by default where a known-good server exists; the Settings card can
 // always turn it off.
-const ARK_DEFAULT = { mainnet: 'second', testnet: 'off', mutinynet: 'off', regtest: 'local' };
+const ARK_DEFAULT = { mainnet: 'second', testnet: 'off', signet: 'second', mutinynet: 'off', regtest: 'local' };
 const ARK_PROVIDER_KEY = 'btc-wallet-ark-provider'; // selected preset id, per network
 const ARK_CUSTOM_KEY = 'btc-wallet-ark-custom';     // { ark, esplora } for custom, per network
 
@@ -251,10 +264,11 @@ export function getArkConfig(net = getNetwork()) {
 const SP_INDEXER_PRESETS_BY_NET = {
   mainnet: [{ id: 'coinos', label: 'coinos', url: 'https://sp.coinos.io' }, { id: 'custom', label: 'Custom', url: '' }],
   testnet: [{ id: 'custom', label: 'Custom', url: '' }],
+  signet: [{ id: 'custom', label: 'Custom', url: '' }],
   mutinynet: [{ id: 'custom', label: 'Custom', url: '' }],
   regtest: [{ id: 'local', label: 'Local (proxied)', url: '/sp' }, { id: 'custom', label: 'Custom', url: '' }],
 };
-const SP_INDEXER_DEFAULT = { mainnet: 'coinos', testnet: 'custom', mutinynet: 'custom', regtest: 'local' };
+const SP_INDEXER_DEFAULT = { mainnet: 'coinos', testnet: 'custom', signet: 'custom', mutinynet: 'custom', regtest: 'local' };
 const SP_INDEXER_KEY = 'btc-wallet-sp-indexer';
 export function spIndexerPresets(net = getNetwork()) { return SP_INDEXER_PRESETS_BY_NET[net] || SP_INDEXER_PRESETS_BY_NET.mainnet; }
 export function getSpIndexerConfig(net = getNetwork()) {
