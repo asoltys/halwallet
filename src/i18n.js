@@ -364,6 +364,8 @@ const STR = {
     arkConnectBtn: 'Connect',
     arkNotConnected: 'Ark is not connected — pick a server in Settings.',
     arkBalance: 'Ark balance',
+    arkBoarding: 'Ark (boarding…)',
+    arkBoardHistory: 'Ark board',
     arkVtxos: 'Coins (VTXOs)',
     arkPendingActions: '{n} operation(s) in progress',
     arkBoardPlaceholder: 'Board amount (min {n} sats)',

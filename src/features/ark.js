@@ -453,8 +453,31 @@ export function arkFeature(ctx) {
     },
     balanceLines() {
       const b = arkBalance();
-      if (!b || (b.spendableSat + b.pendingSat) <= 0) return [];
-      return [{ label: t('arkBalance'), sat: b.spendableSat + b.pendingSat }];
+      if (!b) return [];
+      const lines = [];
+      if (b.spendableSat + b.pendingSat > 0) lines.push({ label: t('arkBalance'), sat: b.spendableSat + b.pendingSat });
+      // A board in flight: the sats already left the on-chain balance, so show
+      // where they went instead of having them silently disappear.
+      if (b.boardingSat > 0) lines.push({ label: t('arkBoarding'), sat: b.boardingSat });
+      return lines;
+    },
+    decorateTxRow(tx) {
+      if (tx.net >= 0 || !ark || !ark.state) return null;
+      const a = ark.state.actions.find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
+      if (!a) return null;
+      return { icon: '⚔', label: h('span', {}, t('arkBoardHistory')) };
+    },
+    txDetailSection(tx) {
+      if (!ark || !ark.state) return null;
+      const a = ark.state.actions.find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
+      if (!a) return null;
+      const done = a.step === 'done';
+      return h('div', { class: 'summary col', style: 'gap:0' },
+        h('div', { style: 'font-weight:600;margin:12px 0 2px' }, '⚔ ' + t('arkBoardHistory')),
+        h('div', { class: 'line' },
+          h('span', { class: 'k' }, t('arkBalance')),
+          h('span', { class: 'v' }, '+' + fmtAmount(a.amountSat - a.feeSat) + ' ' + unitLabel())),
+        done ? null : h('div', { class: 'small muted', style: 'margin-top:2px' }, t('arkBoardedNote')));
     },
     settingsCards() { return [arkCard()]; },
   };

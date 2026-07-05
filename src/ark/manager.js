@@ -122,7 +122,13 @@ export class ArkManager {
 
   balance() {
     const sum = (st) => this.state.vtxos.filter((v) => v.state === st).reduce((n, v) => n + v.amountSat, 0);
-    return { spendableSat: sum('spendable'), pendingSat: sum('pending') };
+    // Boards whose funding tx is broadcast but whose vtxo isn't registered yet:
+    // the sats have left the on-chain balance, so surface them here instead of
+    // letting them vanish until the board completes.
+    const boardingSat = this.state.actions
+      .filter((a) => a.type === 'board' && a.fundingTxid && !['done', 'failed'].includes(a.step))
+      .reduce((n, a) => n + (a.amountSat - a.feeSat), 0);
+    return { spendableSat: sum('spendable'), pendingSat: sum('pending'), boardingSat };
   }
 
   // Receives newer than the last acknowledgement — the UI's "Payment
