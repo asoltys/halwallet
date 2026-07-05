@@ -21,8 +21,10 @@ const u64le = (n) => {
   return b;
 };
 
-export const boardFee = (amountSat, fees) =>
-  Math.max(fees.minFeeSat, fees.baseFeeSat + Math.floor((amountSat * fees.ppm) / 1_000_000));
+// Fee fields are absent when zero (proto3) — e.g. Second's signet server
+// boards for free — so every term defaults to 0.
+export const boardFee = (amountSat, fees = {}) =>
+  Math.max(fees.minFeeSat || 0, (fees.baseFeeSat || 0) + Math.floor((amountSat * (fees.ppm || 0)) / 1_000_000));
 
 export const p2trAddress = (programXOnly, hrp = 'bcrt') =>
   bech32m.encode(hrp, [1, ...bech32m.toWords(programXOnly)], 1023);

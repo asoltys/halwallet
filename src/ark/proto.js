@@ -363,7 +363,8 @@ export function decodeVtxo(bytes) {
 
 export async function getArkInfo(ark) {
   const data = await grpcCall(ark, 'bark_server.ArkService/GetArkInfo', new Uint8Array(0));
-  const info = {};
+  // Fee schedules a server never sends (or sends all-zero) mean "free".
+  const info = { boardFees: {}, refreshFees: { baseFeeSat: 0, ppmExpiryTable: [] } };
   for (const { field, value } of pbFields(data)) {
     if (field === 1) info.network = td.decode(value);
     if (field === 2) info.serverPubkey = hex.encode(value);
@@ -444,6 +445,24 @@ export function decodeMailboxMessage(value) {
     }
   }
   return msg;
+}
+
+// VtxoSpendState values from GetVtxoStatus (bark_server.proto).
+export const VTXO_STATE_SPENDABLE = 1;
+export const VTXO_STATE_SPENT = 2;
+
+const VTXO_STATUS_PREFIX = te.encode('Ark VTXO status query challenge '); // 32 bytes
+
+// Ask the server for a vtxo's authoritative spend state. The attestation is a
+// BIP340 signature with the vtxo's user key, so only the owner can query.
+export async function getVtxoStatus(ark, vtxoIdRaw /* 36B outpoint */, vtxoPrivkey) {
+  const attestation = schnorr.sign(sha256(concatBytes(VTXO_STATUS_PREFIX, vtxoIdRaw)), vtxoPrivkey);
+  const w = pbWriter();
+  w.bytesField(1, vtxoIdRaw);
+  w.bytesField(2, attestation);
+  const data = await grpcCall(ark, 'bark_server.ArkService/GetVtxoStatus', w.finish());
+  for (const { field, value } of pbFields(data)) if (field === 1) return Number(value);
+  return 0; // proto3 omits a zero enum: UNSPECIFIED
 }
 
 // Build an authenticated MailboxRequest (shared by read + subscribe).

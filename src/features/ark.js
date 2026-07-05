@@ -104,6 +104,17 @@ export function arkFeature(ctx) {
     return ark.balance();
   }
 
+  // An ark address in the send form signals a send is coming: verify our
+  // spendable vtxos against the server now, so a stale one (same seed active
+  // elsewhere, restored state) is dropped before coin selection instead of
+  // failing at cosign time. Throttled — this fires from the render path.
+  let arkReconciledAt = 0;
+  function maybeReconcile() {
+    if (Date.now() - arkReconciledAt < 30_000) return;
+    arkReconciledAt = Date.now();
+    connectArk().then((mgr) => mgr.reconcile()).catch(() => {});
+  }
+
   function arkSendReview() {
     if (ui.arkSent) {
       return h(
@@ -408,7 +419,9 @@ export function arkFeature(ctx) {
     isSendDest(a) { return isArkAddress(a) && arkAvailable(); },
     hideSendControls(a) { return isArkAddress(a); },
     sendFormNote(a) {
-      return isArkAddress(a) ? h('div', { class: 'small faint' }, t('arkSendHint')) : null;
+      if (!isArkAddress(a)) return null;
+      maybeReconcile();
+      return h('div', { class: 'small faint' }, t('arkSendHint'));
     },
     interceptReview(s) {
       if (s.recipients.length === 1 && isArkAddress(s.recipients[0].address)) {

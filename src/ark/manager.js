@@ -21,6 +21,7 @@ import {
   getArkInfo, handshake, encodeAddress, decodeAddress, blindMailboxId,
   readMailbox, decodeVtxo, arkIdFromServerPubkey, GrpcError,
   grpcStream, decodeMailboxMessage, mailboxRequestBytes,
+  getVtxoStatus, VTXO_STATE_SPENT,
 } from './proto.js';
 import {
   buildArkoorSend, cosignWithServer, buildSignedVtxoBytes,
@@ -214,6 +215,27 @@ export class ArkManager {
     this._streamAbort = null;
   }
 
+  // Check every locally-spendable vtxo against the server's authoritative
+  // off-chain ledger and flip the ones it reports spent (state drift from the
+  // same seed active elsewhere, or a restored state snapshot). Trust flows one
+  // way — spendable -> spent — so a lying server can hide balance from the UI
+  // but never mint it, and the signed bytes stay held for unilateral exit.
+  async reconcile() {
+    const candidates = this.state.vtxos.filter((v) => v.state === 'spendable');
+    const states = await Promise.all(candidates.map((v) =>
+      getVtxoStatus(this.arkUrl, this._decoded(v).point.raw, this._keyForVtxo(v).privkey)
+        .catch(() => null))); // unreachable/erroring server changes nothing
+    let changed = false;
+    candidates.forEach((v, i) => {
+      if (states[i] !== VTXO_STATE_SPENT) return;
+      v.state = 'spent';
+      this._movement({ type: 'reconcile', amountSat: v.amountSat, status: 'complete', vtxoId: v.id, detail: 'spent elsewhere (server vtxo status)' });
+      changed = true;
+    });
+    if (changed) this._save();
+    return changed;
+  }
+
   async resumePending() {
     for (const action of this.pendingActions()) {
       try {
@@ -284,7 +306,7 @@ export class ArkManager {
       try {
         sigs = await cosignWithServer(this.arkUrl, build, { input, outputs, vtxoKeys: keys, serverPubkey: this.serverPub });
       } catch (e) {
-        if (e instanceof GrpcError && /already spent/i.test(e.message)) {
+        if (e instanceof GrpcError && /already spent|not spendable/i.test(e.message)) {
           // the input is gone (possibly a prior crashed attempt) — don't retry
           inputRec.state = 'spent';
           action.step = 'failed';
