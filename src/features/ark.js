@@ -3,7 +3,11 @@
 // sends, history entries, refresh/consolidation, server settings.
 
 import * as btc from '@scure/btc-signer';
+import { HDKey } from '@scure/bip32';
+import { hex, base32nopad } from '@scure/base';
+import { sha256 } from '@noble/hashes/sha256';
 import { ArkManager } from '../ark/manager.js';
+import { decodeVtxo, getVtxoStatus, VTXO_STATE_SPENT, concatBytes } from '../ark/proto.js';
 import { getNetwork, arkPresets, getArkProviderId, setArkProviderId, getArkCustom, setArkCustom, getArkConfig } from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
@@ -305,6 +309,105 @@ export function arkFeature(ctx) {
     ui.arkBusy = null; render();
   }
 
+  // ---- ark gifts: bearer-key vtxos ----------------------------------------
+  // Ark can't presign a bearer spend (every arkoor needs a live server cosign),
+  // so an ark gift is a vtxo sent to an ephemeral ark identity whose seed IS
+  // the link. The claimer rebuilds the identity from the code, reads the
+  // gift's mailbox for the vtxo, and sweeps it to their own ark address —
+  // instant and free. The sender keeps the secret too, which is what makes
+  // revoke possible (sweep it back before it's claimed; first cosign wins).
+  const AG_MAGIC = 0x11;
+  const AG_NET = { mainnet: 0, testnet: 1, signet: 2, mutinynet: 3, regtest: 4 };
+  const AG_NET_BY = Object.fromEntries(Object.entries(AG_NET).map(([k, v]) => [v, k]));
+
+  function encodeArkGiftCode(net, amountSat, secret) {
+    const b = new Uint8Array(42);
+    b[0] = AG_MAGIC;
+    b[1] = AG_NET[net] ?? 0;
+    new DataView(b.buffer).setBigUint64(2, BigInt(amountSat), true);
+    b.set(secret, 10);
+    return base32nopad.encode(b);
+  }
+
+  function decodeArkGiftCode(code) {
+    try {
+      const b = base32nopad.decode(String(code || '').toUpperCase());
+      if (b.length !== 42 || b[0] !== AG_MAGIC || !(b[1] in AG_NET_BY)) return null;
+      return {
+        net: AG_NET_BY[b[1]],
+        amountSat: Number(new DataView(b.buffer, b.byteOffset).getBigUint64(2, true)),
+        secretHex: hex.encode(b.slice(10)),
+      };
+    } catch { return null; }
+  }
+
+  // A manager over the gift identity. State persists per device (keyed by the
+  // secret's hash) so a claim interrupted mid-sweep resumes checkpointed.
+  async function giftManager(secretHex) {
+    const cfg = getArkConfig();
+    if (!cfg) throw new Error(t('arkNotConnected'));
+    const key = 'btc-wallet-arkgift:' + hex.encode(sha256(hex.decode(secretHex))).slice(0, 24);
+    const mgr = new ArkManager({
+      account: HDKey.fromMasterSeed(hex.decode(secretHex)),
+      storage: {
+        load: () => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } },
+        save: (s) => { try { localStorage.setItem(key, JSON.stringify(s)); } catch {} },
+      },
+      arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(),
+    });
+    await mgr.init();
+    return mgr;
+  }
+
+  // The gift vtxo's key/outpoint for direct status checks (receive key 0).
+  const giftKey0 = (secretHex) => {
+    const n = HDKey.fromMasterSeed(hex.decode(secretHex)).deriveChild(3).deriveChild(0);
+    return n.privateKey;
+  };
+  const pointRawFromId = (id) => {
+    const [txid, vout] = id.split(':');
+    const raw = new Uint8Array(36);
+    raw.set(hex.decode(txid).reverse(), 0);
+    new DataView(raw.buffer).setUint32(32, Number(vout), true);
+    return raw;
+  };
+
+  function arkGiftRecords() {
+    if (!ark || !ark.state) return [];
+    return (ark.state.gifts = ark.state.gifts || []);
+  }
+
+  // Lazily mark records whose vtxo the server reports spent (claimed — or our
+  // own revoke). Throttled: this is called from the gift card's render path.
+  let arkGiftsCheckedAt = 0;
+  function refreshArkGiftRecords() {
+    if (!ark || Date.now() - arkGiftsCheckedAt < 30_000) return;
+    arkGiftsCheckedAt = Date.now();
+    const open = arkGiftRecords().filter((g) => !g.revoked && !g.claimed);
+    Promise.all(open.map(async (g) => {
+      try {
+        const st = await getVtxoStatus(ark.arkUrl, pointRawFromId(g.id), giftKey0(g.secretHex));
+        if (st === VTXO_STATE_SPENT) { g.claimed = true; return true; }
+      } catch {}
+      return false;
+    })).then((flags) => { if (flags.some(Boolean)) ark._save(); });
+  }
+
+  // Sweep the gift identity's balance to `destAddress`. Shared by claim
+  // (recipient's address) and revoke (sender's own address).
+  async function sweepArkGift(code, destAddress) {
+    const g = decodeArkGiftCode(code);
+    if (!g) throw new Error('not an ark gift');
+    if (g.net !== getNetwork()) throw new Error(t('arkGiftWrongNet', { net: g.net }));
+    const gm = await giftManager(g.secretHex);
+    await gm.sync();
+    await gm.reconcile().catch(() => {});
+    const amount = gm.balance().spendableSat;
+    if (!amount) throw Object.assign(new Error(t('giftTakenTitle')), { giftTaken: true });
+    await gm.send(destAddress, amount);
+    return amount;
+  }
+
   // Offboard the whole ark balance back into this wallet's own on-chain
   // receive address — the mirror image of boarding.
   async function doArkOffboard() {
@@ -536,5 +639,71 @@ export function arkFeature(ctx) {
         done ? null : h('div', { class: 'small muted', style: 'margin-top:2px' }, t('arkBoardedNote')));
     },
     settingsCards() { return [arkCard()]; },
+
+    // ---- ark-gift hooks (called by the gifts feature via ctx.hook) ----
+    arkGiftInfo() {
+      if (!arkAvailable() || !ark || !ark.state) return null;
+      return { spendableSat: ark.balance().spendableSat };
+    },
+    arkGiftDecode(code) { return decodeArkGiftCode(code); },
+    async arkGiftCreate(amountSat) {
+      const mgr = await connectArk();
+      const secret = crypto.getRandomValues(new Uint8Array(32));
+      const secretHex = hex.encode(secret);
+      const gm = await giftManager(secretHex);
+      const actionId = await mgr.send(gm.address(), amountSat);
+      const action = mgr.state.actions.find((a) => a.id === actionId);
+      if (!action || action.step === 'failed') throw new Error(action?.error || t('claimFailed'));
+      const vtxoId = decodeVtxo(hex.decode(action.destBytes)).id;
+      arkGiftRecords().push({ id: vtxoId, amountSat, secretHex, created: Date.now(), revoked: false, claimed: false });
+      mgr._save();
+      return { code: encodeArkGiftCode(getNetwork(), amountSat, secret), amount: amountSat };
+    },
+    // Claim-side status: claimable (with the live amount), taken, wrongnet, or
+    // unknown (not visible here — wrong server or not yet delivered).
+    async arkGiftStatus(code) {
+      const g = decodeArkGiftCode(code);
+      if (!g) return null;
+      if (g.net !== getNetwork()) return { state: 'wrongnet', net: g.net, amountSat: g.amountSat };
+      const gm = await giftManager(g.secretHex);
+      await gm.sync().catch(() => {});
+      await gm.reconcile().catch(() => {});
+      const amt = gm.balance().spendableSat;
+      if (amt > 0) return { state: 'claimable', amountSat: amt };
+      const seen = gm.state.vtxos.length > 0;
+      return { state: seen ? 'taken' : 'unknown', amountSat: g.amountSat };
+    },
+    async arkGiftClaim(code) {
+      if (wallet.watchOnly) throw new Error(t('arkWatchOnly'));
+      const mine = await connectArk();
+      const amount = await sweepArkGift(code, mine.address());
+      await mine.sync().catch(() => {}); // pull the swept vtxo in right away
+      mine.ackReceives(); // the gift UI celebrates; don't double-celebrate here
+      return amount;
+    },
+    arkGiftOutstanding() {
+      refreshArkGiftRecords();
+      return arkGiftRecords().filter((g) => !g.revoked && !g.claimed)
+        .map((g) => ({ id: g.id, amountSat: g.amountSat, created: g.created }));
+    },
+    async arkGiftRevoke(id) {
+      const g = arkGiftRecords().find((x) => x.id === id);
+      if (!g) throw new Error('unknown gift');
+      const mine = await connectArk();
+      const code = encodeArkGiftCode(getNetwork(), g.amountSat, hex.decode(g.secretHex));
+      let amount;
+      try {
+        amount = await sweepArkGift(code, mine.address());
+      } catch (e) {
+        // beaten by the claimer — record it so the row self-heals immediately
+        if (e && e.giftTaken) { g.claimed = true; mine._save(); }
+        throw e;
+      }
+      g.revoked = true;
+      mine._save();
+      await mine.sync().catch(() => {});
+      mine.ackReceives(); // our own sweep-back isn't a "payment received"
+      return amount;
+    },
   };
 }

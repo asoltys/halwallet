@@ -11,12 +11,16 @@ import { fmtBtc, timeAgo, shortAddr } from '../format.js';
 
 export function giftsFeature(ctx) {
   const {
-    h, ui, render, wallet, toast, copyBtn, pasteBtn, blankSend, goBack, openExternal,
+    h, ui, render, wallet, toast, copyBtn, pasteBtn, blankSend, goBack, goHome, openExternal,
     fmtAmount, unitLabel, unitTag, parseAmount, getUnit, toggleUnit, download,
     brandHeader, activeAccount, setAccounts, getAccounts, claimTargets,
     enterWallet, activateAccount, commitAccount,
   } = ctx;
   installGiftWallet(wallet); // gift primitives live outside the core wallet
+  // Ark-gift support comes from the ark feature (when this build ships it);
+  // every call degrades to null in an on-chain-only build.
+  const hook = ctx.hook || (() => null);
+  const arkGiftOf = (code) => hook('arkGiftDecode', code);
 
   // ================================================================ GIFT / CLAIM
   // Read a gift link, returning the code (and scrubbing it from the URL so the
@@ -25,6 +29,11 @@ export function giftsFeature(ctx) {
   // decoding to a real gift.
   function readGiftHash() {
     try {
+      const am = location.pathname.match(/^\/ag\/([A-Za-z0-9]+)\/?$/i); // ark gift
+      if (am) {
+        history.replaceState(null, '', '/');
+        return arkGiftOf(am[1]) ? am[1] : null;
+      }
       let code = null;
       const pm = location.pathname.match(/^\/g\/([A-Za-z0-9]+)\/?$/i); // new path form
       if (pm) code = pm[1];
@@ -59,6 +68,7 @@ export function giftsFeature(ctx) {
   // wallet (the original first-timer flow).
   function claimGift(code) {
     ui.claimLocked = null;
+    ui.claimArkAmount = null;
     const targets = claimTargets();
     if (targets.length) { setAccounts(targets); ui.claimChoose = { code }; render(); }
     else enterWallet(newMnemonic(), '', { gift: code });
@@ -75,7 +85,8 @@ export function giftsFeature(ctx) {
   // Pick where to receive a gift: an existing wallet, or a brand-new one.
   function claimChooseView() {
     const code = ui.claimChoose.code;
-    const pv = previewGift(code);
+    const ag = arkGiftOf(code);
+    const pv = ag ? { room: ag.amountSat } : previewGift(code);
     return h(
       'div',
       { class: 'col', style: 'gap:16px' },
@@ -206,12 +217,14 @@ export function giftsFeature(ctx) {
         h('button', { class: 'btn-ghost btn-block', onClick: goHome }, t('goToHome'))
       );
     }
-    const pv = previewGift(ui.claimCode);
+    const ag = arkGiftOf(ui.claimCode);
+    const pv = ag ? { room: ui.claimArkAmount ?? ag.amountSat, inputs: 1 } : previewGift(ui.claimCode);
     // The headline is the full amount received (inputs minus the sender's change).
     // The network fee is determined now, at claim time, and comes out of that
-    // amount — we surface the estimate on the Claim button so it isn't a surprise.
+    // amount — we surface the estimate on the Claim button so it isn't a
+    // surprise. An ark gift sweeps off-chain: no fee at all.
     const rate = Math.max(1, Math.round((wallet.feeRates && wallet.feeRates.halfHourFee) || 5));
-    const estFee = pv ? Math.ceil((11 + 68 * pv.inputs + 31 * 2) * rate) : 0;
+    const estFee = ag ? 0 : pv ? Math.ceil((11 + 68 * pv.inputs + 31 * 2) * rate) : 0;
     const total = pv ? pv.room : 0;
     return h(
       'div',
@@ -233,7 +246,8 @@ export function giftsFeature(ctx) {
         ? h('button', { class: 'btn-primary btn-block', disabled: true }, h('span', { class: 'spinner' }))
         : h('button', { class: 'btn-primary btn-block', onClick: doClaim },
             t('claimBtn'), ' ',
-            h('span', { style: 'font-size:0.85em;opacity:0.9' }, '(' + t('claimFeeNote', { n: fmtAmount(estFee) + ' ' + unitLabel() }) + ')'))
+            h('span', { style: 'font-size:0.85em;opacity:0.9' },
+              '(' + (ag ? t('claimArkFree') : t('claimFeeNote', { n: fmtAmount(estFee) + ' ' + unitLabel() })) + ')'))
     );
   }
 
@@ -241,6 +255,20 @@ export function giftsFeature(ctx) {
   // unconfirmed claim — means the gift is gone; show the "already claimed" screen
   // rather than let the user attempt a doomed double-spend.
   async function checkGiftClaimed(code) {
+    if (arkGiftOf(code)) {
+      try {
+        const st = await hook('arkGiftStatus', code);
+        if (st.state === 'taken') ui.claimTaken = {};
+        else if (st.state === 'wrongnet') ui.claimError = t('arkGiftWrongNet', { net: st.net });
+        else if (st.state === 'unknown') ui.claimNotVisible = true;
+        else ui.claimArkAmount = st.amountSat; // live amount (matches the code's)
+      } catch {
+        // transient — leave claimable; the sweep itself is the final guard
+      }
+      ui.claimChecking = false;
+      render();
+      return;
+    }
     const ops = giftOutpoints(code);
     if (!ops.length) { ui.claimChecking = false; render(); return; }
     try {
@@ -262,28 +290,49 @@ export function giftsFeature(ctx) {
   }
 
   // Broadcast the presigned gift to this fresh wallet's first receive address.
+  // Shared post-claim navigation: fresh wallets go to seed backup, existing
+  // ones straight in with the instant celebration.
+  function afterClaim(amount) {
+    ui.claimedAmount = amount;
+    const wasProvisional = !!(activeAccount() && activeAccount().provisional);
+    commitAccount(); // claimed — keep a fresh gift wallet (no-op for an existing one)
+    if (wasProvisional) {
+      ui.claimStep = 'backup'; // fresh wallet — show the new seed to back up
+    } else {
+      ui.screen = 'wallet'; // existing wallet — straight into it, no new seed to back up
+      ui.claimStep = null;
+      ui.tab = 'receive';
+      ui.giftJustClaimed = amount; // celebration shows instantly, no scan wait
+    }
+    return wasProvisional;
+  }
+
   async function doClaim() {
     if (wallet.offline) { ui.claimError = t('scanOffline'); render(); return; }
     if (ui.claimChecking || ui.claimTaken) return; // not verified / already taken
     ui.busy = true;
     ui.claimError = '';
     render();
+    if (arkGiftOf(ui.claimCode)) {
+      // Ark gift: sweep the bearer vtxo into this wallet's ark balance —
+      // off-chain, instant, no fee, works for a brand-new empty wallet.
+      try {
+        const amount = await hook('arkGiftClaim', ui.claimCode);
+        afterClaim(amount);
+      } catch (e) {
+        if (e && e.giftTaken) ui.claimTaken = {};
+        else ui.claimError = e.message || t('claimFailed');
+      }
+      ui.busy = false;
+      render();
+      return;
+    }
     try {
       const rate = (wallet.feeRates && wallet.feeRates.halfHourFee) || 5;
       const to = wallet.receive[0] ? wallet.receive[0].address : wallet.derive(0, 0).address;
       const claim = buildClaimTx(ui.claimCode, to, rate, wallet.netCfg.net);
       await wallet.broadcast(claim.hex);
-      ui.claimedAmount = claim.amount;
-      const wasProvisional = !!(activeAccount() && activeAccount().provisional);
-      commitAccount(); // claimed — keep a fresh gift wallet (no-op for an existing one)
-      if (wasProvisional) {
-        ui.claimStep = 'backup'; // fresh wallet — show the new seed to back up
-      } else {
-        ui.screen = 'wallet'; // existing wallet — straight into it, no new seed to back up
-        ui.claimStep = null;
-        ui.tab = 'receive';
-        ui.giftJustClaimed = claim.amount; // celebration shows instantly, no scan wait
-      }
+      afterClaim(claim.amount);
       wallet.scan().then(() => {
         // The claim credit advances the fresh receive index in the background;
         // ack it so the index-based celebration doesn't fire a second time
@@ -391,7 +440,27 @@ export function giftsFeature(ctx) {
     );
   }
 
+  // An ark gift: send the amount to a fresh bearer identity, off-chain and
+  // instant — no coin locking, no split logic, no claim fee.
+  async function doCreateArkGift() {
+    const info = hook('arkGiftInfo');
+    const avail = info ? info.spendableSat : 0;
+    const amt = ui.giftMax ? avail : parseAmount(ui.giftAmount, getUnit());
+    if (!amt || amt < 330) { ui.giftError = t('giftAmountInvalid', { n: fmtAmount(330) + ' ' + unitLabel() }); render(); return; }
+    if (amt > avail) { ui.giftError = t('giftExceedsBalance'); render(); return; }
+    ui.busy = true; ui.giftError = ''; render();
+    try {
+      const g = await hook('arkGiftCreate', amt);
+      ui.giftIsArk = true;
+      finishGift(g, amt);
+    } catch (e) {
+      ui.giftError = e.message;
+    }
+    ui.busy = false; render();
+  }
+
   function createGiftLink() {
+    if (ui.giftSource === 'ark') { doCreateArkGift(); return; }
     const rate = giftRate();
     if (ui.giftMax) { doCreateGiftAll(rate); return; }
     const min = giftMinimum(rate);
@@ -477,7 +546,7 @@ export function giftsFeature(ctx) {
             h('div', { class: 'addr-box break', style: 'width:100%;font-size:12px' }, giftUrl()),
             h('div', { class: 'row gap6 wrap' },
               copyBtn(giftUrl(), t('copyLink')),
-              h('button', { class: 'btn-sm grow', onClick: () => { ui.giftCode = null; ui.giftAmount = ''; ui.giftMax = false; ui.giftLockNpub = ''; ui.giftLocked = false; ui.giftClaimCode = null; ui.giftDmStatus = null; render(); } }, t('giftAnother'))
+              h('button', { class: 'btn-sm grow', onClick: () => { ui.giftCode = null; ui.giftAmount = ''; ui.giftMax = false; ui.giftLockNpub = ''; ui.giftLocked = false; ui.giftClaimCode = null; ui.giftDmStatus = null; ui.giftIsArk = false; render(); } }, t('giftAnother'))
             )
           )
         : ui.giftSplitOffer
@@ -501,15 +570,34 @@ export function giftsFeature(ctx) {
             );
           })()
         : h('div', { class: 'col gap6' },
-            h('div', { class: 'input-group' },
-              h('input', { type: 'number', step: getUnit() === 'sats' ? '1' : '0.00000001', min: '0', inputmode: 'decimal', placeholder: t('giftAmountLabel'),
-                disabled: ui.giftMax,
-                value: ui.giftMax ? (getUnit() === 'sats' ? String(wallet.spendable) : fmtBtc(wallet.spendable)) : ui.giftAmount,
-                onInput: (e) => (ui.giftAmount = e.target.value) }),
-              h('button', { type: 'button', class: ui.giftMax ? 'btn-primary' : '', onClick: () => { ui.giftMax = !ui.giftMax; ui.giftError = ''; render(); } }, t('max')),
-              h('div', { style: 'display:flex;align-items:center' }, unitTag())
-            ),
-            h('div', { class: 'small faint' }, ui.giftMax ? t('giftAllNote') : t('giftMinNote', { n: fmtAmount(giftMinimum(giftRate())) + ' ' + unitLabel() })),
+            // Source toggle: gift on-chain coins (presigned link, coins locked
+            // until claim) or the ark balance (instant bearer vtxo, no lock).
+            (() => {
+              const info = hook('arkGiftInfo');
+              if (!info || info.spendableSat <= 0) { if (ui.giftSource === 'ark') ui.giftSource = 'chain'; return null; }
+              const src = ui.giftSource || 'chain';
+              const btn = (id, label) => h('button', {
+                type: 'button', class: (src === id ? 'btn-primary' : 'btn-ghost') + ' grow',
+                onClick: () => { ui.giftSource = id; ui.giftError = ''; render(); },
+              }, label);
+              return h('div', { class: 'row gap6' }, btn('chain', t('giftSourceChain')), btn('ark', t('giftSourceArk')));
+            })(),
+            (() => {
+              const isArk = ui.giftSource === 'ark';
+              const maxVal = isArk ? (hook('arkGiftInfo')?.spendableSat || 0) : wallet.spendable;
+              return h('div', { class: 'input-group' },
+                h('input', { type: 'number', step: getUnit() === 'sats' ? '1' : '0.00000001', min: '0', inputmode: 'decimal', placeholder: t('giftAmountLabel'),
+                  disabled: ui.giftMax,
+                  value: ui.giftMax ? (getUnit() === 'sats' ? String(maxVal) : fmtBtc(maxVal)) : ui.giftAmount,
+                  onInput: (e) => (ui.giftAmount = e.target.value) }),
+                h('button', { type: 'button', class: ui.giftMax ? 'btn-primary' : '', onClick: () => { ui.giftMax = !ui.giftMax; ui.giftError = ''; render(); } }, t('max')),
+                h('div', { style: 'display:flex;align-items:center' }, unitTag())
+              );
+            })(),
+            h('div', { class: 'small faint' },
+              ui.giftSource === 'ark' ? t('giftArkNote')
+                : ui.giftMax ? t('giftAllNote')
+                : t('giftMinNote', { n: fmtAmount(giftMinimum(giftRate())) + ' ' + unitLabel() })),
             (() => {
               const raw = ui.giftLockNpub.trim();
               const pk = raw ? parseNostrPubkey(raw) : null;
@@ -522,8 +610,28 @@ export function giftsFeature(ctx) {
                   : h('div', { class: 'small err' }, t('giftLockInvalid')));
             })(),
             ui.giftError && h('div', { class: 'notice err' }, ui.giftError),
-            h('button', { class: 'btn-block', onClick: createGiftLink }, t('giftLinkReveal'))
+            ui.busy
+              ? h('button', { class: 'btn-block', disabled: true }, h('span', { class: 'spinner sm' }))
+              : h('button', { class: 'btn-block', onClick: createGiftLink }, t('giftLinkReveal'))
           ),
+      // Outstanding ark gifts (bearer vtxos we can still revoke by sweeping back)
+      (() => {
+        const arkGifts = hook('arkGiftOutstanding') || [];
+        if (!arkGifts.length) return null;
+        return h('div', { class: 'col gap6', style: 'margin-top:4px' },
+          h('span', { class: 'small muted' }, t('giftArkOutstanding', { n: arkGifts.length })),
+          ...arkGifts.map((g) => h('div', { class: 'row between' },
+            h('span', { class: 'small mono' }, fmtAmount(g.amountSat) + ' ' + unitLabel() + ' ', h('span', { class: 'tag' }, 'Ark')),
+            ui.busy && ui.revokeId === g.id
+              ? h('span', { class: 'spinner sm' })
+              : h('button', { class: 'btn-sm', onClick: async () => {
+                  ui.revokeId = g.id; ui.busy = true; render();
+                  try { await hook('arkGiftRevoke', g.id); toast(t('giftArkRevoked')); }
+                  catch (e) { toast(e.message); }
+                  ui.busy = false; ui.revokeId = null; render();
+                } }, t('giftRevoke'))
+          )));
+      })(),
       active.length
         ? h('div', { class: 'col gap6', style: 'margin-top:4px' },
             h('span', { class: 'small muted' }, t('giftReserved', { n: active.length })),
@@ -650,7 +758,7 @@ export function giftsFeature(ctx) {
   // Gift link: presign a chosen amount as a #gift= PSBT that whoever opens claims
   // into a fresh wallet only they control. The coin is reserved until claimed.
   function giftUrl() {
-    return `${location.origin}/${ui.giftLocked ? 'lg' : 'g'}/${ui.giftCode}`;
+    return `${location.origin}/${ui.giftLocked ? 'lg' : ui.giftIsArk ? 'ag' : 'g'}/${ui.giftCode}`;
   }
 
   function giftRate() {

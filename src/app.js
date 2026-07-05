@@ -2907,11 +2907,15 @@ async function importSnapshotFile(e) {
 // sits just before boot so every helper it captures is defined; the hooks are
 // only invoked at runtime (first render happens after loadLocale below).
 const ctx = {
-  h, ui, render, wallet, toast, copyBtn, pasteBtn, blankSend, goBack, openExternal,
+  h, ui, render, wallet, toast, copyBtn, pasteBtn, blankSend, goBack, goHome, openExternal,
   fmtAmount, unitLabel, unitTag, parseAmount, getUnit: () => unit, toggleUnit, download,
   brandHeader, activeAccount, setAccounts: (list) => { accounts = list; },
   getAccounts: () => accounts,
   claimTargets, enterWallet, activateAccount, commitAccount,
+  // cross-feature calls (e.g. gifts asking the ark feature for ark-gift
+  // support) — lazy so it resolves against the final FEATURES list, and a
+  // build without the target feature simply gets null back
+  hook: (name, ...args) => featureHook(name, ...args),
 };
 const FEATURES = buildFeatures(ctx);
 
