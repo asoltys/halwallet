@@ -476,6 +476,9 @@ export class Wallet {
       // would otherwise never reconcile without a full rescan).
       if (await this._reconcileHeld()) changed = true;
 
+      // Drop pending txs the mempool no longer knows (RBF-replaced/evicted).
+      if (await this._pruneReplaced()) changed = true;
+
       if (changed) {
         this.utxos.sort((x, y) => y.value - x.value);
         this._sortTxs();
@@ -772,6 +775,47 @@ export class Wallet {
     const s = new Set();
     for (const tx of this.txs) if (this.isStuck(tx)) s.add(tx.txid);
     return s;
+  }
+
+  // Unconfirmed txs the mempool no longer knows were RBF-replaced or evicted —
+  // e.g. a faucet fee-bumping its batched payout mints a new txid each round.
+  // The utxo reconcile follows the replacement (address utxos are re-fetched),
+  // but without this every replaced version lingers in History as a phantom
+  // pending receive. Only a definitive 404 prunes; transient errors keep the
+  // tx for the next poll, and a fresh tx gets a grace period in case the
+  // polled explorer hasn't indexed our own broadcast yet.
+  async _pruneReplaced() {
+    const stale = this.txs.filter((t) => !t.confirmed && Date.now() - (t.firstSeen || 0) > 60_000);
+    let changed = false;
+    for (const t of stale) {
+      let status;
+      try { status = await this.api.txStatus(t.txid); } catch { continue; }
+      if (status !== null) continue;
+      this.txs = this.txs.filter((x) => x.txid !== t.txid);
+      changed = true;
+      // A replacement often pays the same address the same amount, which
+      // _reconcileHeld skips as "unchanged" — so the dead outpoints (and the
+      // missing replacement tx) must be re-fetched here explicitly.
+      const addrs = [...new Set(this.utxos.filter((u) => u.txid === t.txid).map((u) => u.address))];
+      for (const address of addrs) {
+        const p = this.addrMap.get(address);
+        if (!p) continue;
+        try {
+          const us = await this.api.addressUtxos(address);
+          this.utxos = this.utxos.filter((u) => u.address !== address);
+          for (const u of us) {
+            this.utxos.push({ txid: u.txid, vout: u.vout, value: u.value, address, chain: p.chain, index: p.index, confirmed: !!u.status.confirmed });
+          }
+          const list = await this.api.addressTxs(address);
+          for (const tx of list) {
+            const summary = this._txSummary(tx);
+            const at = this.txs.findIndex((x) => x.txid === tx.txid);
+            if (at >= 0) this.txs[at] = summary; else this.txs.push(summary);
+          }
+        } catch {}
+      }
+    }
+    return changed;
   }
 
   _sortTxs() {

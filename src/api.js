@@ -486,7 +486,7 @@ export class Api {
     return null;
   }
 
-  async #get(path, asText = false) {
+  async #get(path, asText = false, { notFoundNull = false } = {}) {
     if (this.offline) throw new Error('offline');
     let lastErr;
     for (let attempt = 0; attempt < 6; attempt++) {
@@ -499,6 +499,7 @@ export class Api {
       }
       try {
         const res = await this.#run(host, path);
+        if (notFoundNull && res.status === 404) return null; // definitive: not an error
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${path}`);
         return asText ? await res.text() : await res.json();
       } catch (e) {
@@ -531,6 +532,16 @@ export class Api {
   // Full transaction (vin with prevouts, vout, status) — used for fee bumping.
   getTx(txid) {
     return this.#get(`/tx/${txid}`);
+  }
+
+  // Confirmation status of one tx, or null when the node no longer knows the
+  // txid at all — i.e. it was RBF-replaced or evicted from the mempool. The
+  // 404 is the answer we're after, so it doesn't retry or fail over. NOTE:
+  // /tx/:txid/status is NOT usable for this — electrs and mempool.space both
+  // answer 200 {confirmed:false} for unknown txids; only /tx/:txid 404s.
+  async txStatus(txid) {
+    const tx = await this.#get(`/tx/${txid}`, false, { notFoundNull: true });
+    return tx ? tx.status || { confirmed: false } : null;
   }
 
   async feeRates() {
