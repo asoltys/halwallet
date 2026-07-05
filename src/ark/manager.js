@@ -36,6 +36,11 @@ import {
   cosignHarkLeaf, requestForfeitNonces, forfeitBundle, forfeitVtxos,
   encodeVtxoFromDecoded,
 } from './refresh.js';
+import {
+  getOffboardFeeRate, feeRateKwu, offboardFee, offboardAttestation,
+  prepareOffboard, validateOffboardTx, signOffboardForfeits, finishOffboard,
+  P2TR_DUST,
+} from './offboard.js';
 import { validateVtxo, VtxoValidationError } from './validate.js';
 
 const EMPTY_STATE = () => ({
@@ -105,6 +110,13 @@ export class ArkManager {
       tipHeight: async () => Number(await fetch(`${base}/blocks/tip/height`).then((r) => r.text())),
       getTxStatus: async (txid) => fetch(`${base}/tx/${txid}/status`).then((r) => r.ok ? r.json() : null),
       getTxHex: async (txid) => fetch(`${base}/tx/${txid}/hex`).then((r) => r.ok ? r.text() : null),
+      broadcastTx: async (txHex) => {
+        const r = await fetch(`${base}/tx`, { method: 'POST', body: txHex });
+        const body = await r.text();
+        // a rebroadcast after a crash is fine — the tx being known already IS success
+        if (!r.ok && !/already/i.test(body)) throw new Error(`broadcast failed: ${body.slice(0, 120)}`);
+        return body.trim();
+      },
     };
   }
 
@@ -248,10 +260,111 @@ export class ArkManager {
         if (action.type === 'send') await this._driveSend(action);
         if (action.type === 'board') await this._driveBoard(action);
         if (action.type === 'refresh') await this._driveRefresh(action);
+        if (action.type === 'offboard') await this._driveOffboard(action);
       } catch (e) {
         // transient errors leave the action where it is; a later sync retries
         if (!(e instanceof GrpcError)) throw e;
       }
+    }
+  }
+
+  // ---- offboard (collaborative exit: all spendable vtxos -> one on-chain output) ----
+  async startOffboard(spk, address) {
+    if (this.pendingActions().some((a) => a.type === 'offboard')) {
+      throw new Error('an offboard is already in progress');
+    }
+    const inputs = this.state.vtxos.filter((v) => v.state === 'spendable');
+    if (!inputs.length) throw new Error('no spendable ark balance');
+    if (this.info.maxOffboardInputs && inputs.length > this.info.maxOffboardInputs) {
+      throw new Error(`too many coins for one offboard (${inputs.length}) — refresh/consolidate first`);
+    }
+    const tip = await this.chain.tipHeight();
+    const satVkb = await getOffboardFeeRate(this.arkUrl);
+    const grossSat = inputs.reduce((n, v) => n + v.amountSat, 0);
+    const feeSat = offboardFee({
+      spkLen: spk.length, satVkb, fees: this.info.offboardFees, tip,
+      inputs: inputs.map((v) => ({ amountSat: v.amountSat, expiryHeight: v.expiryHeight })),
+    });
+    const netSat = grossSat - feeSat;
+    if (netSat < P2TR_DUST) throw new Error('ark balance too small to offboard after fees');
+    const action = {
+      id: `offboard-${Date.now()}`, type: 'offboard', step: 'created',
+      inputIds: inputs.map((v) => v.id), address, spkHex: hex.encode(spk),
+      grossSat, feeSat, netSat, rateKwu: feeRateKwu(satVkb),
+    };
+    for (const v of inputs) v.state = 'pending';
+    this.state.actions.push(action);
+    this._save();
+    await this._driveOffboard(action);
+    return action;
+  }
+
+  async _driveOffboard(action) {
+    const inputRecs = action.inputIds.map((id) => this._vtxo(id));
+    if (action.step === 'created') {
+      const decoded = inputRecs.map((v) => this._decoded(v));
+      const keys = inputRecs.map((v) => this._keyForVtxo(v));
+      const spk = hex.decode(action.spkHex);
+      const inputIdRaws = decoded.map((d) => d.point.raw);
+      await registerVtxoTransactions(this.arkUrl, inputRecs.map((v) => hex.decode(v.bytes)));
+      const attestations = keys.map((k) =>
+        offboardAttestation({ netSat: action.netSat, spk, inputIdRaws }, k.privkey));
+      const { txBytes, serverNonces } = await prepareOffboard(this.arkUrl, {
+        netSat: action.netSat, spk, rateKwu: action.rateKwu, inputIdRaws, attestations,
+      });
+      const parsed = parseTx(txBytes);
+      validateOffboardTx(parsed, { netSat: action.netSat, spk, nInputs: decoded.length });
+      const { pubNonces, partials, offboardTxidInternal } = signOffboardForfeits({
+        inputs: decoded, keys, serverPub: this.serverPub, parsed, serverNonces,
+      });
+      // the server holds our forfeits after FinishOffboard: persist the txid
+      // first so a crash mid-call can still find the tx on chain
+      action.txid = parsed.txid;
+      action.step = 'finishing';
+      this._save();
+      const signed = await finishOffboard(this.arkUrl, { offboardTxidInternal, pubNonces, partials });
+      if (parseTx(signed).txid !== action.txid) throw new Error('server returned a different offboard tx');
+      action.txHex = hex.encode(signed);
+      for (const v of inputRecs) v.state = 'spent';
+      action.step = 'signed';
+      this._save();
+    }
+    if (action.step === 'finishing') {
+      // crashed between FinishOffboard and persisting its result. The server
+      // broadcasts the offboard tx itself after a successful finish, so ask it
+      // whether the inputs were forfeited: spent means the finish landed (wait
+      // for the server's broadcast to confirm); still-spendable means it never
+      // did — start the action over.
+      const probe = await getVtxoStatus(this.arkUrl,
+        this._decoded(inputRecs[0]).point.raw, this._keyForVtxo(inputRecs[0]).privkey);
+      if (probe === VTXO_STATE_SPENT) {
+        for (const v of inputRecs) v.state = 'spent';
+        action.step = 'broadcast';
+        this._movement({
+          type: 'offboard', amountSat: action.netSat, status: 'complete',
+          txid: action.txid, detail: `fee ${action.feeSat} sat`, to: action.address,
+        });
+        this._save();
+      } else {
+        action.step = 'created';
+        this._save();
+        return; // retried on the next sync
+      }
+    }
+    if (action.step === 'signed') {
+      await this.chain.broadcastTx(action.txHex);
+      action.step = 'broadcast';
+      this._movement({
+        type: 'offboard', amountSat: action.netSat, status: 'complete',
+        txid: action.txid, detail: `fee ${action.feeSat} sat`, to: action.address,
+      });
+      this._save();
+    }
+    if (action.step === 'broadcast') {
+      const st = await this.chain.getTxStatus(action.txid);
+      if (!st?.confirmed) return; // retried on sync
+      action.step = 'done';
+      this._save();
     }
   }
 

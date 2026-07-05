@@ -364,7 +364,11 @@ export function decodeVtxo(bytes) {
 export async function getArkInfo(ark) {
   const data = await grpcCall(ark, 'bark_server.ArkService/GetArkInfo', new Uint8Array(0));
   // Fee schedules a server never sends (or sends all-zero) mean "free".
-  const info = { boardFees: {}, refreshFees: { baseFeeSat: 0, ppmExpiryTable: [] } };
+  const info = {
+    boardFees: {},
+    refreshFees: { baseFeeSat: 0, ppmExpiryTable: [] },
+    offboardFees: { baseFeeSat: 0, fixedAdditionalVb: 0, ppmExpiryTable: [] },
+  };
   for (const { field, value } of pbFields(data)) {
     if (field === 1) info.network = td.decode(value);
     if (field === 2) info.serverPubkey = hex.encode(value);
@@ -374,6 +378,7 @@ export async function getArkInfo(ark) {
     if (field === 10) info.requiredBoardConfirmations = Number(value);
     if (field === 13) info.minBoardAmountSat = Number(value);
     if (field === 16) info.mailboxPubkey = hex.encode(value);
+    if (field === 20) info.maxOffboardInputs = Number(value);
     if (field === 18) { // FeeSchedule
       for (const f of pbFields(value)) {
         if (f.field === 1) { // board
@@ -384,6 +389,22 @@ export async function getArkInfo(ark) {
             if (g.field === 3) b.ppm = Number(g.value);
           }
           info.boardFees = b;
+        }
+        if (f.field === 2) { // offboard
+          const ob = { baseFeeSat: 0, fixedAdditionalVb: 0, ppmExpiryTable: [] };
+          for (const g of pbFields(f.value)) {
+            if (g.field === 1) ob.baseFeeSat = Number(g.value);
+            if (g.field === 2) ob.fixedAdditionalVb = Number(g.value);
+            if (g.field === 3) {
+              const e = { thresholdBlocks: 0, ppm: 0 };
+              for (const h of pbFields(g.value)) {
+                if (h.field === 1) e.thresholdBlocks = Number(h.value);
+                if (h.field === 2) e.ppm = Number(h.value);
+              }
+              ob.ppmExpiryTable.push(e);
+            }
+          }
+          info.offboardFees = ob;
         }
         if (f.field === 3) { // refresh
           const rf = { baseFeeSat: 0, ppmExpiryTable: [] };

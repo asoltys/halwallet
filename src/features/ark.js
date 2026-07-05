@@ -2,6 +2,7 @@
 // protocol, spoken natively by ../ark). Receive address + boarding, instant
 // sends, history entries, refresh/consolidation, server settings.
 
+import * as btc from '@scure/btc-signer';
 import { ArkManager } from '../ark/manager.js';
 import { getNetwork, arkPresets, getArkProviderId, setArkProviderId, getArkCustom, setArkCustom, getArkConfig } from '../api.js';
 import { t } from '../i18n.js';
@@ -164,8 +165,9 @@ export function arkFeature(ctx) {
   }
 
   function arkHistoryItem(m) {
-    const incoming = m.type !== 'send';
-    const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded') : t('sent');
+    const incoming = !['send', 'offboard'].includes(m.type);
+    const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded')
+      : m.type === 'offboard' ? t('arkOffboarded') : t('sent');
     return h(
       'div',
       { class: 'item', style: 'cursor:pointer', onClick: () => { ui.arkMoveDetail = m.id; render(); } },
@@ -182,8 +184,9 @@ export function arkFeature(ctx) {
   }
 
   function arkMoveDetailView(m) {
-    const incoming = m.type !== 'send';
-    const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded') : t('sent');
+    const incoming = !['send', 'offboard'].includes(m.type);
+    const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded')
+      : m.type === 'offboard' ? t('arkOffboarded') : t('sent');
     const row = (k, v) => h('div', { class: 'row between', style: 'gap:12px' },
       h('span', { class: 'small muted', style: 'flex-shrink:0' }, k), h('span', { class: 'small', style: 'text-align:right;word-break:break-all' }, v));
     const url = m.txid ? wallet.api.explorerTx(m.txid) : null;
@@ -289,10 +292,30 @@ export function arkFeature(ctx) {
       const draft = wallet.buildTx({ recipients: [{ address: fundingAddress, amount: sats }], feeRate, noSort: true });
       const hexTx = wallet.sign(draft.tx);
       const txid = await wallet.broadcast(hexTx);
+      // Like the main send flow: reflect the spend locally and let the
+      // poll/watcher reconcile. A scan here would race the explorer's indexing
+      // and could resurrect the just-spent coin.
+      wallet.applySentTx(draft.tx);
       await ark.completeBoard(actionId, txid);
       ui.arkBoardAmt = '';
       ui.arkBoarded = { txid, netSat: sats - feeSat };
-      wallet.scan().catch(() => {});
+    } catch (e) {
+      ui.arkError = e.message;
+    }
+    ui.arkBusy = null; render();
+  }
+
+  // Offboard the whole ark balance back into this wallet's own on-chain
+  // receive address — the mirror image of boarding.
+  async function doArkOffboard() {
+    ui.arkBusy = 'offboard'; ui.arkError = ''; render();
+    try {
+      const mgr = await connectArk();
+      const address = wallet.freshReceive().address;
+      const spk = btc.OutScript.encode(btc.Address(wallet.netCfg.net).decode(address));
+      const action = await mgr.startOffboard(spk, address);
+      ui.arkOffboarded = { txid: action.txid, netSat: action.netSat, feeSat: action.feeSat };
+      wallet.scan().catch(() => {}); // surface the incoming pending tx promptly
     } catch (e) {
       ui.arkError = e.message;
     }
@@ -351,6 +374,13 @@ export function arkFeature(ctx) {
           canBoard
             ? h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardAvailable', { n: fmtAmount(wallet.spendable) + ' ' + unitLabel() }))
             : h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardNoFunds', { n: minBoard.toLocaleString() })),
+          // ...and the way back out: offboard the whole ark balance on-chain.
+          ark.balance().spendableSat > 0
+            ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkOffboard },
+                ui.arkBusy === 'offboard'
+                  ? h('span', { class: 'spinner sm' })
+                  : t('arkOffboardBtn', { n: fmtAmount(ark.balance().spendableSat) + ' ' + unitLabel() }))
+            : null,
           ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null)
       );
     }
@@ -378,6 +408,27 @@ export function arkFeature(ctx) {
       );
     }
     return null;
+  }
+
+  // Offboard success screen — mirror of the boarded screen.
+  function arkOffboardedScreen() {
+    if (!ui.arkOffboarded) return null;
+    const o = ui.arkOffboarded;
+    const url = wallet.api.explorerTx(o.txid);
+    return h(
+      'div',
+      { class: 'card col', style: 'align-items:center;text-align:center;gap:14px;padding:40px 20px' },
+      h('div', { class: 'check-badge' }, '✓'),
+      h('h2', { style: 'margin:0' }, t('arkOffboardedTitle')),
+      h('div', { class: 'amount-pos', style: 'font-size:18px' }, '+' + fmtAmount(o.netSat) + ' ' + unitLabel()),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('arkOffboardedNote')),
+      o.feeSat ? h('div', { class: 'small faint' }, t('feeShort', { x: fmtAmount(o.feeSat) })) : null,
+      h('div', { class: 'addr-box', style: 'width:100%' }, o.txid),
+      h('div', { class: 'row gap6' },
+        copyBtn(o.txid, t('copyTxid')),
+        h('a', { class: 'btn btn-sm', href: url, target: '_blank', rel: 'noopener', onClick: (e) => { e.preventDefault(); openExternal(url); } }, t('viewOnMempool'))),
+      h('button', { class: 'btn-primary btn-block', onClick: () => { ui.arkOffboarded = null; render(); } }, t('done'))
+    );
   }
 
   // Boarding success screen (txid + explorer link) until dismissed.
@@ -412,6 +463,8 @@ export function arkFeature(ctx) {
       return [{ id: 'ark', label: t('receiveArkTab'), render: (seg) => arkReceivePane(seg) }];
     },
     receiveTakeover() {
+      const offboarded = arkOffboardedScreen();
+      if (offboarded) return offboarded;
       const boarded = arkBoardedScreen();
       if (boarded) return boarded;
       return arkCelebration();
@@ -441,7 +494,7 @@ export function arkFeature(ctx) {
     historyEntries() {
       if (!ark || !ark.state) return [];
       return ark.movements()
-        .filter((m) => ['receive', 'send', 'board'].includes(m.type) && m.status === 'complete')
+        .filter((m) => ['receive', 'send', 'board', 'offboard'].includes(m.type) && m.status === 'complete')
         .map((m) => ({ time: m.ts, render: () => arkHistoryItem(m) }));
     },
     historyDetail() {
@@ -462,10 +515,13 @@ export function arkFeature(ctx) {
       return lines;
     },
     decorateTxRow(tx) {
-      if (tx.net >= 0 || !ark || !ark.state) return null;
-      const a = ark.state.actions.find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
-      if (!a) return null;
-      return { icon: '⚔', label: h('span', {}, t('arkBoardHistory')) };
+      if (!ark || !ark.state) return null;
+      if (tx.net < 0) {
+        const a = ark.state.actions.find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
+        return a ? { icon: '⚔', label: h('span', {}, t('arkBoardHistory')) } : null;
+      }
+      const o = ark.state.actions.find((x) => x.type === 'offboard' && x.txid === tx.txid);
+      return o ? { icon: '⚔', label: h('span', {}, t('arkOffboardHistory')) } : null;
     },
     txDetailSection(tx) {
       if (!ark || !ark.state) return null;
