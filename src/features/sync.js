@@ -3,7 +3,7 @@
 // (used e.g. to DM locked-gift claim codes). Installed onto the core wallet;
 // a build without sync ships none of it and never talks to a relay.
 
-import { NostrSync, getSyncConfig, setSyncConfig, npubOf } from '../nostr.js';
+import { NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag } from '../nostr.js';
 import { t } from '../i18n.js';
 
 export function installSyncWallet(wallet) {
@@ -28,6 +28,7 @@ export function installSyncWallet(wallet) {
       const sync = getSyncConfig();
       if (this.offline || !sync.enabled) return false;
       this.nostr.setRelays(sync.relays);
+      this.nostr.setDtag(syncDtag(this.netName));
       let remote;
       try {
         remote = await this.nostr.fetch();
@@ -35,6 +36,9 @@ export function installSyncWallet(wallet) {
         return false;
       }
       if (!remote) return false;
+      // A snapshot for another network must never apply here (events published
+      // before per-network d-tags all live under the mainnet tag).
+      if (remote.netName && remote.netName !== this.netName) return false;
       if ((remote.savedAt || 0) > (this._savedAt || 0)) {
         this._applySnapshot(remote);
         this.saveCache(); // mirror into localStorage
@@ -57,8 +61,11 @@ export function installSyncWallet(wallet) {
     const sync = getSyncConfig();
     if (wallet.offline || !sync.enabled) return;
     wallet.nostr.setRelays(sync.relays);
+    // bind the d-tag now: the debounced publish must keep this snapshot's
+    // network even if the wallet switches networks before the timer fires
+    const dtag = syncDtag(wallet.netName);
     clearTimeout(wallet._nostrPubTimer);
-    wallet._nostrPubTimer = setTimeout(() => wallet.nostr.publish(snap), 2500);
+    wallet._nostrPubTimer = setTimeout(() => wallet.nostr.publish(snap, dtag), 2500);
   });
   wallet.registerRealtimeHook({ stop: () => clearTimeout(wallet._nostrPubTimer) });
 }

@@ -1877,8 +1877,12 @@ function offlineBanner() {
 }
 
 function balanceCard() {
-  // Only dim on the very first load; background updates happen silently.
-  const firstLoad = wallet.scanning && !wallet.loaded;
+  // Dim + spin until this network has data (cache, Nostr state, or a scan has
+  // populated balances once). `scanning` alone misses the window between
+  // wallet.load() and the first scan — the cache check and Nostr sync on a
+  // network switch — where a bare 0 reads as a final balance. Background
+  // updates after that happen silently.
+  const firstLoad = !wallet.loaded && !wallet.offline;
   const pending = wallet.pendingIncoming;
   const featLines = featureAll('balanceLines');
   return h(
@@ -1888,7 +1892,9 @@ function balanceCard() {
     // Headline is the spendable balance: confirmed coins plus our own pending
     // change, minus gift locks — so a pending spend debits immediately, while a
     // pending incoming receive stays out of it until it confirms.
-    h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' }, fmtAmount(wallet.spendable), ' ', unitTag('unit')),
+    h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
+      firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,
+      fmtAmount(wallet.spendable), ' ', unitTag('unit')),
     pending > 0 || featLines.length
       ? h(
           'div',
@@ -2746,7 +2752,7 @@ function historyTab() {
   }
   if (wallet.offline)
     return h('div', { class: 'card' }, h('p', { class: 'muted center', style: 'margin:0' }, t('historyOffline')));
-  if ((wallet.scanning && !wallet.loaded) || (wallet.historyLoading && !txs.length))
+  if (!wallet.loaded || (wallet.historyLoading && !txs.length))
     return h(
       'div',
       { class: 'card center col', style: 'align-items:center;gap:10px' },

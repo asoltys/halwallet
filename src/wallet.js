@@ -1754,6 +1754,7 @@ export class Wallet {
     return {
       v: 1,
       savedAt: Date.now(),
+      netName: this.netName,
       receive: this.receive,
       change: this.change,
       utxos: this.utxos,

@@ -79,6 +79,10 @@ export async function fetchInboxRelays(pubkeyHex, relays = PROFILE_RELAYS) {
 }
 
 const DTAG = 'bitcoin-wallet';
+// Each network syncs to its own replaceable event — one shared d-tag would let
+// a signet snapshot overwrite the mainnet state on the relays (and vice versa).
+// Mainnet keeps the bare tag existing wallets already publish under.
+export const syncDtag = (netName) => (!netName || netName === 'mainnet' ? DTAG : `${DTAG}:${netName}`);
 const SYNC_KEY = 'btc-wallet-sync';
 export const DEFAULT_SYNC_RELAYS = ['wss://relay.coinos.io'];
 
@@ -110,7 +114,10 @@ export class NostrSync {
     this.pk = null;
     this.ck = null; // self conversation key for NIP-44
     this.relays = DEFAULT_SYNC_RELAYS;
+    this.dtag = DTAG;
   }
+
+  setDtag(d) { this.dtag = d || DTAG; }
 
   load(mnemonic, passphrase = '') {
     this.sk = nip06.privateKeyFromSeedWords(mnemonic, passphrase || undefined);
@@ -124,13 +131,15 @@ export class NostrSync {
     this.relays = Array.isArray(relays) && relays.length ? relays : DEFAULT_SYNC_RELAYS;
   }
 
-  // Encrypt + publish the latest state to every relay (best-effort).
-  async publish(stateObj) {
+  // Encrypt + publish the latest state to every relay (best-effort). The d-tag
+  // is passed in so a debounced publish keeps the tag of the network the
+  // snapshot was taken on, even if the wallet switched networks meanwhile.
+  async publish(stateObj, dtag = this.dtag) {
     if (!this.sk) return;
     let evt;
     try {
       const content = nip44.encrypt(JSON.stringify(stateObj), this.ck);
-      evt = finalizeEvent({ kind: 30078, created_at: Math.floor(Date.now() / 1000), tags: [['d', DTAG]], content }, this.sk);
+      evt = finalizeEvent({ kind: 30078, created_at: Math.floor(Date.now() / 1000), tags: [['d', dtag]], content }, this.sk);
     } catch { return; }
     await Promise.allSettled(pool.publish(this.relays, evt));
   }
@@ -156,7 +165,7 @@ export class NostrSync {
   async fetch() {
     if (!this.sk) return null;
     let events;
-    try { events = await pool.querySync(this.relays, { kinds: [30078], authors: [this.pk], '#d': [DTAG] }, { maxWait: 6000 }); } catch { return null; }
+    try { events = await pool.querySync(this.relays, { kinds: [30078], authors: [this.pk], '#d': [this.dtag] }, { maxWait: 6000 }); } catch { return null; }
     for (const e of events.sort((a, b) => b.created_at - a.created_at)) {
       try { const v = JSON.parse(nip44.decrypt(e.content, this.ck)); if (v) return v; } catch {}
     }
