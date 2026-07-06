@@ -163,8 +163,9 @@ export class NostrSync {
     try {
       const content = nip44.encrypt(JSON.stringify(stateObj), this.ck);
       evt = finalizeEvent({ kind: 30078, created_at: Math.floor(Date.now() / 1000), tags: [['d', dtag]], content }, this.sk);
-    } catch { return; }
-    await Promise.allSettled(pool.publish(this.relays, evt));
+    } catch (e) { console.log('[pubdbg] finalize threw', e.message); return; }
+    const res = await Promise.allSettled(pool.publish(this.relays, evt));
+    console.log('[pubdbg] publish', dtag, 'bytes', evt.content.length, '->', JSON.stringify(res.map((r) => r.status === 'fulfilled' ? 'ok' : ('rej:' + String(r.reason).slice(0, 80)))));
   }
 
   // Deliver an encrypted DM (a locked gift's claim code) as a NIP-17 gift wrap
