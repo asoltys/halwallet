@@ -79,6 +79,15 @@ export class ArkManager {
   // ---- lifecycle ----
   async init() {
     this.state = this.storage.load() || EMPTY_STATE();
+    // drop duplicate receive movements (same vtxo) left by the former
+    // poll/stream race; the vtxo set itself was always deduped
+    const seen = new Set();
+    this.state.movements = this.state.movements.filter((m) => {
+      if (m.type !== 'receive' || !m.vtxoId) return true;
+      if (seen.has(m.vtxoId)) return false;
+      seen.add(m.vtxoId);
+      return true;
+    });
     this.info = await getArkInfo(this.arkUrl);
     const hs = await handshake(this.arkUrl).catch(() => null);
     this.psa = hs?.psa;
@@ -192,7 +201,10 @@ export class ArkManager {
         }
         throw e; // network errors etc: retry next sync
       }
-      this._addVtxo(v, v._raw.bytes, 0);
+      // _addVtxo dedupes by id — the poll and the live stream can process the
+      // same message concurrently (validation awaits in between), and only the
+      // copy that actually added the vtxo may record the receive movement.
+      if (!this._addVtxo(v, v._raw.bytes, 0)) continue;
       this._movement({ type: 'receive', amountSat: v.amountSat, status: 'complete', vtxoId: v.id });
       changed = true;
     }
