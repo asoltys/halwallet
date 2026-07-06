@@ -198,9 +198,24 @@ export function arkFeature(ctx) {
     return arkConnectPromise;
   }
 
+  // The current ark state for READ-ONLY rendering: the live manager if it's
+  // connected, else the persisted state straight from storage. Lets the
+  // balance and history icons paint immediately on refresh instead of
+  // flickering (empty → populated) while the manager connects asynchronously.
+  function arkStateNow() {
+    if (ark && ark.state) return ark.state;
+    if (!arkAvailable()) return null;
+    return wallet.loadArkState();
+  }
+
   function arkBalance() {
-    if (!ark || !ark.state) return null;
-    return ark.balance();
+    const s = arkStateNow();
+    if (!s) return null;
+    const sum = (st) => (s.vtxos || []).filter((v) => v.state === st).reduce((n, v) => n + v.amountSat, 0);
+    const boardingSat = (s.actions || [])
+      .filter((a) => a.type === 'board' && a.fundingTxid && !['done', 'failed'].includes(a.step))
+      .reduce((n, a) => n + (a.amountSat - a.feeSat), 0);
+    return { spendableSat: sum('spendable'), pendingSat: sum('pending'), boardingSat };
   }
 
   // An ark address in the send form signals a send is coming: verify our
@@ -1026,14 +1041,16 @@ export function arkFeature(ctx) {
       return true;
     },
     historyEntries() {
-      if (!ark || !ark.state) return [];
-      return ark.movements()
+      const s = arkStateNow();
+      if (!s) return [];
+      return (s.movements || [])
         .filter((m) => ['receive', 'send', 'board', 'offboard', 'exit'].includes(m.type) && m.status === 'complete')
         .map((m) => ({ time: m.ts, render: () => arkHistoryItem(m) }));
     },
     historyDetail() {
       if (!ui.arkMoveDetail) return null;
-      const m = ark && ark.state ? ark.movements().find((x) => x.id === ui.arkMoveDetail) : null;
+      const s = arkStateNow();
+      const m = s ? (s.movements || []).find((x) => x.id === ui.arkMoveDetail) : null;
       if (m) return arkMoveDetailView(m);
       ui.arkMoveDetail = null;
       return null;
@@ -1049,19 +1066,22 @@ export function arkFeature(ctx) {
       return lines;
     },
     decorateTxRow(tx) {
-      if (!ark || !ark.state) return null;
+      const s = arkStateNow();
+      if (!s) return null;
+      const acts = s.actions || [];
       if (tx.net < 0) {
-        const a = ark.state.actions.find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
+        const a = acts.find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
         return a ? { icon: h('span', { html: ARK_MARK(16) }), label: h('span', {}, t('arkBoardHistory')) } : null;
       }
-      const o = ark.state.actions.find((x) => x.type === 'offboard' && x.txid === tx.txid);
+      const o = acts.find((x) => x.type === 'offboard' && x.txid === tx.txid);
       if (o) return { icon: h('span', { html: ARK_MARK(16) }), label: h('span', {}, t('arkOffboardHistory')) };
-      const e = ark.state.actions.find((x) => x.type === 'exit' && x.claimTxid === tx.txid);
+      const e = acts.find((x) => x.type === 'exit' && x.claimTxid === tx.txid);
       return e ? { icon: h('span', { html: ARK_MARK(16) }), label: h('span', {}, t('arkExitHistory')) } : null;
     },
     txDetailSection(tx) {
-      if (!ark || !ark.state) return null;
-      const a = ark.state.actions.find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
+      const s = arkStateNow();
+      if (!s) return null;
+      const a = (s.actions || []).find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
       if (!a) return null;
       const done = a.step === 'done';
       return h('div', { class: 'summary col', style: 'gap:0' },
