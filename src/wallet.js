@@ -1520,7 +1520,15 @@ export class Wallet {
       this._wakeHooked = true;
       const wake = () => {
         if (this.offline || !this._wsWant) return;
-        if (!this._ws || this._ws.readyState !== 1) this._reconnectNow();
+        // A backgrounded mobile page often leaves the socket HALF-OPEN: the OS
+        // killed the TCP connection but the frozen JS runtime never got onclose,
+        // so readyState still reads 1 (OPEN). Don't trust it — if the socket has
+        // been silent past the heartbeat window it's dead, so force a reconnect
+        // rather than firing scan RPCs into the void and waiting ~20s for the
+        // heartbeat to notice. A healthy foreground socket pings every 10s, so
+        // _lastMsg stays fresh and this never churns a live connection.
+        const stale = Date.now() - (this._lastMsg || 0) > 15000;
+        if (!this._ws || this._ws.readyState !== 1 || stale) this._reconnectNow();
         this.scan({ silent: true }).catch(() => {});
       };
       document.addEventListener('visibilitychange', () => {

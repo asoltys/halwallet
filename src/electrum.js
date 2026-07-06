@@ -16,6 +16,7 @@
 import * as btc from '@scure/btc-signer';
 import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
+import { mapEsploraFees } from './api.js';
 
 const RAW_OPTS = { allowUnknownOutputs: true, allowUnknownInputs: true, disableScriptCheck: true };
 
@@ -214,7 +215,27 @@ export class ElectrumApi {
   }
 
   // ---- fees + broadcast --------------------------------------------------
+  // Fee rates come from the configured block explorer's live recommendation
+  // (mempool.space projects the next block from actual mempool contents), NOT
+  // from Fulcrum's blockchain.estimatefee — that wraps Bitcoin Core's
+  // estimatesmartfee, which works off historical confirmation data, lags the
+  // mempool badly, and floors at 1 sat/vB, so it reports 1 across the board in
+  // normal conditions. estimatefee is only the last resort when the explorer is
+  // unreachable (regtest, or a self-hosted node with no REST explorer).
   async feeRates() {
+    const web = this._explorerWeb;
+    if (web && !this.offline) {
+      // mempool.space shape first (the live next-block projection)…
+      try {
+        const r = await fetch(`${web}/api/v1/fees/recommended`);
+        if (r.ok) { const d = await r.json(); if (d && d.halfHourFee) return d; }
+      } catch {}
+      // …then the plain-Esplora /fee-estimates shape.
+      try {
+        const r = await fetch(`${web}/api/fee-estimates`);
+        if (r.ok) { const d = await r.json(); if (d && Object.keys(d).length) return mapEsploraFees(d); }
+      } catch {}
+    }
     const targets = { fastestFee: 1, halfHourFee: 3, hourFee: 6, economyFee: 144, minimumFee: 1008 };
     const out = {};
     await Promise.all(Object.entries(targets).map(async ([k, n]) => {

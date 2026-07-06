@@ -593,7 +593,7 @@ export class Api {
 
 // Esplora /fee-estimates is { blockTarget: sat/vB }. Map to the named tiers the
 // UI expects. Round up so we never underpay.
-function mapEsploraFees(est) {
+export function mapEsploraFees(est) {
   const at = (n, d) => Math.max(1, Math.ceil(est[n] || d));
   return {
     fastestFee: at(1, 10),
