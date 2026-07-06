@@ -177,6 +177,12 @@ export function arkFeature(ctx) {
       ark = mgr;
       announceArkAddress(mgr); // ark zaps: tell nostr where our mailbox lives
       startNwcFunding(mgr);    // NWC bridge: honor funding requests within the allowance
+      // Publish this device's ark state to its per-device sync slot on connect.
+      // Cross-device sync only re-published on a state CHANGE (a send/board), so
+      // an idle device never shared its coins — another device would never see
+      // them. Publishing on connect guarantees every device's ark balance
+      // reaches the relay (and gets merged) without needing a transaction first.
+      if (mgr.state && (mgr.state.vtxos || []).length) { try { wallet.saveCache(); } catch {} }
       const tick = () => mgr.sync().catch(() => {}).then(() => driveExits(mgr)).catch(() => {});
       tick();
       // Reconcile once on connect: a vtxo synced in from another device (or
