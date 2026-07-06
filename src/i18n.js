@@ -390,7 +390,7 @@ const STR = {
     arkRefreshBtn: 'Refresh / consolidate {n} coin(s)',
     arkOffboardBtn: 'Move {n} back on-chain',
     giftSourceChain: 'On-chain',
-    giftSourceArk: '⚔ Ark',
+    giftSourceArk: 'Ark',
     giftArkNote: 'Sent from your Ark balance — the link claims instantly, off-chain, with no fee.',
     giftArkOutstanding: '{n} unclaimed Ark gift(s)',
     giftArkRevoked: 'Gift swept back to your Ark balance.',

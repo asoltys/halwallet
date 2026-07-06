@@ -18,6 +18,7 @@ import {
   shortTxid,
   timeAgo,
   SATS,
+  ARK_ICON,
 } from './format.js';
 
 const wallet = new Wallet();
@@ -510,7 +511,7 @@ function howItWorksScreen() {
       h('h3', {}, '⚡ ' + t('hiwLnTitle')),
       para('hiwLn1')),
     h('div', { class: 'card col', style: 'gap:14px' },
-      h('h3', {}, '⚔ ' + t('hiwArkTitle')),
+      h('h3', { class: 'row gap6', style: 'align-items:center' }, h('span', { html: ARK_ICON(18) }), t('hiwArkTitle')),
       para('hiwArk1'),
       para('hiwArk2'),
       para('hiwArk3')),

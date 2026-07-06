@@ -14,7 +14,7 @@ import { utxoId } from '../wallet.js';
 import { getNetwork, setNetwork, arkPresets, getArkProviderId, setArkProviderId, getArkCustom, setArkCustom, getArkConfig } from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
-import { shortAddr, shortTxid, timeAgo } from '../format.js';
+import { shortAddr, shortTxid, timeAgo, ARK_ICON, ARK_MARK } from '../format.js';
 
 // t?ark1… bech32m — an Ark address for this or another ASP.
 export function isArkAddress(a) { return /^t?ark1[a-z0-9]{20,}$/i.test((a || '').trim()); }
@@ -326,7 +326,7 @@ export function arkFeature(ctx) {
       render();
     };
     const head = [
-      h('h3', {}, '⚔ Ark'),
+      h('h3', { class: 'row gap6', style: 'align-items:center' }, h('span', { html: ARK_ICON(18) }), 'Ark'),
       h('p', { class: 'small muted', style: 'margin:0' }, t('arkDesc')),
       h('select', { onChange: (e) => applyProvider(e.target.value) },
         presets.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
@@ -1051,12 +1051,12 @@ export function arkFeature(ctx) {
       if (!ark || !ark.state) return null;
       if (tx.net < 0) {
         const a = ark.state.actions.find((x) => x.type === 'board' && x.fundingTxid === tx.txid);
-        return a ? { icon: '⚔', label: h('span', {}, t('arkBoardHistory')) } : null;
+        return a ? { icon: h('span', { html: ARK_MARK(16) }), label: h('span', {}, t('arkBoardHistory')) } : null;
       }
       const o = ark.state.actions.find((x) => x.type === 'offboard' && x.txid === tx.txid);
-      if (o) return { icon: '⚔', label: h('span', {}, t('arkOffboardHistory')) };
+      if (o) return { icon: h('span', { html: ARK_MARK(16) }), label: h('span', {}, t('arkOffboardHistory')) };
       const e = ark.state.actions.find((x) => x.type === 'exit' && x.claimTxid === tx.txid);
-      return e ? { icon: '⚔', label: h('span', {}, t('arkExitHistory')) } : null;
+      return e ? { icon: h('span', { html: ARK_MARK(16) }), label: h('span', {}, t('arkExitHistory')) } : null;
     },
     txDetailSection(tx) {
       if (!ark || !ark.state) return null;
@@ -1064,7 +1064,7 @@ export function arkFeature(ctx) {
       if (!a) return null;
       const done = a.step === 'done';
       return h('div', { class: 'summary col', style: 'gap:0' },
-        h('div', { style: 'font-weight:600;margin:12px 0 2px' }, '⚔ ' + t('arkBoardHistory')),
+        h('div', { class: 'row gap6', style: 'font-weight:600;margin:12px 0 2px;align-items:center' }, h('span', { html: ARK_ICON(16) }), t('arkBoardHistory')),
         h('div', { class: 'line' },
           h('span', { class: 'k' }, t('arkBalance')),
           h('span', { class: 'v' }, '+' + fmtAmount(a.amountSat - a.feeSat) + ' ' + unitLabel())),
