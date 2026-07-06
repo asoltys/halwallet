@@ -198,6 +198,15 @@ export function installSpWallet(wallet) {
         try { this.lastSpScan = (await (await fetch(`${indexer}/height`)).json()).height || 0; this.saveCache(); } catch {}
         return { fresh: true };
       }
+      // Two tabs on the same wallet must not both grind the catch-up: a
+      // localStorage lease (refreshed per chunk) lets the second tab yield.
+      const leaseKey = this._cacheKey() + ':spscan-lease';
+      try {
+        if (!rescan && Date.now() - (parseInt(localStorage.getItem(leaseKey), 10) || 0) < 30000) {
+          return { busy: true };
+        }
+        localStorage.setItem(leaseKey, String(Date.now()));
+      } catch {}
       this._spScanBusy = true;
       // Only a manual scan shows the visible "Scanning…" state; auto-scans are
       // invisible (setting spScanning for them left the card stuck on "Scanning…").
@@ -237,6 +246,7 @@ export function installSpWallet(wallet) {
           }
           const maxH = slice[slice.length - 1].height;
           if (maxH > (this.lastSpScan || 0)) { this.lastSpScan = maxH; this.saveCache(); } // checkpoint
+          try { localStorage.setItem(leaseKey, String(Date.now())); } catch {} // keep the lease
           await new Promise((r) => setTimeout(r, 0)); // let the UI breathe
         }
         if (tip > (this.lastSpScan || 0)) this.lastSpScan = tip;

@@ -81,7 +81,7 @@ export function giftsFeature(ctx) {
     // first-timer (or a wrong-network device) never has to visit Settings.
     // Per-wallet networks make this safe — other wallets keep their own.
     hook('arkGiftAdoptNetwork', code);
-    enterWallet(newMnemonic(), '', { gift: code });
+    enterWallet(newMnemonic(), '', { gift: code, generated: true });
   }
 
   // Claim a gift into an existing wallet (no new seed). activateAccount loads it and
@@ -117,7 +117,7 @@ export function giftsFeature(ctx) {
             h('span', { class: 'muted', style: 'font-size:18px;line-height:1' }, '\u203a'))
         ),
         h('div', { class: 'small faint', style: 'text-align:center' }, t('claimOr')),
-        h('button', { class: 'btn-primary btn-block', onClick: () => { ui.claimChoose = null; hook('arkGiftAdoptNetwork', code); enterWallet(newMnemonic(), '', { gift: code }); } }, t('claimNewWallet'))
+        h('button', { class: 'btn-primary btn-block', onClick: () => { ui.claimChoose = null; hook('arkGiftAdoptNetwork', code); enterWallet(newMnemonic(), '', { gift: code, generated: true }); } }, t('claimNewWallet'))
       )
     );
   }
