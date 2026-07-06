@@ -212,18 +212,34 @@ export function installSpWallet(wallet) {
         const tip = res.tip || 0;
         const have = new Set(this.spUtxos.map((u) => `${u.txid}:${u.vout}`));
         const found = [];
-        const hits = await this._spHitBlocks(res.blocks || []);
-        for (const block of res.blocks || []) {
-          if (!hits.has(block.height)) continue;
-          const blk = await (await fetch(`${indexer}/block/${block.height}`)).json();
-          for (const f of await this._spScanItems(blk.items || [])) {
-            const id = `${f.txid}:${f.vout}`;
-            if (have.has(id)) continue;
-            have.add(id);
-            found.push(f);
+        const blocks = res.blocks || [];
+        // Process in chunks. An imported wallet's first catch-up can be the
+        // indexer's whole window (hundreds of thousands of tweaks, ~25MB) —
+        // sent as ONE worker message it blew the 30s worker timeout, fell
+        // back to the inline loop (janking the UI for minutes while the
+        // worker kept grinding the orphaned request), and held the giant
+        // buffers live the whole time. Chunks keep each call sub-second, let
+        // the scan watermark advance as blocks complete (interruptions
+        // resume instead of restarting), and free memory as they go.
+        const CHUNK = 100;
+        for (let c = 0; c < blocks.length; c += CHUNK) {
+          const slice = blocks.slice(c, c + CHUNK);
+          const hits = await this._spHitBlocks(slice);
+          for (const block of slice) {
+            if (!hits.has(block.height)) continue;
+            const blk = await (await fetch(`${indexer}/block/${block.height}`)).json();
+            for (const f of await this._spScanItems(blk.items || [])) {
+              const id = `${f.txid}:${f.vout}`;
+              if (have.has(id)) continue;
+              have.add(id);
+              found.push(f);
+            }
           }
+          const maxH = slice[slice.length - 1].height;
+          if (maxH > (this.lastSpScan || 0)) { this.lastSpScan = maxH; this.saveCache(); } // checkpoint
+          await new Promise((r) => setTimeout(r, 0)); // let the UI breathe
         }
-        if (tip > this.lastSpScan) this.lastSpScan = tip;
+        if (tip > (this.lastSpScan || 0)) this.lastSpScan = tip;
         // Verify newly-found outputs are unspent + get confirmation status.
         for (const f of found) {
           const address = this._spAddress(f.xonly);
