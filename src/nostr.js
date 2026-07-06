@@ -186,6 +186,20 @@ export class NostrSync {
     } catch { return () => {}; }
   }
 
+  // Live subscription to our own (replaceable) state event, decrypted.
+  // Another device saving state delivers here within seconds.
+  subscribeStates(onState) {
+    if (!this.pk) return () => {};
+    return this.subscribeEvents(
+      { kinds: [30078], authors: [this.pk], '#d': [this.dtag] },
+      (ev) => {
+        try {
+          const v = JSON.parse(nip44.decrypt(ev.content, this.ck));
+          if (v) onState(v);
+        } catch {}
+      });
+  }
+
   // Fetch the newest decrypted state across relays, or null.
   async fetch() {
     if (!this.sk) return null;

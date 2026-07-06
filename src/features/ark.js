@@ -37,9 +37,68 @@ export function installArkWallet(wallet) {
   });
 }
 
+// Merge two ark states so devices can't clobber each other through the sync
+// snapshot: vtxos union by id with 'spent' winning (a spend on any device
+// sticks), actions/movements/gifts union by id, counters take the max (so two
+// devices never reuse a key index).
+export function mergeArkStates(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const out = { ...a };
+  // ADDITIVE union only: bring in vtxos this device is missing (the whole
+  // point — board/change coins that live only where they were created), but
+  // NEVER let a remote snapshot change the state of a vtxo we already track.
+  // Spend detection is each device's own job via reconcile() against the
+  // server (the authority), so a stale-or-wrong "spent" on one device can't
+  // propagate and permanently poison the others. A newly-merged-in vtxo that
+  // was actually spent elsewhere gets caught by the reconcile on next connect
+  // / send-intent, exactly like any other drift.
+  const vtxos = new Map((a.vtxos || []).map((v) => [v.id, { ...v }]));
+  for (const rv of b.vtxos || []) if (!vtxos.has(rv.id)) vtxos.set(rv.id, { ...rv });
+  out.vtxos = [...vtxos.values()];
+  const unionById = (x = [], y = []) => {
+    const ids = new Set(x.map((i) => i.id));
+    return [...x, ...y.filter((i) => !ids.has(i.id))];
+  };
+  out.actions = unionById(a.actions, b.actions);
+  out.movements = unionById(a.movements, b.movements).sort((m, n) => (m.ts || 0) - (n.ts || 0));
+  const gifts = new Map((a.gifts || []).map((g) => [g.id, { ...g }]));
+  for (const rg of b.gifts || []) {
+    const lg = gifts.get(rg.id);
+    if (!lg) gifts.set(rg.id, { ...rg });
+    else { lg.claimed = lg.claimed || rg.claimed; lg.revoked = lg.revoked || rg.revoked; }
+  }
+  out.gifts = [...gifts.values()];
+  out.mailboxCheckpoint = Math.max(a.mailboxCheckpoint || 0, b.mailboxCheckpoint || 0);
+  out.nextKeyIndex = Math.max(a.nextKeyIndex || 1, b.nextKeyIndex || 1);
+  out.receiveAckTs = Math.max(a.receiveAckTs || 0, b.receiveAckTs || 0);
+  return out;
+}
+
 export function arkFeature(ctx) {
   const { h, ui, render, wallet, blankSend, fmtAmount, unitLabel, unitTag, copyBtn, toast, openExternal } = ctx;
   installArkWallet(wallet); // ark state storage lives outside the core wallet
+
+  // Ride the encrypted sync snapshot so ark funds follow the seed across
+  // devices. Board/change vtxo bytes exist only where they were created —
+  // without this a second device simply cannot see them. Merge-on-load (and
+  // merge-on-save below) keeps concurrent devices from clobbering coins.
+  wallet.registerCacheExtension({
+    mergeAlways: true, // load() is a commutative merge — apply older snapshots too
+    save: () => {
+      const s = wallet.loadArkState();
+      return s ? { arkState: s } : {};
+    },
+    load: (d) => {
+      if (!d.arkState) return;
+      const merged = mergeArkStates(wallet.loadArkState(), d.arkState);
+      wallet.saveArkState(merged);
+      // a snapshot can arrive after this feature initialized (or brought vtxos
+      // a live manager doesn't know) — reconnect so the balance shows
+      const novel = (d.arkState.vtxos || []).some((v) => !ark || !ark.state.vtxos.some((x) => x.id === v.id));
+      if ((merged.vtxos || []).length && novel) setTimeout(() => initArk(), 0);
+    },
+  });
 
   // One manager per open wallet; null when Ark is off in Settings, watch-only,
   // or not yet dialed (lazy: fresh wallets connect on first use).
@@ -82,7 +141,19 @@ export function arkFeature(ctx) {
     const gen = arkInitGen;
     const mgr = new ArkManager({
       account: wallet.account(),
-      storage: { load: () => wallet.loadArkState(), save: (s) => wallet.saveArkState(s) },
+      storage: {
+        load: () => wallet.loadArkState(),
+        // merge-on-save: the MANAGER is authoritative for the state of the
+        // vtxos it tracks (its reconcile/spends must persist), so its state
+        // is the first arg and wins; storage only contributes vtxos the
+        // manager hasn't loaded yet (a snapshot merged in from another device
+        // between init and the next reinit). saveCache() then carries ark
+        // state into the snapshot -> debounced nostr publish.
+        save: (s) => {
+          wallet.saveArkState(mergeArkStates(s, wallet.loadArkState()));
+          try { wallet.saveCache(); } catch {}
+        },
+      },
       arkUrl: cfg.ark,
       esploraUrl: cfg.esplora,
       network: getNetwork(),
@@ -96,6 +167,11 @@ export function arkFeature(ctx) {
       startNwcFunding(mgr);    // NWC bridge: honor funding requests within the allowance
       const tick = () => mgr.sync().catch(() => {}).then(() => driveExits(mgr)).catch(() => {});
       tick();
+      // Reconcile once on connect: a vtxo synced in from another device (or
+      // one this device held while a spend happened elsewhere) is checked
+      // against the server, so a stale spendable is caught here rather than
+      // only at send time.
+      mgr.reconcile().catch(() => {});
       // Receives arrive in real time over the mailbox stream; the poll is the
       // fallback and what drives in-flight boards/refreshes forward.
       mgr.startMailboxStream();

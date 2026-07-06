@@ -70,7 +70,9 @@ export function installSyncWallet(wallet) {
         this.emit();
         return true;
       }
-      // Our local copy is newer (or equal) — push it up so the relay catches up.
+      // Our local copy is newer (or equal) — but merge-safe extension state
+      // (ark vtxos) still flows in from the older snapshot before we push up.
+      this._mergeSnapshotExtensions(remote);
       if ((this._savedAt || 0) > (remote.savedAt || 0)) this.saveCache();
       return true; // remote existed, so no full scan needed
     },
@@ -81,6 +83,28 @@ export function installSyncWallet(wallet) {
     if (wallet.mnemonic) wallet.nostr.load(wallet.mnemonic, wallet.passphrase);
     else wallet.nostr.unload();
   });
+  // Live cross-device state: subscribe to our own replaceable event so a save
+  // on another device merges here within seconds. Only merge-safe extension
+  // state (ark vtxos) applies live — full snapshots stay a load-time affair —
+  // which also guarantees every snapshot we publish is a superset, so the
+  // replaceable event on the relay never loses another device's coins.
+  let stateUnsub = null;
+  wallet.registerRealtimeHook({
+    start: () => {
+      const sync = getSyncConfig();
+      if (!sync.enabled || !wallet.nostr.pk) return;
+      wallet.nostr.setRelays(sync.relays);
+      wallet.nostr.setDtag(syncDtag(wallet.netName));
+      if (stateUnsub) { try { stateUnsub(); } catch {} }
+      stateUnsub = wallet.nostr.subscribeStates((v) => {
+        if (!v.netName || v.netName !== wallet.netName) return;
+        if ((v.savedAt || 0) === (wallet._savedAt || 0)) return; // our own echo
+        wallet._mergeSnapshotExtensions(v);
+      });
+    },
+    stop: () => { if (stateUnsub) { try { stateUnsub(); } catch {} stateUnsub = null; } },
+  });
+
   // push every saved snapshot to the relays (debounced) unless sync is off
   wallet.registerCacheSavedHook((snap) => {
     const sync = getSyncConfig();

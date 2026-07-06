@@ -1195,7 +1195,15 @@ export class Wallet {
   // Called from load() with its options (wallet switch / (re)open).
   registerLoadHook(fn) { this._loadHooks.push(fn); }
   // save() -> object merged into the cache snapshot; load(d) restores.
+  // An extension with mergeAlways:true has a commutative load() and is also
+  // fed snapshots OLDER than local state (see _mergeSnapshotExtensions).
   registerCacheExtension(e) { this._cacheExtensions.push(e); }
+  // Feed merge-safe extensions a snapshot that ISN'T newer than local state —
+  // last-writer-wins is right for rescannable chain data, but merge-style
+  // state (ark vtxos) must flow both directions.
+  _mergeSnapshotExtensions(d) {
+    for (const e of this._cacheExtensions) { try { if (e.mergeAlways) e.load(d); } catch {} }
+  }
   // Called with every saved state snapshot (e.g. to push it to sync relays).
   registerCacheSavedHook(fn) { this._cacheSavedHooks.push(fn); }
   lockedCoinIds() {
