@@ -19,7 +19,7 @@ import { wordlist } from '@scure/bip39/wordlists/english';
 
 const PORT = 5199;
 const APP = `http://localhost:${PORT}`;
-const BCLI = `bitcoin-cli -regtest -datadir=${process.env.HOME}/ark-regtest/bitcoind -rpcport=18543 -rpcwallet=miner`;
+const BCLI = `docker exec bc bitcoin-cli -rpcwallet=coinos`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sh = (cmd) => execSync(cmd, { shell: '/bin/bash' }).toString().trim();
 const mine = (n = 1) => sh(`${BCLI} generatetoaddress ${n} $(${BCLI} getnewaddress) >/dev/null`);
