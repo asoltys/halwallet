@@ -37,10 +37,33 @@ export function installArkWallet(wallet) {
   });
 }
 
+// A slim projection of ark state for the sync snapshot — the sync relay caps
+// events at 64 KB and the full state (deep-genesis vtxo bytes + done-action
+// hex) blew past it, so publishes silently failed and nothing synced. Another
+// device needs, per vtxo: id/amount/state (+ bytes ONLY for spendable/pending,
+// which it might spend/exit); the movement log (capped) for ark history; and
+// done board/offboard/exit actions (stripped of hex) so on-chain rows still
+// label. In-flight actions and their signing material stay device-local.
+export function slimArkForSync(s) {
+  if (!s) return null;
+  const HEAVY = ['bytes', 'destBytes', 'changeBytes', 'vtxoBytes', 'txHex', 'fundingTxHex', 'outputVtxos'];
+  return {
+    v: s.v, mailboxCheckpoint: s.mailboxCheckpoint, nextKeyIndex: s.nextKeyIndex, receiveAckTs: s.receiveAckTs,
+    vtxos: (s.vtxos || []).map((v) => v.state === 'spent'
+      ? { id: v.id, amountSat: v.amountSat, state: 'spent', keyIndex: v.keyIndex, expiryHeight: v.expiryHeight }
+      : v),
+    actions: (s.actions || [])
+      .filter((a) => a.step === 'done' && ['board', 'offboard', 'exit'].includes(a.type))
+      .map((a) => { const c = { ...a }; for (const k of HEAVY) delete c[k]; return c; }),
+    movements: (s.movements || []).slice(-300),
+    gifts: s.gifts,
+  };
+}
+
 // Merge two ark states so devices can't clobber each other through the sync
-// snapshot: vtxos union by id with 'spent' winning (a spend on any device
-// sticks), actions/movements/gifts union by id, counters take the max (so two
-// devices never reuse a key index).
+// snapshot: additive union of vtxos (a device keeps its own full copy, gains
+// ones it lacks), actions/movements/gifts union by id, counters take the max
+// (so two devices never reuse a key index).
 export function mergeArkStates(a, b) {
   if (!a) return b;
   if (!b) return a;
@@ -91,7 +114,7 @@ export function arkFeature(ctx) {
     mergeAlways: true, // load() is a commutative merge — apply older snapshots too
     save: () => {
       const s = wallet.loadArkState();
-      return s ? { arkState: s } : {};
+      return s ? { arkState: slimArkForSync(s) } : {};
     },
     load: (d) => {
       if (!d.arkState) return;
@@ -182,8 +205,7 @@ export function arkFeature(ctx) {
       // an idle device never shared its coins — another device would never see
       // them. Publishing on connect guarantees every device's ark balance
       // reaches the relay (and gets merged) without needing a transaction first.
-      console.log('[arkdbg] connected, vtxos=', (mgr.state && mgr.state.vtxos || []).length, 'net=', getNetwork());
-      if (mgr.state && (mgr.state.vtxos || []).length) { try { wallet.saveCache(); console.log('[arkdbg] on-connect saveCache called'); } catch (e) { console.log('[arkdbg] saveCache threw', e.message); } }
+      if (mgr.state && (mgr.state.vtxos || []).length) { try { wallet.saveCache(); } catch {} }
       const tick = () => mgr.sync().catch(() => {}).then(() => driveExits(mgr)).catch(() => {});
       tick();
       // Reconcile once on connect: a vtxo synced in from another device (or
