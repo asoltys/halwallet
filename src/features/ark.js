@@ -182,7 +182,8 @@ export function arkFeature(ctx) {
       // an idle device never shared its coins — another device would never see
       // them. Publishing on connect guarantees every device's ark balance
       // reaches the relay (and gets merged) without needing a transaction first.
-      if (mgr.state && (mgr.state.vtxos || []).length) { try { wallet.saveCache(); } catch {} }
+      console.log('[arkdbg] connected, vtxos=', (mgr.state && mgr.state.vtxos || []).length, 'net=', getNetwork());
+      if (mgr.state && (mgr.state.vtxos || []).length) { try { wallet.saveCache(); console.log('[arkdbg] on-connect saveCache called'); } catch (e) { console.log('[arkdbg] saveCache threw', e.message); } }
       const tick = () => mgr.sync().catch(() => {}).then(() => driveExits(mgr)).catch(() => {});
       tick();
       // Reconcile once on connect: a vtxo synced in from another device (or

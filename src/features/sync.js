@@ -111,8 +111,9 @@ export function installSyncWallet(wallet) {
     // bind the per-device d-tag now: the debounced publish must keep this
     // snapshot's network even if the wallet switches networks before it fires
     const dtag = deviceDtag(wallet.netName);
+    console.log('[syncdbg] cacheSaved scheduling publish', dtag, 'hasArk?', !!snap.arkState, 'sk?', !!wallet.nostr.sk);
     clearTimeout(wallet._nostrPubTimer);
-    wallet._nostrPubTimer = setTimeout(() => wallet.nostr.publish(snap, dtag), 2500);
+    wallet._nostrPubTimer = setTimeout(() => { console.log('[syncdbg] publishing now', dtag); wallet.nostr.publish(snap, dtag); }, 2500);
   });
   wallet.registerRealtimeHook({ stop: () => clearTimeout(wallet._nostrPubTimer) });
 }
