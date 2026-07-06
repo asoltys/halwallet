@@ -178,6 +178,14 @@ export class NostrSync {
     try { return await pool.querySync(this.relays, filter, { maxWait }); } catch { return []; }
   }
 
+  // Live subscription; returns an unsubscribe function.
+  subscribeEvents(filter, onEvent) {
+    try {
+      const sub = pool.subscribeMany(this.relays, [filter], { onevent: onEvent });
+      return () => { try { sub.close(); } catch {} };
+    } catch { return () => {}; }
+  }
+
   // Fetch the newest decrypted state across relays, or null.
   async fetch() {
     if (!this.sk) return null;

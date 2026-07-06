@@ -53,6 +53,7 @@ export function arkFeature(ctx) {
     if (arkTimer) clearInterval(arkTimer);
     arkTimer = null;
     if (ark) ark.stopMailboxStream();
+    stopNwcFunding();
     ark = null;
     arkConnectPromise = null;
   }
@@ -92,6 +93,7 @@ export function arkFeature(ctx) {
       if (gen !== arkInitGen) throw new Error('superseded'); // wallet switched mid-connect
       ark = mgr;
       announceArkAddress(mgr); // ark zaps: tell nostr where our mailbox lives
+      startNwcFunding(mgr);    // NWC bridge: honor funding requests within the allowance
       const tick = () => mgr.sync().catch(() => {}).then(() => driveExits(mgr)).catch(() => {});
       tick();
       // Receives arrive in real time over the mailbox stream; the poll is the
@@ -455,6 +457,50 @@ export function arkFeature(ctx) {
               ? h('button', { class: 'btn-primary grow', disabled: true }, h('span', { class: 'spinner' }))
               : h('button', { class: 'btn-primary grow', onClick: doArkZap }, t('arkZapBtn')))
           : null));
+  }
+
+  // ---- NWC bridge funding (PoC) --------------------------------------------
+  // An external NWC wallet service (e.g. coinos) can bridge ark -> lightning:
+  // a nostr client asks IT to pay_invoice, it asks US (kind 23196, funding
+  // request) to cover the amount over ark, we auto-pay within a user-set
+  // allowance and ack (kind 23197). Custody window = seconds in flight.
+  // PoC config in localStorage 'btc-wallet-arknwc': { bridgePk, budgetSat }.
+  const NWC_FUND_KIND = 23196;
+  const NWC_FUND_ACK_KIND = 23197;
+  let nwcUnsub = null;
+  let nwcSpent = 0;
+
+  function stopNwcFunding() {
+    if (nwcUnsub) { try { nwcUnsub(); } catch {} nwcUnsub = null; }
+  }
+
+  function startNwcFunding(mgr) {
+    if (nwcUnsub || !wallet.nostrSubscribe || !wallet.nostrPubkey || !wallet.nostrPubkey()) return;
+    let cfg = null;
+    try { cfg = JSON.parse(localStorage.getItem('btc-wallet-arknwc') || 'null'); } catch {}
+    if (!cfg || !cfg.bridgePk || !(cfg.budgetSat > 0)) return;
+    const seen = new Set();
+    nwcUnsub = wallet.nostrSubscribe(
+      { kinds: [NWC_FUND_KIND], authors: [cfg.bridgePk], '#p': [wallet.nostrPubkey()] },
+      async (ev) => {
+        if (seen.has(ev.id)) return;
+        seen.add(ev.id);
+        let req;
+        try { req = JSON.parse(ev.content); } catch { return; }
+        const sats = Math.round(req.amountSat || 0);
+        if (!sats || !req.address || nwcSpent + sats > cfg.budgetSat) return; // over allowance: bridge times out
+        try {
+          const actionId = await mgr.send(req.address, sats);
+          const action = mgr.state.actions.find((a) => a.id === actionId);
+          if (!action || action.step === 'failed') return;
+          nwcSpent += sats;
+          await wallet.nostrPublish({
+            kind: NWC_FUND_ACK_KIND,
+            tags: [['p', cfg.bridgePk], ['e', ev.id]],
+            content: JSON.stringify({ id: req.id }),
+          });
+        } catch {}
+      });
   }
 
   // ---- unilateral exit (trustless: no server cooperation) ------------------

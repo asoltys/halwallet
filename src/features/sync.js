@@ -37,6 +37,12 @@ export function installSyncWallet(wallet) {
       this.nostr.setRelays(sync.relays);
       return this.nostr.fetchEvents(filter, maxWait);
     },
+    nostrSubscribe(filter, onEvent) {
+      const sync = getSyncConfig();
+      if (this.offline || !sync.enabled) return () => {};
+      this.nostr.setRelays(sync.relays);
+      return this.nostr.subscribeEvents(filter, onEvent);
+    },
 
     // Pull the latest state from Nostr; apply it if it's newer than what we have.
     // Returns true if state was applied (so the caller can skip a full scan).
