@@ -41,6 +41,7 @@ import {
   prepareOffboard, validateOffboardTx, signOffboardForfeits, finishOffboard,
   P2TR_DUST,
 } from './offboard.js';
+import { signedExitTxs } from './exit.js';
 import { validateVtxo, VtxoValidationError } from './validate.js';
 
 const EMPTY_STATE = () => ({
@@ -266,6 +267,26 @@ export class ArkManager {
         if (!(e instanceof GrpcError)) throw e;
       }
     }
+  }
+
+  // ---- unilateral exit ----
+  // Marks the vtxo pending and records the action. The ark FEATURE drives the
+  // steps (it owns the on-chain wallet needed for fee-bump coins and the
+  // claim destination); crash-safety comes from the persisted action like
+  // every other flow. signedExitTxs() up front validates the chain is fully
+  // signed before anything is committed.
+  startExit(vtxoId) {
+    const v = this._vtxo(vtxoId);
+    if (!v || v.state !== 'spendable') throw new Error('vtxo is not spendable');
+    const txs = signedExitTxs(this._decoded(v), this.serverPub);
+    const action = {
+      id: `exit-${Date.now()}-${vtxoId.slice(0, 8)}`, type: 'exit', step: 'chain',
+      vtxoId, amountSat: v.amountSat, txids: txs.map((t) => t.txid),
+    };
+    v.state = 'pending';
+    this.state.actions.push(action);
+    this._save();
+    return action;
   }
 
   // ---- offboard (collaborative exit: all spendable vtxos -> one on-chain output) ----

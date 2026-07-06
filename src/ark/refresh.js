@@ -68,8 +68,10 @@ function taprootFromMerkle(internalXOnly, merkleRoot) {
   const P = secp256k1.ProjectivePoint;
   const internalPoint = P.fromHex(concatBytes(Uint8Array.of(0x02), internalXOnly));
   const outputPoint = internalPoint.add(P.BASE.multiply(BigInt('0x' + hex.encode(tapTweak))));
-  const outputXOnly = outputPoint.toRawBytes(true).slice(1);
-  return { tapTweak, outputXOnly, scriptPubKey: concatBytes(hex.decode('5120'), outputXOnly) };
+  const outputCompressed = outputPoint.toRawBytes(true);
+  const outputXOnly = outputCompressed.slice(1);
+  const outputParity = outputCompressed[0] === 0x03 ? 1 : 0;
+  return { tapTweak, outputXOnly, outputParity, scriptPubKey: concatBytes(hex.decode('5120'), outputXOnly) };
 }
 
 // Cosigned transition input: internal = musig(pubkeys), one timelock leaf
@@ -86,7 +88,8 @@ export function harkLeafTaproot(userPub, serverPub, expiryHeight, unlockHash) {
   const expiryLeaf = tapLeafHash(timelockSignScript(expiryHeight, serverPub.slice(1)));
   const unlockScript = hashSignScript(unlockHash, internalXOnly);
   const unlockLeaf = tapLeafHash(unlockScript);
-  return { ...taprootFromMerkle(internalXOnly, tapBranch(expiryLeaf, unlockLeaf)), unlockScript, internalXOnly };
+  // expiryLeaf doubles as the merkle path when spending through the unlock leaf
+  return { ...taprootFromMerkle(internalXOnly, tapBranch(expiryLeaf, unlockLeaf)), unlockScript, internalXOnly, expiryLeaf };
 }
 
 // Forfeit claim output: internal = musig(user, server);

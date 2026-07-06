@@ -70,6 +70,9 @@ export function giftsFeature(ctx) {
     ui.claimLocked = null;
     ui.claimArkAmount = null;
     const targets = claimTargets();
+    // No wallets on this device: adopt the gift's network so a first-timer
+    // never has to visit Settings before claiming.
+    if (!targets.length) hook('arkGiftAdoptNetwork', code);
     if (targets.length) { setAccounts(targets); ui.claimChoose = { code }; render(); }
     else enterWallet(newMnemonic(), '', { gift: code });
   }

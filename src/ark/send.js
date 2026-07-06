@@ -84,14 +84,19 @@ export function taprootOneLeaf(userPub, serverPub, leafScript) {
   // lift internal x-only, add tweak*G
   const internalPoint = P.fromHex(concatBytes(Uint8Array.of(0x02), internalXOnly));
   const outputPoint = internalPoint.add(P.BASE.multiply(BigInt('0x' + hex.encode(tapTweak))));
-  const outputXOnly = outputPoint.toRawBytes(true).slice(1);
+  const outputCompressed = outputPoint.toRawBytes(true);
+  const outputXOnly = outputCompressed.slice(1);
   const scriptPubKey = concatBytes(hex.decode('5120'), outputXOnly);
-  return { sortedKeys, internalXOnly, merkleRoot, tapTweak, outputXOnly, scriptPubKey };
+  const outputParity = outputCompressed[0] === 0x03 ? 1 : 0; // for script-path control blocks
+  return { sortedKeys, internalXOnly, merkleRoot, tapTweak, outputXOnly, outputParity, scriptPubKey };
 }
 
-// PubkeyVtxoPolicy: keyspend musig(user,server); leaf = delayed_sign(exit_delta, user)
-export const pubkeyPolicyTaproot = (userPub, serverPub, exitDelta) =>
-  taprootOneLeaf(userPub, serverPub, delayedSignScript(exitDelta, xonly(userPub)));
+// PubkeyVtxoPolicy: keyspend musig(user,server); leaf = delayed_sign(exit_delta, user).
+// leafScript is returned so a unilateral exit can claim through it after the CSV.
+export const pubkeyPolicyTaproot = (userPub, serverPub, exitDelta) => {
+  const leafScript = delayedSignScript(exitDelta, xonly(userPub));
+  return { ...taprootOneLeaf(userPub, serverPub, leafScript), leafScript };
+};
 
 // CheckpointVtxoPolicy: keyspend musig(user,server); leaf = timelock_sign(expiry, server)
 export const checkpointPolicyTaproot = (userPub, serverPub, expiryHeight) =>

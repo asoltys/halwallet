@@ -8,7 +8,9 @@ import { hex, base32nopad } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import { ArkManager } from '../ark/manager.js';
 import { decodeVtxo, getVtxoStatus, VTXO_STATE_SPENT, concatBytes } from '../ark/proto.js';
-import { getNetwork, arkPresets, getArkProviderId, setArkProviderId, getArkCustom, setArkCustom, getArkConfig } from '../api.js';
+import { signedExitTxs, buildBumpChild, buildExitClaim, submitPackage } from '../ark/exit.js';
+import { utxoId } from '../wallet.js';
+import { getNetwork, setNetwork, arkPresets, getArkProviderId, setArkProviderId, getArkCustom, setArkCustom, getArkConfig } from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { shortAddr, shortTxid, timeAgo } from '../format.js';
@@ -88,7 +90,7 @@ export function arkFeature(ctx) {
     arkConnectPromise = mgr.init().then(() => {
       if (gen !== arkInitGen) throw new Error('superseded'); // wallet switched mid-connect
       ark = mgr;
-      const tick = () => mgr.sync().catch(() => {});
+      const tick = () => mgr.sync().catch(() => {}).then(() => driveExits(mgr)).catch(() => {});
       tick();
       // Receives arrive in real time over the mailbox stream; the poll is the
       // fallback and what drives in-flight boards/refreshes forward.
@@ -169,9 +171,9 @@ export function arkFeature(ctx) {
   }
 
   function arkHistoryItem(m) {
-    const incoming = !['send', 'offboard'].includes(m.type);
+    const incoming = !['send', 'offboard', 'exit'].includes(m.type);
     const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded')
-      : m.type === 'offboard' ? t('arkOffboarded') : t('sent');
+      : m.type === 'offboard' ? t('arkOffboarded') : m.type === 'exit' ? t('arkExited') : t('sent');
     return h(
       'div',
       { class: 'item', style: 'cursor:pointer', onClick: () => { ui.arkMoveDetail = m.id; render(); } },
@@ -188,9 +190,9 @@ export function arkFeature(ctx) {
   }
 
   function arkMoveDetailView(m) {
-    const incoming = !['send', 'offboard'].includes(m.type);
+    const incoming = !['send', 'offboard', 'exit'].includes(m.type);
     const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded')
-      : m.type === 'offboard' ? t('arkOffboarded') : t('sent');
+      : m.type === 'offboard' ? t('arkOffboarded') : m.type === 'exit' ? t('arkExited') : t('sent');
     const row = (k, v) => h('div', { class: 'row between', style: 'gap:12px' },
       h('span', { class: 'small muted', style: 'flex-shrink:0' }, k), h('span', { class: 'small', style: 'text-align:right;word-break:break-all' }, v));
     const url = m.txid ? wallet.api.explorerTx(m.txid) : null;
@@ -282,7 +284,18 @@ export function arkFeature(ctx) {
       spendables.length >= 1
         ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkRefresh },
             ui.arkBusy === 'refresh' ? h('span', { class: 'spinner sm' }) : t('arkRefreshBtn', { n: spendables.length }))
-        : null
+        : null,
+      // the trustless escape hatch: broadcast the exit chains, no server needed
+      spendables.length >= 1
+        ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkExit },
+            ui.arkBusy === 'exit' ? h('span', { class: 'spinner sm' }) : t('arkExitBtn', { n: spendables.length }))
+        : null,
+      ...ark.state.actions.filter((a) => a.type === 'exit' && !['done', 'failed'].includes(a.step)).map((a) =>
+        h('div', { class: 'small muted' },
+          a.step === 'chain' ? t('arkExitChainStatus', { n: fmtAmount(a.amountSat) })
+            : a.step === 'timelock' ? t('arkExitTimelockStatus', { n: fmtAmount(a.amountSat), blocks: String(a.claimableAt) })
+            : t('arkExitClaimingStatus', { n: fmtAmount(a.amountSat) }),
+          a.lastError ? h('div', { class: 'small err' }, a.lastError) : null))
     );
   }
 
@@ -307,6 +320,115 @@ export function arkFeature(ctx) {
       ui.arkError = e.message;
     }
     ui.arkBusy = null; render();
+  }
+
+  // ---- unilateral exit (trustless: no server cooperation) ------------------
+  const addrScript = (address) => btc.OutScript.encode(btc.Address(wallet.netCfg.net).decode(address));
+
+  // Smallest confirmed, unreserved coin that can fund a CPFP bump.
+  function pickFeeCoin(minSat) {
+    return wallet.utxos
+      .filter((u) => u.confirmed && !wallet.isReserved(utxoId(u)) && u.value >= minSat)
+      .sort((a, b) => a.value - b.value)[0] || null;
+  }
+
+  async function doArkExit() {
+    ui.arkBusy = 'exit'; ui.arkError = ''; render();
+    try {
+      const mgr = await connectArk();
+      const spendables = mgr.vtxos().filter((v) => v.state === 'spendable');
+      if (!spendables.length) throw new Error(t('arkNotConnected'));
+      for (const v of spendables) mgr.startExit(v.id);
+      toast(t('arkExitStarted', { n: spendables.length }));
+      driveExits(mgr).catch(() => {});
+    } catch (e) {
+      ui.arkError = e.message;
+    }
+    ui.arkBusy = null; render();
+  }
+
+  async function driveExits(mgr) {
+    const open = mgr.state.actions.filter((a) => a.type === 'exit' && !['done', 'failed'].includes(a.step));
+    for (const a of open) {
+      try {
+        await driveExit(mgr, a);
+        if (a.lastError) { delete a.lastError; mgr._save(); } // transient error resolved
+      } catch (e) {
+        a.lastError = e.message;
+        mgr._save();
+      }
+    }
+  }
+
+  // One tick of an exit's state machine: broadcast the next unconfirmed hop
+  // (with its fee child) as a package, then wait out the CSV, then claim.
+  async function driveExit(mgr, action) {
+    const rec = mgr._vtxo(action.vtxoId);
+    const decoded = mgr._decoded(rec);
+    if (action.step === 'chain') {
+      const txs = signedExitTxs(decoded, mgr.serverPub);
+      let lastConfirmedHeight = 0;
+      for (const txi of txs) {
+        const st = await mgr.chain.getTxStatus(txi.txid);
+        if (st?.confirmed) { lastConfirmedHeight = st.block_height; continue; }
+        // /tx/:txid/status answers {confirmed:false} even for UNKNOWN txids
+        // (electrs + mempool.space) — only /tx/:txid 404s definitively
+        if (await mgr.chain.getTxHex(txi.txid)) return; // in mempool — wait
+        // unknown to the chain: submit this hop + CPFP child as a package
+        const feeRate = Math.max(1, (wallet.feeRates && wallet.feeRates.halfHourFee) || 2);
+        // the child pays for the whole package (the parent is zero-fee)
+        const feeSat = Math.ceil((txi.vsize + 130) * feeRate); // child ≈ 130 vB
+        const coin = pickFeeCoin(Math.max(294, feeSat - txi.anchorValue + 294));
+        if (!coin) throw new Error(t('arkExitNoFeeCoin'));
+        const changeAddr = wallet.freshChange().address;
+        const child = buildBumpChild({
+          parentTxidInternal: txi.txidInternal, anchorVout: txi.anchorVout, anchorValue: txi.anchorValue,
+          coin: {
+            txid: coin.txid, vout: coin.vout, value: coin.value,
+            pubkey: wallet.derive(coin.chain, coin.index).pubkey,
+            privkey: wallet.node(coin.chain, coin.index).privateKey,
+          },
+          changeScript: addrScript(changeAddr), feeSat,
+        });
+        await submitPackage(mgr.esploraUrl, [txi.hex, child.hex]);
+        // reflect the spent fee coin locally so nothing double-spends it
+        wallet.utxos = wallet.utxos.filter((u) => !(u.txid === coin.txid && u.vout === coin.vout));
+        const ce = wallet.addrMap.get(changeAddr);
+        if (ce) wallet.utxos.push({ txid: child.txid, vout: 0, value: child.changeSat, address: changeAddr, chain: ce.chain, index: ce.index, confirmed: false });
+        wallet._recomputeBalanceFromUtxos();
+        wallet.saveCache();
+        action.bumpTxid = child.txid;
+        mgr._save();
+        return; // one hop per tick (TRUC: single unconfirmed parent)
+      }
+      // whole chain confirmed — start the CSV clock from the vtxo tx's height
+      action.claimableAt = lastConfirmedHeight + decoded.exitDelta;
+      action.step = 'timelock';
+      mgr._save();
+    }
+    if (action.step === 'timelock') {
+      const tip = await mgr.chain.tipHeight();
+      if (tip < action.claimableAt) return;
+      const keys = mgr._keyForVtxo(rec);
+      const feeRate = Math.max(1, (wallet.feeRates && wallet.feeRates.halfHourFee) || 2);
+      const claim = buildExitClaim({
+        vtxo: decoded, keys, serverPub: mgr.serverPub,
+        destScript: addrScript(wallet.freshReceive().address), feeRate,
+      });
+      await mgr.chain.broadcastTx(claim.hex);
+      rec.state = 'spent';
+      action.claimTxid = claim.txid;
+      action.step = 'claiming';
+      mgr._movement({ type: 'exit', amountSat: claim.amountSat, status: 'complete', txid: claim.txid, detail: `fee ${claim.feeSat} sat` });
+      mgr._save();
+      wallet.scan().catch(() => {});
+    }
+    if (action.step === 'claiming') {
+      const st = await mgr.chain.getTxStatus(action.claimTxid);
+      if (!st?.confirmed) return;
+      action.step = 'done';
+      mgr._save();
+    }
   }
 
   // ---- ark gifts: bearer-key vtxos ----------------------------------------
@@ -597,7 +719,7 @@ export function arkFeature(ctx) {
     historyEntries() {
       if (!ark || !ark.state) return [];
       return ark.movements()
-        .filter((m) => ['receive', 'send', 'board', 'offboard'].includes(m.type) && m.status === 'complete')
+        .filter((m) => ['receive', 'send', 'board', 'offboard', 'exit'].includes(m.type) && m.status === 'complete')
         .map((m) => ({ time: m.ts, render: () => arkHistoryItem(m) }));
     },
     historyDetail() {
@@ -624,7 +746,9 @@ export function arkFeature(ctx) {
         return a ? { icon: '⚔', label: h('span', {}, t('arkBoardHistory')) } : null;
       }
       const o = ark.state.actions.find((x) => x.type === 'offboard' && x.txid === tx.txid);
-      return o ? { icon: '⚔', label: h('span', {}, t('arkOffboardHistory')) } : null;
+      if (o) return { icon: '⚔', label: h('span', {}, t('arkOffboardHistory')) };
+      const e = ark.state.actions.find((x) => x.type === 'exit' && x.claimTxid === tx.txid);
+      return e ? { icon: '⚔', label: h('span', {}, t('arkExitHistory')) } : null;
     },
     txDetailSection(tx) {
       if (!ark || !ark.state) return null;
@@ -646,6 +770,14 @@ export function arkFeature(ctx) {
       return { spendableSat: ark.balance().spendableSat };
     },
     arkGiftDecode(code) { return decodeArkGiftCode(code); },
+    // A fresh visitor (no wallets) opening a gift link lands on the gift's
+    // network automatically instead of being told to change Settings.
+    arkGiftAdoptNetwork(code) {
+      const g = decodeArkGiftCode(code);
+      if (!g || g.net === getNetwork()) return false;
+      setNetwork(g.net);
+      return true;
+    },
     async arkGiftCreate(amountSat) {
       const mgr = await connectArk();
       const secret = crypto.getRandomValues(new Uint8Array(32));
