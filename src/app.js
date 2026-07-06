@@ -750,7 +750,16 @@ async function activateAccount(acc, opts = {}) {
   // until the user commits (claims, or chooses to keep it / enters the wallet),
   // so bailing from an already-claimed gift doesn't leave an empty account.
   if (opts.gift && !opts.existingClaim) acc.provisional = true;
-  const netName = getNetwork();
+  // The network is a per-wallet property: activating a wallet activates its
+  // network. Accounts created before this carried none — they adopt the
+  // current global choice once, then keep it. The global setting remains the
+  // default for the NEXT new wallet.
+  if (!acc.network) acc.network = getNetwork();
+  const netName = acc.network;
+  if (netName !== getNetwork()) {
+    setNetwork(netName);
+    for (const f of FEATURES) { try { f.networkChanged && f.networkChanged(netName); } catch {} }
+  }
   if (acc.type === 'watch') wallet.load({ xpub: acc.xpub, netName, offline: false });
   else if (acc.xprv) wallet.load({ xprv: acc.xprv, netName, offline: false });
   else wallet.load({ mnemonic: acc.mnemonic, passphrase: acc.passphrase || '', netName, offline: false, spFresh: !!opts.generated });
@@ -869,12 +878,12 @@ function defaultLabel(type) {
 function loadWatchAccounts() {
   try {
     const dir = JSON.parse(localStorage.getItem(WATCH_KEY) || '[]');
-    return dir.filter((d) => d.xpub).map((d) => ({ id: d.id, label: d.label, type: 'watch', xpub: d.xpub, autoLock: d.autoLock || 0 }));
+    return dir.filter((d) => d.xpub).map((d) => ({ id: d.id, label: d.label, type: 'watch', xpub: d.xpub, autoLock: d.autoLock || 0, network: d.network }));
   } catch { return []; }
 }
 function saveDirectory() {
   try {
-    const dir = accounts.filter((a) => a.xpub && !a.provisional).map((a) => ({ id: a.id, label: a.label, xpub: a.xpub, autoLock: a.autoLock || 0 }));
+    const dir = accounts.filter((a) => a.xpub && !a.provisional).map((a) => ({ id: a.id, label: a.label, xpub: a.xpub, autoLock: a.autoLock || 0, network: a.network }));
     localStorage.setItem(WATCH_KEY, JSON.stringify(dir));
   } catch {}
 }
@@ -893,7 +902,8 @@ function addOrGetAccount(partial) {
   const cid = credId(partial);
   let acc = accounts.find((a) => credId(a) === cid);
   if (!acc) {
-    acc = { id: genId(), ...partial };
+    // every new wallet is born on the currently-selected network
+    acc = { id: genId(), network: getNetwork(), ...partial };
     accounts.push(acc);
     persistAccounts();
   }
@@ -973,7 +983,7 @@ function hasVault() { return !!loadVaultBlob(); }
 function writeVault() {
   if (vaultPassword == null) return;
   const list = accounts.filter((a) => a.type === 'full' && a.persisted)
-    .map((a) => (a.xprv ? { label: a.label, xprv: a.xprv } : { label: a.label, mnemonic: a.mnemonic, passphrase: a.passphrase || '' }));
+    .map((a) => (a.xprv ? { label: a.label, xprv: a.xprv, network: a.network } : { label: a.label, mnemonic: a.mnemonic, passphrase: a.passphrase || '', network: a.network }));
   try {
     if (!list.length) localStorage.removeItem(VAULT_KEY);
     else localStorage.setItem(VAULT_KEY, JSON.stringify(encryptVault(list, vaultPassword)));
@@ -992,6 +1002,7 @@ function mergeVaultList(list) {
       if (v.xprv) { existing.xprv = v.xprv; delete existing.mnemonic; delete existing.passphrase; }
       else { existing.mnemonic = v.mnemonic; existing.passphrase = v.passphrase || ''; delete existing.xprv; }
       if (v.label) existing.label = v.label;
+      if (v.network && !existing.network) existing.network = v.network;
       existing.persisted = true;
     } else {
       const acc = addOrGetAccount(
@@ -999,6 +1010,7 @@ function mergeVaultList(list) {
           ? { type: 'full', label: v.label || defaultLabel('full'), xprv: v.xprv, xpub }
           : { type: 'full', label: v.label || defaultLabel('full'), mnemonic: v.mnemonic, passphrase: v.passphrase || '', xpub }
       );
+      if (v.network) acc.network = v.network;
       acc.persisted = true;
     }
   }
@@ -1475,14 +1487,15 @@ async function doConsolidate() {
 
 
 
-// Switch the active Bitcoin network. Changes addresses/balances entirely, so we
-// persist the choice and reload the active account (or empty wallet) under it.
+// Move the ACTIVE wallet to another network (and make that the default for
+// new wallets). Changes addresses/balances entirely, so the account is
+// restamped and reloaded under it.
 function changeNetwork(net) {
   if (net === getNetwork()) return;
   setNetwork(net);
   for (const f of FEATURES) { try { f.networkChanged && f.networkChanged(net); } catch {} }
   const acc = accounts.find((a) => a.id === activeId);
-  if (acc) activateAccount(acc); else render();
+  if (acc) { acc.network = net; persistAccounts(); activateAccount(acc); } else render();
 }
 
 
@@ -1665,7 +1678,8 @@ function accountsScreen() {
       h('div', { class: 'col', style: 'gap:0' },
         accounts.map((a) => {
           const isActive = a.id === activeId;
-          const tag = a.type === 'watch' ? ' · ' + t('watchOnlyTag') : ''; // "saved" shown in the link below, not the title
+          const netTag = a.network && a.network !== 'mainnet' ? ' · ' + a.network : '';
+          const tag = (a.type === 'watch' ? ' · ' + t('watchOnlyTag') : '') + netTag; // "saved" shown in the link below, not the title
           if (ui.editId === a.id) {
             return h('div', { class: 'row gap6', style: 'padding:10px 0; border-bottom:1px solid var(--line)' },
               h('input', { type: 'text', style: 'flex:1', value: ui.editLabel, autofocus: true,

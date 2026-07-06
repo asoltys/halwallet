@@ -3,6 +3,7 @@
 // claim codes / NIP-07 extension). Gift primitives live in ../wallet.js.
 
 import { newMnemonic } from '../wallet.js';
+import { getNetwork } from '../api.js';
 import { installGiftWallet, previewGift, giftOutpoints, buildClaimTx, giftMinimum, lockGift, previewLockedGift } from './gifts-wallet.js';
 import { parseNostrPubkey, npubOf, fetchNostrProfile, decryptWithCode } from '../nostr.js';
 import { t } from '../i18n.js';
@@ -69,12 +70,18 @@ export function giftsFeature(ctx) {
   function claimGift(code) {
     ui.claimLocked = null;
     ui.claimArkAmount = null;
-    const targets = claimTargets();
-    // No wallets on this device: adopt the gift's network so a first-timer
-    // never has to visit Settings before claiming.
-    if (!targets.length) hook('arkGiftAdoptNetwork', code);
-    if (targets.length) { setAccounts(targets); ui.claimChoose = { code }; render(); }
-    else enterWallet(newMnemonic(), '', { gift: code });
+    // An ark gift can only land in a wallet on ITS network — other wallets
+    // aren't valid claim targets. (On-chain gift codes don't carry a network.)
+    const all = claimTargets();
+    const ag = arkGiftOf(code);
+    const usable = all.filter((a) => !ag || (a.network || getNetwork()) === ag.net);
+    if (all.length) setAccounts(all); // keep the full wallet list in the session
+    if (usable.length) { ui.claimChoose = { code }; render(); return; }
+    // No usable wallet on this device: adopt the gift's network so a
+    // first-timer (or a wrong-network device) never has to visit Settings.
+    // Per-wallet networks make this safe — other wallets keep their own.
+    hook('arkGiftAdoptNetwork', code);
+    enterWallet(newMnemonic(), '', { gift: code });
   }
 
   // Claim a gift into an existing wallet (no new seed). activateAccount loads it and
@@ -102,7 +109,7 @@ export function giftsFeature(ctx) {
       ),
       h('div', { class: 'card col gap6' },
         h('div', { class: 'small muted' }, t('claimIntoExisting')),
-        ...getAccounts().map((a) =>
+        ...getAccounts().filter((a) => !ag || (a.network || getNetwork()) === ag.net).map((a) =>
           h('button', { class: 'btn-block', style: 'display:flex;justify-content:space-between;align-items:center;text-align:left', onClick: () => claimIntoAccount(a, code) },
             h('span', {},
               a.label,
@@ -110,7 +117,7 @@ export function giftsFeature(ctx) {
             h('span', { class: 'muted', style: 'font-size:18px;line-height:1' }, '\u203a'))
         ),
         h('div', { class: 'small faint', style: 'text-align:center' }, t('claimOr')),
-        h('button', { class: 'btn-primary btn-block', onClick: () => { ui.claimChoose = null; enterWallet(newMnemonic(), '', { gift: code }); } }, t('claimNewWallet'))
+        h('button', { class: 'btn-primary btn-block', onClick: () => { ui.claimChoose = null; hook('arkGiftAdoptNetwork', code); enterWallet(newMnemonic(), '', { gift: code }); } }, t('claimNewWallet'))
       )
     );
   }
