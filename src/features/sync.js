@@ -6,6 +6,24 @@
 import { NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag, deviceDtag, isOurDtag } from '../nostr.js';
 import { t } from '../i18n.js';
 
+// Keep a published snapshot under the relay's event-size cap. relay.coinos.io
+// rejects events over 64KB and nip44 expands the plaintext ~1.5x, so the JSON
+// must stay under ~40KB. The on-chain tx history is the main unbounded growth;
+// drop the oldest (this.txs is newest-first) — another device backfills the
+// rest with a rescan. Only trims oversized snapshots, so typical wallets are
+// untouched.
+const RELAY_JSON_BUDGET = 40000;
+function trimForRelay(snap) {
+  if (JSON.stringify(snap).length <= RELAY_JSON_BUDGET) return snap;
+  const s = { ...snap };
+  let txs = (s.txs || []).slice();
+  while (txs.length > 25 && JSON.stringify(s).length > RELAY_JSON_BUDGET) {
+    txs = txs.slice(0, Math.max(25, txs.length - 25));
+    s.txs = txs;
+  }
+  return s;
+}
+
 export function installSyncWallet(wallet) {
   if (wallet.syncFromNostr) return; // already installed
   wallet.nostr = new NostrSync();
@@ -112,7 +130,7 @@ export function installSyncWallet(wallet) {
     // snapshot's network even if the wallet switches networks before it fires
     const dtag = deviceDtag(wallet.netName);
     clearTimeout(wallet._nostrPubTimer);
-    wallet._nostrPubTimer = setTimeout(() => wallet.nostr.publish(snap, dtag), 2500);
+    wallet._nostrPubTimer = setTimeout(() => wallet.nostr.publish(trimForRelay(snap), dtag), 2500);
   });
   wallet.registerRealtimeHook({ stop: () => clearTimeout(wallet._nostrPubTimer) });
 }

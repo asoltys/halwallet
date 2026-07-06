@@ -781,10 +781,15 @@ export function giftsFeature(ctx) {
             h('span', { class: 'small muted' }, g.reserved ? t('giftReclaimPrompt') : t('giftRevokeConfirm')),
             ui.busy
               ? h('button', { class: 'btn-primary btn-block', disabled: true }, h('span', { class: 'spinner' }))
-              : h('div', { class: 'row gap6' },
-                  rec ? h('button', { class: 'grow', onClick: () => { ui.viewGift = rec; render(); } }, t('giftView')) : null,
-                  g.reserved ? h('button', { class: 'btn-ghost grow', onClick: () => doReclaim(g.id) }, t('giftReclaim')) : null,
-                  h('button', { class: 'btn-primary grow', onClick: () => doRevoke(g.id) }, t('giftRevoke')))),
+              // View + Reclaim share a row; Revoke gets its own full-width line
+              // so "Revoke now" never squishes/wraps against the others.
+              : h('div', { class: 'col', style: 'gap:8px' },
+                  (rec || g.reserved)
+                    ? h('div', { class: 'row gap6' },
+                        rec ? h('button', { class: 'grow', onClick: () => { ui.viewGift = rec; render(); } }, t('giftView')) : null,
+                        g.reserved ? h('button', { class: 'btn-ghost grow', onClick: () => doReclaim(g.id) }, t('giftReclaim')) : null)
+                    : null,
+                  h('button', { class: 'btn-primary btn-block', onClick: () => doRevoke(g.id) }, t('giftRevoke')))),
       h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back'))
     );
   }

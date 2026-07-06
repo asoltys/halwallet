@@ -1203,6 +1203,7 @@ export class Wallet {
   // state (ark vtxos) must flow both directions.
   _mergeSnapshotExtensions(d) {
     for (const e of this._cacheExtensions) { try { if (e.mergeAlways) e.load(d); } catch {} }
+    this.emit(); // a live cross-device merge (ark/gift state) should re-render
   }
   // Called with every saved state snapshot (e.g. to push it to sync relays).
   registerCacheSavedHook(fn) { this._cacheSavedHooks.push(fn); }

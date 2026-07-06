@@ -66,6 +66,7 @@ export function installGiftWallet(wallet) {
       this.reclaimedSet().add(id);
       this._saveReserved();
       this._saveReclaimed();
+      try { this.saveCache(); } catch {} // publish the gift-state change to sync
     },
 
     // Truly revoke an unclaimed gift: spend its coin back into our own wallet,
@@ -79,12 +80,13 @@ export function installGiftWallet(wallet) {
       this.reclaimedSet().delete(id);
       this._saveReserved();
       this._saveReclaimed();
+      try { this.saveCache(); } catch {}
       return txid;
     },
 
     giftLink(id) { return this.giftRecords()[id] || null; },
 
-    markGiftRevoked(id) { const r = this.giftRecords()[id]; if (r) { r.revoked = true; this._saveGiftRecords(); } },
+    markGiftRevoked(id) { const r = this.giftRecords()[id]; if (r) { r.revoked = true; this._saveGiftRecords(); try { this.saveCache(); } catch {} } },
 
     giftRecords() {
       if (!this._giftRecords) { try { this._giftRecords = JSON.parse(localStorage.getItem(this._giftRecordsKey()) || '{}'); } catch { this._giftRecords = {}; } }
@@ -250,6 +252,7 @@ export function installGiftWallet(wallet) {
       if (!outpoints || !outpoints.length) return;
       this.giftRecords()[outpoints[0]] = { id: outpoints[0], code, locked: !!locked, amount, claimCode: claimCode || null, outpoints, created: Date.now(), revoked: false };
       this._saveGiftRecords();
+      try { this.saveCache(); } catch {} // publish the new gift to cross-device sync
     },
 
     // Sats that creating this gift right now would lock (the selected coins'
@@ -289,6 +292,35 @@ export function installGiftWallet(wallet) {
   });
   // reserved gift coins are excluded from spending + the spendable balance
   wallet.registerCoinLock(() => wallet.reservedSet());
+
+  // Sync gift state across devices (like ark): the records + reserved/reclaimed
+  // coin sets are per-device localStorage, so a gift made on one device was
+  // invisible on another. Ride the encrypted snapshot as a merge-safe
+  // extension: union records (revoked/claimTxid flags sticky), union both coin
+  // sets. Each device's own scan then reconciles which coins are still live.
+  wallet.registerCacheExtension({
+    mergeAlways: true,
+    save: () => ({
+      giftState: {
+        records: wallet.giftRecords(),
+        reserved: [...wallet.reservedSet()],
+        reclaimed: [...wallet.reclaimedSet()],
+      },
+    }),
+    load: (d) => {
+      if (!d.giftState) return;
+      const recs = wallet.giftRecords();
+      for (const [id, r] of Object.entries(d.giftState.records || {})) {
+        const local = recs[id];
+        if (!local) recs[id] = r;
+        else { local.revoked = local.revoked || r.revoked; if (!local.claimTxid && r.claimTxid) local.claimTxid = r.claimTxid; }
+      }
+      wallet._saveGiftRecords();
+      const res = wallet.reservedSet(); for (const id of d.giftState.reserved || []) res.add(id);
+      const rec = wallet.reclaimedSet(); for (const id of d.giftState.reclaimed || []) rec.add(id);
+      wallet._saveReserved(); wallet._saveReclaimed();
+    },
+  });
 }
 
 // Gift-link claiming (sender side is Wallet.createGift). A gift code is a

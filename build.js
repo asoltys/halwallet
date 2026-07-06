@@ -104,8 +104,15 @@ const PWA_HEAD = `<link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 `;
 
+// Register with updateViaCache:'none' so the browser always re-fetches sw.js
+// (never from HTTP cache) and detects a new build immediately. When the new SW
+// takes control (it skipWaiting + clients.claim), reload once so the fresh
+// inlined app runs — but only if a SW was already controlling this page, so a
+// first-ever visit doesn't reload.
 const SW_REGISTER =
-  `<script>if('serviceWorker'in navigator)addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){})});</script>`;
+  `<script>if('serviceWorker'in navigator){var _had=!!navigator.serviceWorker.controller,_ref=false;` +
+  `navigator.serviceWorker.addEventListener('controllerchange',function(){if(_had&&!_ref){_ref=true;location.reload()}});` +
+  `addEventListener('load',function(){navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(function(){})})}</script>`;
 
 // Bundle the standalone jsQR decoder (sets window.jsQR) for lazy loading.
 export async function buildJsQr({ minify = true } = {}) {
