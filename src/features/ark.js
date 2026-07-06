@@ -767,6 +767,7 @@ export function arkFeature(ctx) {
     // ---- ark-gift hooks (called by the gifts feature via ctx.hook) ----
     arkGiftInfo() {
       if (!arkAvailable() || !ark || !ark.state) return null;
+      maybeReconcile(); // the gift form is a send-intent signal too (throttled)
       return { spendableSat: ark.balance().spendableSat };
     },
     arkGiftDecode(code) { return decodeArkGiftCode(code); },
