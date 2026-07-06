@@ -36,9 +36,12 @@ export function installSyncWallet(wallet) {
         return false;
       }
       if (!remote) return false;
-      // A snapshot for another network must never apply here (events published
-      // before per-network d-tags all live under the mainnet tag).
-      if (remote.netName && remote.netName !== this.netName) return false;
+      // A snapshot for another network must never apply here. Legacy events
+      // (published before snapshots carried netName) are ambiguous — they can
+      // hold ANY network's state under the shared d-tag, and applying one
+      // poisoned a mainnet wallet with regtest coins — so they are never
+      // applied either; a full scan is safer than a wrong snapshot.
+      if (remote.netName !== this.netName) return false;
       if ((remote.savedAt || 0) > (this._savedAt || 0)) {
         this._applySnapshot(remote);
         this.saveCache(); // mirror into localStorage
