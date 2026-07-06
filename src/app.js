@@ -2773,7 +2773,12 @@ function txHistoryItem(tx) {
   return h(
     'div',
     { class: 'item', style: 'cursor:pointer', onClick: () => openTx(tx.txid) },
-    h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, deco ? deco.icon : incoming ? '↓' : '↑'),
+    // rail glyph in the direction-tinted circle: feature decoration (ark/sp/
+    // gift) if any, else the Bitcoin mark for a plain on-chain tx. Direction
+    // is carried by the tint + signed amount.
+    deco
+      ? h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, deco.icon)
+      : h('div', { class: `ico ${incoming ? 'in' : 'out'}`, html: BITCOIN_ICON(22) }),
     h('div', { class: 'grow' },
       h('div', { class: 'row gap6' },
         deco ? deco.label :
