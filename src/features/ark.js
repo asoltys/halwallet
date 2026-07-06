@@ -326,7 +326,7 @@ export function arkFeature(ctx) {
       render();
     };
     const head = [
-      h('h3', { class: 'row gap6', style: 'align-items:center' }, h('span', { html: ARK_ICON(18) }), 'Ark'),
+      h('h3', { class: 'row gap6', style: 'align-items:center' }, h('span', { html: ARK_MARK(18) }), 'Ark'),
       h('p', { class: 'small muted', style: 'margin:0' }, t('arkDesc')),
       h('select', { onChange: (e) => applyProvider(e.target.value) },
         presets.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
