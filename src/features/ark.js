@@ -302,7 +302,10 @@ export function arkFeature(ctx) {
           a.step === 'chain' ? t('arkExitChainStatus', { n: fmtAmount(a.amountSat) })
             : a.step === 'timelock' ? t('arkExitTimelockStatus', { n: fmtAmount(a.amountSat), blocks: String(a.claimableAt) })
             : t('arkExitClaimingStatus', { n: fmtAmount(a.amountSat) }),
-          a.lastError ? h('div', { class: 'small faint' }, t('arkExitRetrying')) : null))
+          a.lastError
+            ? h('div', { class: a.actionable ? 'small err' : 'small faint' },
+                a.actionable ? a.lastError : t('arkExitRetrying'))
+            : null))
     );
   }
 
@@ -359,9 +362,10 @@ export function arkFeature(ctx) {
     for (const a of open) {
       try {
         await driveExit(mgr, a);
-        if (a.lastError) { delete a.lastError; mgr._save(); } // transient error resolved
+        if (a.lastError) { delete a.lastError; delete a.actionable; mgr._save(); } // resolved
       } catch (e) {
         a.lastError = e.message;
+        a.actionable = !!e.actionable; // user must act (e.g. fund fees) vs. plain retry
         mgr._save();
       }
     }
@@ -386,7 +390,21 @@ export function arkFeature(ctx) {
         // the child pays for the whole package (the parent is zero-fee)
         const feeSat = Math.ceil((txi.vsize + 130) * feeRate); // child ≈ 130 vB
         const coin = pickFeeCoin(Math.max(294, feeSat - txi.anchorValue + 294));
-        if (!coin) throw new Error(t('arkExitNoFeeCoin'));
+        if (!coin) {
+          // No on-chain coin for the fee child. Try the hop bare — a node
+          // that relays zero-fee txs (regtest with minrelaytxfee=0) needs no
+          // bump. If it refuses, this is a PRECONDITION the user must fix,
+          // not a transient to retry behind a vague message.
+          try {
+            await submitPackage(mgr.esploraUrl, [txi.hex]);
+            mgr._save();
+            return;
+          } catch {
+            const e = new Error(t('arkExitNoFeeCoin'));
+            e.actionable = true;
+            throw e;
+          }
+        }
         const changeAddr = wallet.freshChange().address;
         const child = buildBumpChild({
           parentTxidInternal: txi.txidInternal, anchorVout: txi.anchorVout, anchorValue: txi.anchorValue,
