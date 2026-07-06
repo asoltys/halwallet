@@ -80,9 +80,13 @@ export function arkFeature(ctx) {
   installArkWallet(wallet); // ark state storage lives outside the core wallet
 
   // Ride the encrypted sync snapshot so ark funds follow the seed across
-  // devices. Board/change vtxo bytes exist only where they were created —
-  // without this a second device simply cannot see them. Merge-on-load (and
-  // merge-on-save below) keeps concurrent devices from clobbering coins.
+  // devices. Board/change vtxo bytes exist only where they were created — a
+  // second device can't otherwise see them. All devices share ONE replaceable
+  // event slot (same seed -> same nostr key), so a naive publish can clobber
+  // another device's coins. Anti-entropy fixes that: on receiving a snapshot,
+  // union it with local; if it was missing coins we know (or brought coins we
+  // didn't), re-publish the superset. The slot converges to the union no
+  // matter who publishes when.
   wallet.registerCacheExtension({
     mergeAlways: true, // load() is a commutative merge — apply older snapshots too
     save: () => {
@@ -91,12 +95,20 @@ export function arkFeature(ctx) {
     },
     load: (d) => {
       if (!d.arkState) return;
-      const merged = mergeArkStates(wallet.loadArkState(), d.arkState);
+      const local = wallet.loadArkState();
+      const merged = mergeArkStates(local, d.arkState);
       wallet.saveArkState(merged);
-      // a snapshot can arrive after this feature initialized (or brought vtxos
-      // a live manager doesn't know) — reconnect so the balance shows
-      const novel = (d.arkState.vtxos || []).some((v) => !ark || !ark.state.vtxos.some((x) => x.id === v.id));
-      if ((merged.vtxos || []).length && novel) setTimeout(() => initArk(), 0);
+      const mergedN = (merged.vtxos || []).length;
+      const remoteN = (d.arkState.vtxos || []).length;
+      const localN = (local && local.vtxos || []).length;
+      // We know vtxos this snapshot lacked — push our superset back up so the
+      // sender (and the shared slot) learns them. Guarded by mergedN>remoteN so
+      // it can't loop once every device has converged to the union.
+      if (mergedN > remoteN) { try { wallet.saveCache(); } catch {} }
+      // The merge brought vtxos our live manager doesn't have — (re)connect so
+      // the balance actually shows.
+      const novel = mergedN > localN || (mergedN && (!ark || !ark.state));
+      if (mergedN && novel) setTimeout(() => initArk(), 0);
     },
   });
 
