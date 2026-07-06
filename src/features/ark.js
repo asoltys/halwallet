@@ -204,7 +204,11 @@ export function arkFeature(ctx) {
   // flickering (empty → populated) while the manager connects asynchronously.
   function arkStateNow() {
     if (ark && ark.state) return ark.state;
-    if (!arkAvailable()) return null;
+    // Read persisted state whenever Ark is configured for this network — even
+    // watch-only (seed not loaded this session): the balance/history should
+    // show read-only, just like the on-chain balance does. Acting on it
+    // (send/exit) still requires the seed and is gated separately.
+    if (!getArkConfig()) return null;
     return wallet.loadArkState();
   }
 
@@ -1094,9 +1098,12 @@ export function arkFeature(ctx) {
       const lines = [];
       if (b.spendableSat + b.pendingSat > 0) {
         // "Ark balance … Exit" — the exit link opens the offboard/exit page.
-        const label = h('span', { class: 'row gap6', style: 'align-items:center' },
-          t('arkBalance'),
-          h('span', { class: 'linklike', style: 'font-size:12px', onClick: () => { ui.arkExitPage = true; ui.arkError = ''; render(); } }, t('arkExitLink')));
+        // Watch-only wallets can't move funds, so they just show the balance.
+        const label = wallet.watchOnly
+          ? t('arkBalance')
+          : h('span', { class: 'row gap6', style: 'align-items:center' },
+              t('arkBalance'),
+              h('span', { class: 'linklike', style: 'font-size:12px', onClick: () => { ui.arkExitPage = true; ui.arkError = ''; render(); } }, t('arkExitLink')));
         lines.push({ label, sat: b.spendableSat + b.pendingSat });
       }
       // A board in flight: the sats already left the on-chain balance, so show
