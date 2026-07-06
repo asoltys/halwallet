@@ -70,6 +70,7 @@ export function giftsFeature(ctx) {
   function claimGift(code) {
     ui.claimLocked = null;
     ui.claimArkAmount = null;
+    ui.claimAuto = false;
     // An ark gift can only land in a wallet on ITS network — other wallets
     // aren't valid claim targets. (On-chain gift codes don't carry a network.)
     const all = claimTargets();
@@ -89,7 +90,18 @@ export function giftsFeature(ctx) {
   // the seed-backup step.
   function claimIntoAccount(acc, code) {
     ui.claimChoose = null;
+    ui.claimAuto = true; // one-step: claim as soon as the gift verifies unspent
     activateAccount(acc, { gift: code, existingClaim: true, fresh: true });
+  }
+
+  // The claim fee for a gift, and a display note ('' when free / ark).
+  function claimFeeNote(code) {
+    if (arkGiftOf(code)) return t('claimArkFree');
+    const pv = previewGift(code);
+    if (!pv) return '';
+    const rate = Math.max(1, Math.round((wallet.feeRates && wallet.feeRates.halfHourFee) || 5));
+    const fee = Math.ceil((11 + 68 * pv.inputs + 31 * 2) * rate);
+    return t('claimFeeNote', { n: fmtAmount(fee) + ' ' + unitLabel() });
   }
 
   // Pick where to receive a gift: an existing wallet, or a brand-new one.
@@ -105,6 +117,7 @@ export function giftsFeature(ctx) {
         h('div', { class: 'check-badge', style: 'background:var(--accent)' }, '🎁'),
         h('h2', { style: 'margin:0' }, t('giftWelcome')),
         pv ? h('div', { class: 'amt', style: 'font-size:30px' }, h('span', { class: 'amount-pos' }, fmtAmount(pv.room)), ' ', unitTag('unit')) : null,
+        h('div', { class: 'small faint' }, claimFeeNote(code)),
         h('p', { class: 'muted', style: 'margin:0' }, t('claimIntoPrompt'))
       ),
       h('div', { class: 'card col gap6' },
@@ -264,6 +277,15 @@ export function giftsFeature(ctx) {
   // Has this gift already been claimed? Its funding coin being spent — even by an
   // unconfirmed claim — means the gift is gone; show the "already claimed" screen
   // rather than let the user attempt a doomed double-spend.
+  // End of the pre-claim check: if this is a one-step claim into a chosen
+  // wallet, fire the claim now (unless the gift is taken / not visible /
+  // errored); otherwise just render the welcome + Claim button.
+  function finishGiftCheck() {
+    ui.claimChecking = false;
+    if (ui.claimAuto && !ui.claimTaken && !ui.claimError && !ui.claimNotVisible) doClaim();
+    else render();
+  }
+
   async function checkGiftClaimed(code) {
     if (arkGiftOf(code)) {
       try {
@@ -275,12 +297,11 @@ export function giftsFeature(ctx) {
       } catch {
         // transient — leave claimable; the sweep itself is the final guard
       }
-      ui.claimChecking = false;
-      render();
+      finishGiftCheck();
       return;
     }
     const ops = giftOutpoints(code);
-    if (!ops.length) { ui.claimChecking = false; render(); return; }
+    if (!ops.length) { finishGiftCheck(); return; }
     try {
       const res = await wallet.api.outspend(ops[0].txid, ops[0].vout);
       if (res && res.spent) ui.claimTaken = { txid: res.txid || null };
@@ -295,8 +316,7 @@ export function giftsFeature(ctx) {
       // Couldn't check (offline/transient) — leave it claimable; the broadcast in
       // doClaim is the final guard (a double-spend is rejected by the network).
     }
-    ui.claimChecking = false;
-    render();
+    finishGiftCheck();
   }
 
   // Broadcast the presigned gift to this fresh wallet's first receive address.
@@ -318,6 +338,7 @@ export function giftsFeature(ctx) {
   }
 
   async function doClaim() {
+    ui.claimAuto = false; // one-shot; a manual retry shouldn't re-auto-fire
     if (wallet.offline) { ui.claimError = t('scanOffline'); render(); return; }
     if (ui.claimChecking || ui.claimTaken) return; // not verified / already taken
     ui.busy = true;
