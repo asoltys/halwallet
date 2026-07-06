@@ -734,24 +734,27 @@ export function giftsFeature(ctx) {
       amt != null
         ? h('div', { class: 'amt', style: 'font-size:30px' }, h('span', { class: 'amount' }, fmtAmount(amt)), ' ', unitTag('unit'))
         : null,
-      h('div', { class: 'summary col', style: 'gap:0' },
-        created ? line(t('dateLabel'), new Date(created).toLocaleString()) : null,
-        !g.claimed && g.reserved ? line(t('status'), t('lockedInGifts')) : null),
-      ui.revokeId === g.id
-        ? h('div', { class: 'col', style: 'gap:8px' },
+      // only render the summary box when it has content (an empty gray box
+      // otherwise appears for reclaimed gifts with no recorded date)
+      created || (!g.claimed && g.reserved)
+        ? h('div', { class: 'summary col', style: 'gap:0' },
+            created ? line(t('dateLabel'), new Date(created).toLocaleString()) : null,
+            !g.claimed && g.reserved ? line(t('status'), t('lockedInGifts')) : null)
+        : null,
+      // Reclaim/Revoke up front — no confirm step. A reserved gift offers both;
+      // an already-reclaimed one only Revoke (its coin is spendable again, only
+      // the live link is left to kill).
+      g.claimed
+        ? null
+        : h('div', { class: 'col', style: 'gap:8px' },
             h('span', { class: 'small muted' }, g.reserved ? t('giftReclaimPrompt') : t('giftRevokeConfirm')),
             ui.busy
               ? h('button', { class: 'btn-primary btn-block', disabled: true }, h('span', { class: 'spinner' }))
               : h('div', { class: 'row gap6' },
+                  rec ? h('button', { class: 'grow', onClick: () => { ui.viewGift = rec; render(); } }, t('giftView')) : null,
                   g.reserved ? h('button', { class: 'btn-ghost grow', onClick: () => doReclaim(g.id) }, t('giftReclaim')) : null,
-                  h('button', { class: 'btn-primary grow', onClick: () => doRevoke(g.id) }, t('giftRevoke'))),
-            ui.busy ? null : h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.revokeId = null; render(); } }, t('back')))
-        : g.claimed
-          ? null
-          : h('div', { class: 'row gap6' },
-              rec ? h('button', { class: 'grow', onClick: () => { ui.viewGift = rec; render(); } }, t('giftView')) : null,
-              h('button', { class: 'grow', onClick: () => { ui.revokeId = g.id; render(); } }, t('giftCancel'))),
-      ui.revokeId === g.id ? null : h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back'))
+                  h('button', { class: 'btn-primary grow', onClick: () => doRevoke(g.id) }, t('giftRevoke')))),
+      h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back'))
     );
   }
 
