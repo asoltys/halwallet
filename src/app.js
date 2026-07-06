@@ -19,6 +19,7 @@ import {
   timeAgo,
   SATS,
   ARK_ICON,
+  BITCOIN_ICON,
 } from './format.js';
 
 const wallet = new Wallet();
@@ -2057,7 +2058,7 @@ function receiveTab() {
   let mode = ui.receiveType || 'address';
   if (mode !== 'address' && !featModes.some((m) => m.id === mode)) mode = 'address';
   const opts = [
-    { id: 'address', label: t('receiveAddressTab'), icon: '₿' },
+    { id: 'address', label: t('receiveAddressTab'), icon: BITCOIN_ICON(20) },
     ...featModes.map((m) => ({ id: m.id, label: m.label, icon: m.icon })),
   ];
   const seg = opts.length > 1

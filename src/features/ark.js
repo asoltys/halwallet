@@ -269,11 +269,12 @@ export function arkFeature(ctx) {
     return h(
       'div',
       { class: 'item', style: 'cursor:pointer', onClick: () => { ui.arkMoveDetail = m.id; render(); } },
-      h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, incoming ? '↓' : '↑'),
+      // Ark mark in the (direction-colored) circle carries the rail; the label
+      // + signed amount carry direction, so no redundant "Ark" text chip.
+      h('div', { class: `ico ${incoming ? 'in' : 'out'}`, html: ARK_MARK(15) }),
       h('div', { class: 'grow' },
         h('div', { class: 'row gap6' },
           label,
-          h('span', { class: 'tag' }, 'Ark'),
           m.status !== 'complete' ? h('span', { class: 'tag pending' }, m.status) : null),
         h('div', { class: 'small faint' }, timeAgo(m.ts / 1000))),
       h('div', { style: 'text-align:right' },
@@ -292,8 +293,8 @@ export function arkFeature(ctx) {
       'div',
       { class: 'card col', style: 'gap:10px' },
       h('div', { class: 'row gap6', style: 'align-items:center' },
+        h('span', { html: ARK_ICON(18) }),
         h('h3', { style: 'margin:0' }, label),
-        h('span', { class: 'tag' }, 'Ark'),
         m.status !== 'complete' ? h('span', { class: 'tag pending' }, m.status) : null),
       h('div', { class: incoming ? 'amount-pos' : 'amount-neg', style: 'font-size:20px' },
         (incoming ? '+' : '-') + fmtAmount(m.amountSat) + ' ' + unitLabel()),
