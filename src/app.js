@@ -504,9 +504,23 @@ function howItWorksScreen() {
       para('hiwBasics2'),
       para('hiwBasics3'),
       para('hiwBasics4'),
-      para('hiwBasics5'),
-      h('p', { class: 'small muted hiw-tribute', style: 'margin:0' }, ...linkify(t('hiwTribute')))
+      para('hiwBasics5')
     ),
+    h('div', { class: 'card col', style: 'gap:14px' },
+      h('h3', {}, '⚡ ' + t('hiwLnTitle')),
+      para('hiwLn1')),
+    h('div', { class: 'card col', style: 'gap:14px' },
+      h('h3', {}, '⚔ ' + t('hiwArkTitle')),
+      para('hiwArk1'),
+      para('hiwArk2'),
+      para('hiwArk3')),
+    h('div', { class: 'card col', style: 'gap:14px' },
+      h('h3', {}, '👤 ' + t('hiwSpTitle')),
+      para('hiwSp1')),
+    h('div', { class: 'card col', style: 'gap:14px' },
+      h('h3', {}, '🎁 ' + t('hiwGiftsTitle')),
+      para('hiwGifts1'),
+      h('p', { class: 'small muted hiw-tribute', style: 'margin:0' }, ...linkify(t('hiwTribute')))),
     h('button', { class: 'btn-block', onClick: back }, t('back'))
   );
 }
