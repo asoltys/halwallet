@@ -79,10 +79,33 @@ export async function fetchInboxRelays(pubkeyHex, relays = PROFILE_RELAYS) {
 }
 
 const DTAG = 'bitcoin-wallet';
-// Each network syncs to its own replaceable event — one shared d-tag would let
-// a signet snapshot overwrite the mainnet state on the relays (and vice versa).
-// Mainnet keeps the bare tag existing wallets already publish under.
+// Each network syncs under its own d-tag base — a shared one would let a signet
+// snapshot overwrite mainnet state (and vice versa). Mainnet keeps the bare tag
+// existing wallets already publish under.
 export const syncDtag = (netName) => (!netName || netName === 'mainnet' ? DTAG : `${DTAG}:${netName}`);
+
+// Per-DEVICE d-tag: every device publishes to its OWN replaceable-event slot
+// (`<base>:d:<deviceId>`), so no device can ever clobber another's snapshot.
+// Readers pull ALL of the identity's kind-30078 events and merge across them,
+// so a device sees every other device's coins. The legacy shared-tag events
+// (from before this) are still read and merged — they just never get written
+// to again.
+const DEVICE_KEY = 'btc-wallet-device-id';
+function deviceId() {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY);
+    if (!id) { id = bytesToHexLocal(randomBytes(8)); localStorage.setItem(DEVICE_KEY, id); }
+    return id;
+  } catch { return 'ephemeral'; }
+}
+const bytesToHexLocal = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+export const deviceDtag = (netName) => `${syncDtag(netName)}:d:${deviceId()}`;
+// True if `evtDtag` is one of OUR slots for `netName` (our device, another
+// device, or the legacy shared tag) — used to select events to merge.
+export const isOurDtag = (evtDtag, netName) => {
+  const base = syncDtag(netName);
+  return evtDtag === base || evtDtag.startsWith(base + ':d:');
+};
 const SYNC_KEY = 'btc-wallet-sync';
 export const DEFAULT_SYNC_RELAYS = ['wss://relay.coinos.io'];
 
@@ -186,28 +209,43 @@ export class NostrSync {
     } catch { return () => {}; }
   }
 
-  // Live subscription to our own (replaceable) state event, decrypted.
-  // Another device saving state delivers here within seconds.
+  // Live subscription to ALL our devices' state events (no #d filter), each
+  // decrypted and delivered. A save on any device — under any per-device tag —
+  // arrives here within seconds. The caller filters by network.
   subscribeStates(onState) {
     if (!this.pk) return () => {};
     return this.subscribeEvents(
-      { kinds: [30078], authors: [this.pk], '#d': [this.dtag] },
+      { kinds: [30078], authors: [this.pk] },
       (ev) => {
         try {
           const v = JSON.parse(nip44.decrypt(ev.content, this.ck));
-          if (v) onState(v);
+          const dtag = (ev.tags.find((t) => t[0] === 'd') || [])[1] || '';
+          if (v) onState(v, dtag);
         } catch {}
       });
   }
 
-  // Fetch the newest decrypted state across relays, or null.
+  // Fetch the newest decrypted state (kept for callers that want a single
+  // best snapshot). Prefers our own device's slot, else the newest of ours.
   async fetch() {
-    if (!this.sk) return null;
+    const all = await this.fetchAllStates();
+    return all.length ? all[0].state : null;
+  }
+
+  // All of this identity's decrypted state snapshots, newest first, each with
+  // its d-tag. The reader merges ark state across every device and applies the
+  // newest full snapshot for the (rescannable) on-chain state.
+  async fetchAllStates() {
+    if (!this.sk) return [];
     let events;
-    try { events = await pool.querySync(this.relays, { kinds: [30078], authors: [this.pk], '#d': [this.dtag] }, { maxWait: 6000 }); } catch { return null; }
+    try { events = await pool.querySync(this.relays, { kinds: [30078], authors: [this.pk] }, { maxWait: 6000 }); } catch { return []; }
+    const out = [];
     for (const e of events.sort((a, b) => b.created_at - a.created_at)) {
-      try { const v = JSON.parse(nip44.decrypt(e.content, this.ck)); if (v) return v; } catch {}
+      try {
+        const state = JSON.parse(nip44.decrypt(e.content, this.ck));
+        if (state) out.push({ state, dtag: (e.tags.find((t) => t[0] === 'd') || [])[1] || '', created_at: e.created_at });
+      } catch {}
     }
-    return null;
+    return out;
   }
 }

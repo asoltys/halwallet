@@ -3,7 +3,7 @@
 // (used e.g. to DM locked-gift claim codes). Installed onto the core wallet;
 // a build without sync ships none of it and never talks to a relay.
 
-import { NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag } from '../nostr.js';
+import { NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag, deviceDtag, isOurDtag } from '../nostr.js';
 import { t } from '../i18n.js';
 
 export function installSyncWallet(wallet) {
@@ -50,31 +50,29 @@ export function installSyncWallet(wallet) {
       const sync = getSyncConfig();
       if (this.offline || !sync.enabled) return false;
       this.nostr.setRelays(sync.relays);
-      this.nostr.setDtag(syncDtag(this.netName));
-      let remote;
+      let all;
       try {
-        remote = await this.nostr.fetch();
+        all = await this.nostr.fetchAllStates();
       } catch {
         return false;
       }
-      if (!remote) return false;
-      // A snapshot for another network must never apply here. Legacy events
-      // (published before snapshots carried netName) are ambiguous — they can
-      // hold ANY network's state under the shared d-tag, and applying one
-      // poisoned a mainnet wallet with regtest coins — so they are never
-      // applied either; a full scan is safer than a wrong snapshot.
-      if (remote.netName !== this.netName) return false;
-      if ((remote.savedAt || 0) > (this._savedAt || 0)) {
-        this._applySnapshot(remote);
-        this.saveCache(); // mirror into localStorage
+      // Each device publishes to its OWN slot now, so there can be several
+      // snapshots for this network. Keep only ours-for-this-network: the
+      // netName inside is the real guard against cross-network bleed (legacy
+      // shared-tag events are ambiguous), the d-tag check filters the rest.
+      const mine = all.filter((s) => s.state.netName === this.netName && isOurDtag(s.dtag, this.netName));
+      if (!mine.length) return false;
+      // Merge every device's merge-safe extension state (ark vtxos union) — a
+      // device sees ALL devices' coins, not only the newest snapshot's.
+      for (const s of mine) this._mergeSnapshotExtensions(s.state);
+      // Apply the newest FULL snapshot for the rescannable on-chain state.
+      const newest = mine[0].state; // fetchAllStates returns newest-first
+      if ((newest.savedAt || 0) > (this._savedAt || 0)) {
+        this._applySnapshot(newest); // re-runs extension loads (idempotent merge)
         this.emit();
-        return true;
       }
-      // Our local copy is newer (or equal) — but merge-safe extension state
-      // (ark vtxos) still flows in from the older snapshot before we push up.
-      this._mergeSnapshotExtensions(remote);
-      if ((this._savedAt || 0) > (remote.savedAt || 0)) this.saveCache();
-      return true; // remote existed, so no full scan needed
+      this.saveCache(); // persist the merged result + republish our own slot
+      return true;
     },
   });
 
@@ -83,36 +81,36 @@ export function installSyncWallet(wallet) {
     if (wallet.mnemonic) wallet.nostr.load(wallet.mnemonic, wallet.passphrase);
     else wallet.nostr.unload();
   });
-  // Live cross-device state: subscribe to our own replaceable event so a save
-  // on another device merges here within seconds. Only merge-safe extension
-  // state (ark vtxos) applies live — full snapshots stay a load-time affair —
-  // which also guarantees every snapshot we publish is a superset, so the
-  // replaceable event on the relay never loses another device's coins.
+  // Live cross-device state: subscribe to ALL our devices' slots so a save on
+  // another device merges here within seconds. Merge-safe extension state (ark
+  // vtxos union) applies live; full snapshots stay a load-time affair. With
+  // per-device slots no device overwrites another's, so this only ever adds.
   let stateUnsub = null;
   wallet.registerRealtimeHook({
     start: () => {
       const sync = getSyncConfig();
       if (!sync.enabled || !wallet.nostr.pk) return;
       wallet.nostr.setRelays(sync.relays);
-      wallet.nostr.setDtag(syncDtag(wallet.netName));
       if (stateUnsub) { try { stateUnsub(); } catch {} }
-      stateUnsub = wallet.nostr.subscribeStates((v) => {
+      stateUnsub = wallet.nostr.subscribeStates((v, dtag) => {
         if (!v.netName || v.netName !== wallet.netName) return;
-        if ((v.savedAt || 0) === (wallet._savedAt || 0)) return; // our own echo
+        if (!isOurDtag(dtag, wallet.netName)) return;
+        if (dtag === deviceDtag(wallet.netName) && (v.savedAt || 0) === (wallet._savedAt || 0)) return; // our own echo
         wallet._mergeSnapshotExtensions(v);
       });
     },
     stop: () => { if (stateUnsub) { try { stateUnsub(); } catch {} stateUnsub = null; } },
   });
 
-  // push every saved snapshot to the relays (debounced) unless sync is off
+  // push every saved snapshot to the relays (debounced) unless sync is off —
+  // to THIS DEVICE's own slot, so it never clobbers another device's.
   wallet.registerCacheSavedHook((snap) => {
     const sync = getSyncConfig();
     if (wallet.offline || !sync.enabled) return;
     wallet.nostr.setRelays(sync.relays);
-    // bind the d-tag now: the debounced publish must keep this snapshot's
-    // network even if the wallet switches networks before the timer fires
-    const dtag = syncDtag(wallet.netName);
+    // bind the per-device d-tag now: the debounced publish must keep this
+    // snapshot's network even if the wallet switches networks before it fires
+    const dtag = deviceDtag(wallet.netName);
     clearTimeout(wallet._nostrPubTimer);
     wallet._nostrPubTimer = setTimeout(() => wallet.nostr.publish(snap, dtag), 2500);
   });
