@@ -186,7 +186,7 @@ export function swapsFeature(ctx) {
       // a reverse swap needs our keys to claim on-chain
       if (wallet.watchOnly) return [];
       return [{
-        id: 'ln', label: t('receiveLnTab'),
+        id: 'ln', label: t('receiveLnTab'), icon: '⚡',
         render: (seg) => h('div', { class: 'card col', style: 'align-items:center;gap:14px' }, seg, ...lnReceiveContent()),
       }];
     },

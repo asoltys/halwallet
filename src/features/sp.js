@@ -42,7 +42,7 @@ export function spFeature(ctx) {
       const spAddr = wallet.silentPaymentsAvailable && wallet.silentPaymentsAvailable() ? wallet.silentPaymentAddress() : null;
       if (!spAddr) return [];
       return [{
-        id: 'sp', label: t('receiveSpTab'),
+        id: 'sp', label: t('receiveSpTab'), icon: '🕶️',
         render: (seg) => h(
           'div',
           { class: 'card col', style: 'align-items:center;gap:14px' },
@@ -54,6 +54,13 @@ export function spFeature(ctx) {
       }];
     },
     isSendDest(a) { return isSilentPaymentAddress(a); },
+    // Silent-payment receipts merge into the main history as on-chain-looking
+    // rows (tx.sp) — give them a rail glyph + tag so they're recognizable.
+    decorateTxRow(tx) {
+      return tx && tx.sp
+        ? { icon: '🕶️', label: h('span', {}, t('received'), ' ', h('span', { class: 'tag' }, t('receiveSpTab'))) }
+        : null;
+    },
     settingsCards() { return [spIndexerCard()]; },
   };
 }

@@ -289,3 +289,24 @@ hr.divider { margin: 16px 0; }
   .words { grid-template-columns: repeat(2, 1fr); }
   .balance .amt { font-size: 28px; }
 }
+
+/* Icon dropdown (receive mode) — a <select> can't render SVG in options. */
+.icon-select-btn {
+  width: 100%; display: flex; align-items: center; gap: 9px;
+  font: inherit; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line-strong); border-radius: 11px; padding: 11px 13px; cursor: pointer;
+}
+.icon-select-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.icon-select-menu {
+  background: var(--paper); border: 1px solid var(--line-strong); border-radius: 11px;
+  padding: 5px; box-shadow: 0 10px 28px rgba(0,0,0,.18); display: flex; flex-direction: column; gap: 2px;
+}
+.icon-select-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  font: inherit; color: var(--ink); background: transparent;
+  border: 0; border-radius: 8px; padding: 10px 10px; cursor: pointer; text-align: left;
+}
+.icon-select-item:hover { background: var(--hover, rgba(128,128,128,.12)); }
+.icon-select-item.active { background: var(--accent-soft, rgba(247,147,26,.14)); }
+.sel-ico { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; font-size: 16px; line-height: 1; }
+.sel-ico svg { display: block; }

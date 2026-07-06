@@ -1985,6 +1985,37 @@ function hasRecentIncoming() {
 }
 
 // ---------------------------------------------------------------- Receive
+// A dropdown that shows an icon beside each option (a native <select> can't
+// render SVG). opts: [{id,label,icon}] where icon is an emoji or an <svg>
+// string. Closes on select or on a tap outside (transparent backdrop).
+function iconGlyph(ic) {
+  if (!ic) return null;
+  return String(ic).trim().startsWith('<')
+    ? h('span', { class: 'sel-ico', html: ic })
+    : h('span', { class: 'sel-ico' }, ic);
+}
+function iconSelect(opts, current, onSelect) {
+  const cur = opts.find((o) => o.id === current) || opts[0];
+  return h('div', { class: 'icon-select', style: 'position:relative;width:100%' },
+    h('button', {
+      type: 'button', class: 'icon-select-btn',
+      onClick: () => { ui.selectOpen = ui.selectOpen === 'receive' ? null : 'receive'; render(); },
+    },
+      iconGlyph(cur.icon),
+      h('span', { class: 'grow', style: 'text-align:left' }, cur.label),
+      h('span', { class: 'muted', style: 'font-size:12px' }, '▾')),
+    ui.selectOpen === 'receive'
+      ? h('div', {},
+          h('div', { style: 'position:fixed;inset:0;z-index:20', onClick: () => { ui.selectOpen = null; render(); } }),
+          h('div', { class: 'icon-select-menu', style: 'position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:21' },
+            opts.map((o) => h('button', {
+              type: 'button', class: 'icon-select-item' + (o.id === current ? ' active' : ''),
+              onClick: () => { ui.selectOpen = null; onSelect(o.id); },
+            }, iconGlyph(o.icon), h('span', { class: 'grow', style: 'text-align:left' }, o.label)))))
+      : null
+  );
+}
+
 function receiveTab() {
   // Feature takeovers: boarding success, Ark receive celebration, etc.
   const takeover = featureHook('receiveTakeover');
@@ -2025,10 +2056,12 @@ function receiveTab() {
   const featModes = featureAll('receiveModes');
   let mode = ui.receiveType || 'address';
   if (mode !== 'address' && !featModes.some((m) => m.id === mode)) mode = 'address';
-  const opts = [['address', t('receiveAddressTab')], ...featModes.map((m) => [m.id, m.label])];
+  const opts = [
+    { id: 'address', label: t('receiveAddressTab'), icon: '₿' },
+    ...featModes.map((m) => ({ id: m.id, label: m.label, icon: m.icon })),
+  ];
   const seg = opts.length > 1
-    ? h('select', { style: 'width:100%', onChange: (e) => { ui.receiveType = e.target.value; render(); } },
-        opts.map(([id, label]) => h('option', { value: id, selected: mode === id }, label)))
+    ? iconSelect(opts, mode, (id) => { ui.receiveType = id; render(); })
     : null;
   const fm = featModes.find((m) => m.id === mode);
   if (fm) return fm.render(seg);

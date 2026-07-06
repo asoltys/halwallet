@@ -979,7 +979,7 @@ export function arkFeature(ctx) {
     stop() { stopArk(); },
     receiveModes() {
       if (!arkAvailable()) return [];
-      return [{ id: 'ark', label: t('receiveArkTab'), render: (seg) => arkReceivePane(seg) }];
+      return [{ id: 'ark', label: t('receiveArkTab'), icon: ARK_MARK(18), render: (seg) => arkReceivePane(seg) }];
     },
     receiveTakeover() {
       const offboarded = arkOffboardedScreen();
