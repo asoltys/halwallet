@@ -161,6 +161,23 @@ export class NostrSync {
     return res.some((x) => x.status === 'fulfilled');
   }
 
+  // Publish an arbitrary event (finalized here with our key) to the relays.
+  // Used by features that speak their own event kinds (e.g. ark zaps).
+  async publishEvent(partial) {
+    if (!this.sk) return null;
+    let evt;
+    try {
+      evt = finalizeEvent({ created_at: Math.floor(Date.now() / 1000), tags: [], content: '', ...partial }, this.sk);
+    } catch { return null; }
+    await Promise.allSettled(pool.publish(this.relays, evt));
+    return evt;
+  }
+
+  // Fetch events matching a filter from the relays (best-effort).
+  async fetchEvents(filter, maxWait = 5000) {
+    try { return await pool.querySync(this.relays, filter, { maxWait }); } catch { return []; }
+  }
+
   // Fetch the newest decrypted state across relays, or null.
   async fetch() {
     if (!this.sk) return null;

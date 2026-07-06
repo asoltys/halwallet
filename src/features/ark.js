@@ -4,7 +4,7 @@
 
 import * as btc from '@scure/btc-signer';
 import { HDKey } from '@scure/bip32';
-import { hex, base32nopad } from '@scure/base';
+import { hex, base32nopad, bech32 } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import { ArkManager } from '../ark/manager.js';
 import { boardFee } from '../ark/board.js';
@@ -91,6 +91,7 @@ export function arkFeature(ctx) {
     arkConnectPromise = mgr.init().then(() => {
       if (gen !== arkInitGen) throw new Error('superseded'); // wallet switched mid-connect
       ark = mgr;
+      announceArkAddress(mgr); // ark zaps: tell nostr where our mailbox lives
       const tick = () => mgr.sync().catch(() => {}).then(() => driveExits(mgr)).catch(() => {});
       tick();
       // Receives arrive in real time over the mailbox stream; the poll is the
@@ -349,6 +350,111 @@ export function arkFeature(ctx) {
       ui.arkError = e.message;
     }
     ui.arkBusy = null; render();
+  }
+
+  // ---- ark zaps (draft protocol, NIP-61-shaped) ----------------------------
+  // Lightning zaps (NIP-57) are built around LNURL + bolt11; ark needs
+  // neither. Mirroring nutzaps (NIP-61): the recipient announces their ark
+  // address as a replaceable event, the sender pays with a plain instant
+  // arkoor send and publishes a receipt referencing the delivered vtxo.
+  // Kinds are provisional until a NIP lands.
+  const ARK_INFO_KIND = 10037; // replaceable: ["ark", <address>], ["network", <net>]
+  const ARK_ZAP_KIND = 9737;   // receipt: ["p", pk], ["e", note?], ["amount", sats], ["vtxo", id], ["network", net]
+
+  // npub decode without importing the nostr stack (keeps ark-only builds lean)
+  function npubToHex(s) {
+    try {
+      const { prefix, words } = bech32.decode(String(s || '').trim(), 200);
+      if (prefix !== 'npub') return null;
+      return hex.encode(new Uint8Array(bech32.fromWords(words)));
+    } catch { return null; }
+  }
+
+  // Tell the world where our ark mailbox lives (once per address, and only
+  // when the sync/nostr feature is present in this build).
+  function announceArkAddress(mgr) {
+    if (!wallet.nostrPublish) return;
+    const addr = mgr.address();
+    if (mgr._zapAnnounced === addr) return;
+    mgr._zapAnnounced = addr;
+    wallet.nostrPublish({ kind: ARK_INFO_KIND, tags: [['ark', addr], ['network', getNetwork()]] }).catch(() => {});
+  }
+
+  // Resolve an npub to a same-network ark address via their announcement.
+  async function lookupArkZapTarget(pk) {
+    const events = await wallet.nostrFetch({ kinds: [ARK_INFO_KIND], authors: [pk] }, 6000);
+    const ev = (events || []).sort((a, b) => b.created_at - a.created_at)[0];
+    if (!ev) return { status: 'noark' };
+    const addr = (ev.tags.find((t) => t[0] === 'ark') || [])[1];
+    const net = (ev.tags.find((t) => t[0] === 'network') || [])[1];
+    if (!addr) return { status: 'noark' };
+    if (net && net !== getNetwork()) return { status: 'wrongnet', net };
+    return { status: 'ready', address: addr };
+  }
+
+  async function doArkZap() {
+    const z = ui.arkZap;
+    const sats = ctx.parseAmount(z.amount, ctx.getUnit());
+    if (!sats || sats <= 0) { ui.sendError = t('enterValidAmtForN', { n: 1 }); render(); return; }
+    ui.busy = true; ui.sendError = ''; render();
+    try {
+      const mgr = await connectArk();
+      const actionId = await mgr.send(z.address, sats);
+      const action = mgr.state.actions.find((a) => a.id === actionId);
+      if (!action || action.step === 'failed') throw new Error(action?.error || t('claimFailed'));
+      const vtxoId = decodeVtxo(hex.decode(action.destBytes)).id;
+      // the receipt is best-effort: the sats are already delivered via mailbox
+      await wallet.nostrPublish({
+        kind: ARK_ZAP_KIND,
+        content: (z.comment || '').slice(0, 280),
+        tags: [['p', z.pk], ['amount', String(sats)], ['vtxo', vtxoId], ['network', getNetwork()]],
+      }).catch(() => {});
+      ui.arkZapped = { amountSat: sats, npub: z.npub };
+      ui.arkZap = null;
+    } catch (e) {
+      ui.sendError = e.message;
+    }
+    ui.busy = false; render();
+  }
+
+  function arkZapView() {
+    if (ui.arkZapped) {
+      return h('div', {
+        class: 'card col',
+        style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
+        onClick: () => { ui.arkZapped = null; ui.send = blankSend(); render(); },
+      },
+        h('div', { class: 'check-badge' }, '⚡'),
+        h('h2', { style: 'margin:0' }, t('arkZapSentTitle')),
+        h('div', { class: 'amount-neg', style: 'font-size:18px' }, '-' + fmtAmount(ui.arkZapped.amountSat) + ' ' + unitLabel()),
+        h('div', { class: 'small muted' }, t('tapToProceed')));
+    }
+    const z = ui.arkZap;
+    if (!z) return null;
+    return h('div', { class: 'card col', style: 'gap:12px' },
+      h('h3', {}, '⚡ ' + t('arkZapTitle')),
+      h('div', { class: 'small muted', style: 'word-break:break-all' }, z.npub),
+      z.status === 'lookup' ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkZapLookup'))) : null,
+      z.status === 'noark' ? h('div', { class: 'notice err' }, t('arkZapNoArk')) : null,
+      z.status === 'wrongnet' ? h('div', { class: 'notice err' }, t('arkGiftWrongNet', { net: z.net })) : null,
+      z.status === 'ready'
+        ? h('div', { class: 'col gap6' },
+            h('div', { class: 'input-group' },
+              h('input', { type: 'number', min: '0', inputmode: 'decimal', placeholder: t('lnPayAmount'), value: z.amount,
+                onInput: (e) => { z.amount = e.target.value; } }),
+              h('div', { style: 'display:flex;align-items:center' }, unitTag())),
+            h('input', { type: 'text', class: 'mono-input', placeholder: t('arkZapCommentPh'), value: z.comment,
+              onInput: (e) => { z.comment = e.target.value; } }),
+            h('div', { class: 'small faint' }, t('arkZapHint')))
+        : null,
+      ui.sendError ? h('div', { class: 'notice err' }, ui.sendError) : null,
+      h('div', { class: 'row gap6' },
+        h('button', { class: 'btn-ghost', onClick: () => { ui.arkZap = null; ui.sendError = ''; ui.send = blankSend(); render(); } }, t('back')),
+        z.status === 'ready'
+          ? (ui.busy
+              ? h('button', { class: 'btn-primary grow', disabled: true }, h('span', { class: 'spinner' }))
+              : h('button', { class: 'btn-primary grow', onClick: doArkZap }, t('arkZapBtn')))
+          : null));
   }
 
   // ---- unilateral exit (trustless: no server cooperation) ------------------
@@ -767,8 +873,22 @@ export function arkFeature(ctx) {
       return false;
     },
     sendView() {
+      if (ui.arkZapped || ui.arkZap) return arkZapView();
       if (ui.arkSent || ui.arkSend) return arkSendReview();
       return null;
+    },
+    // An npub pasted into Send becomes an ark zap (needs the nostr seam from
+    // the sync feature and a connected-able ark).
+    matchSendText(text) {
+      const pk = npubToHex(text);
+      if (!pk || !arkAvailable() || !wallet.nostrFetch) return false;
+      ui.arkZap = { npub: String(text).trim(), pk, amount: '', comment: '', status: 'lookup' };
+      ui.sendError = '';
+      render();
+      Promise.all([connectArk(), lookupArkZapTarget(pk)])
+        .then(([, res]) => { if (ui.arkZap && ui.arkZap.pk === pk) { Object.assign(ui.arkZap, res); render(); } })
+        .catch((e) => { if (ui.arkZap && ui.arkZap.pk === pk) { ui.arkZap.status = 'noark'; ui.sendError = e.message; render(); } });
+      return true;
     },
     historyEntries() {
       if (!ark || !ark.state) return [];

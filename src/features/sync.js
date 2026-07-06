@@ -22,6 +22,22 @@ export function installSyncWallet(wallet) {
       return this.nostr && this.nostr.sk ? this.nostr.sendDM(recipientPkHex, text) : false;
     },
 
+    // Generic event publish/fetch on the configured sync relays — the seam
+    // other features (ark zaps) use to speak their own kinds. No-ops when
+    // sync is disabled or the wallet is offline.
+    async nostrPublish(partial) {
+      const sync = getSyncConfig();
+      if (this.offline || !sync.enabled || !this.nostr.sk) return null;
+      this.nostr.setRelays(sync.relays);
+      return this.nostr.publishEvent(partial);
+    },
+    async nostrFetch(filter, maxWait) {
+      const sync = getSyncConfig();
+      if (this.offline || !sync.enabled) return [];
+      this.nostr.setRelays(sync.relays);
+      return this.nostr.fetchEvents(filter, maxWait);
+    },
+
     // Pull the latest state from Nostr; apply it if it's newer than what we have.
     // Returns true if state was applied (so the caller can skip a full scan).
     async syncFromNostr() {
