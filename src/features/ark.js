@@ -399,39 +399,11 @@ export function arkFeature(ctx) {
         ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkRefresh },
             ui.arkBusy === 'refresh' ? h('span', { class: 'spinner sm' }) : t('arkRefreshBtn', { n: spendables.length }))
         : null,
-      // the trustless escape hatch: broadcast the exit chains, no server needed
+      // Moving funds out (cooperative offboard / unilateral exit) lives on its
+      // own page, reached from the "Exit" link on the Ark balance line.
       spendables.length >= 1
-        ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkExit },
-            ui.arkBusy === 'exit' ? h('span', { class: 'spinner sm' }) : t('arkExitBtn', { n: spendables.length }))
-        : null,
-      ...ark.state.actions.filter((a) => a.type === 'exit' && !['done', 'failed'].includes(a.step)).map((a) => {
-        // blocks left in the timelock, with a rough wall-clock estimate
-        // (~10 min/block everywhere but regtest, where blocks are manual)
-        const left = a.step === 'timelock' ? Math.max(0, a.claimableAt - (a.tipSeen || 0)) : 0;
-        const mins = left * 10;
-        const eta = getNetwork() === 'regtest' ? ''
-          : mins >= 2880 ? ` (≈ ${Math.round(mins / 1440)} d)`
-          : mins >= 120 ? ` (≈ ${Math.round(mins / 60)} h)`
-          : ` (≈ ${mins} min)`;
-        return h('div', { class: 'small muted' },
-          a.step === 'chain' ? t('arkExitChainStatus', { n: fmtAmount(a.amountSat), done: String(a.hopsDone || 0), total: String((a.txids || []).length) })
-            : a.step === 'timelock' ? t('arkExitTimelockStatus', { n: fmtAmount(a.amountSat), blocks: String(left), eta })
-            : t('arkExitClaimingStatus', { n: fmtAmount(a.amountSat) }),
-          a.lastError
-            ? h('div', { class: a.actionable ? 'small err' : 'small faint' },
-                a.actionable ? a.lastError : t('arkExitRetrying'))
-            : null,
-          // a stuck exit that never published anything can be safely undone
-          a.actionable && !(a.hopsDone > 0)
-            ? h('button', { class: 'linklike small', onClick: () => {
-                a.step = 'failed';
-                const v = ark._vtxo(a.vtxoId);
-                if (v && v.state === 'pending') v.state = 'spendable';
-                ark._save();
-                render();
-              } }, t('arkExitCancel'))
-            : null);
-      })
+        ? h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.arkExitPage = true; ui.arkError = ''; render(); } }, t('arkExitPageTitle'))
+        : null
     );
   }
 
@@ -909,13 +881,6 @@ export function arkFeature(ctx) {
           canBoard
             ? h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardAvailable', { n: fmtAmount(wallet.spendable) + ' ' + unitLabel() }))
             : h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardNoFunds', { n: minBoard.toLocaleString() })),
-          // ...and the way back out: offboard the whole ark balance on-chain.
-          ark.balance().spendableSat > 0
-            ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkOffboard },
-                ui.arkBusy === 'offboard'
-                  ? h('span', { class: 'spinner sm' })
-                  : t('arkOffboardBtn', { n: fmtAmount(ark.balance().spendableSat) + ' ' + unitLabel() }))
-            : null,
           ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null)
       );
     }
@@ -962,7 +927,7 @@ export function arkFeature(ctx) {
       h('div', { class: 'row gap6' },
         copyBtn(o.txid, t('copyTxid')),
         h('a', { class: 'btn btn-sm', href: url, target: '_blank', rel: 'noopener', onClick: (e) => { e.preventDefault(); openExternal(url); } }, t('viewOnMempool'))),
-      h('button', { class: 'btn-primary btn-block', onClick: () => { ui.arkOffboarded = null; render(); } }, t('done'))
+      h('button', { class: 'btn-primary btn-block', onClick: () => { ui.arkOffboarded = null; ui.arkExitPage = null; render(); } }, t('done'))
     );
   }
 
@@ -989,10 +954,78 @@ export function arkFeature(ctx) {
     return null;
   }
 
+  // Per-exit progress lines (chain hops / timelock countdown / claiming), with
+  // a cancel for an exit that never published. Shown on the exit page.
+  function arkExitStatusLines() {
+    const s = arkStateNow();
+    return ((s && s.actions) || []).filter((a) => a.type === 'exit' && !['done', 'failed'].includes(a.step)).map((a) => {
+      const left = a.step === 'timelock' ? Math.max(0, a.claimableAt - (a.tipSeen || 0)) : 0;
+      const mins = left * 10;
+      const eta = getNetwork() === 'regtest' ? ''
+        : mins >= 2880 ? ` (≈ ${Math.round(mins / 1440)} d)`
+        : mins >= 120 ? ` (≈ ${Math.round(mins / 60)} h)`
+        : ` (≈ ${mins} min)`;
+      return h('div', { class: 'small muted', style: 'margin-top:4px' },
+        a.step === 'chain' ? t('arkExitChainStatus', { n: fmtAmount(a.amountSat), done: String(a.hopsDone || 0), total: String((a.txids || []).length) })
+          : a.step === 'timelock' ? t('arkExitTimelockStatus', { n: fmtAmount(a.amountSat), blocks: String(left), eta })
+          : t('arkExitClaimingStatus', { n: fmtAmount(a.amountSat) }),
+        a.lastError ? h('div', { class: a.actionable ? 'small err' : 'small faint' }, a.actionable ? a.lastError : t('arkExitRetrying')) : null,
+        a.actionable && !(a.hopsDone > 0)
+          ? h('button', { class: 'linklike small', onClick: () => {
+              a.step = 'failed';
+              const v = ark && ark._vtxo(a.vtxoId);
+              if (v && v.state === 'pending') v.state = 'spendable';
+              if (ark) ark._save();
+              render();
+            } }, t('arkExitCancel'))
+          : null);
+    });
+  }
+
+  // The exit page: cooperative offboard vs unilateral exit, with explanation.
+  // Reached from the "Exit" link on the Ark balance line.
+  function arkExitPage() {
+    if (ui.arkOffboarded) return arkOffboardedScreen(); // cooperative success takeover
+    const b = arkBalance() || { spendableSat: 0, pendingSat: 0 };
+    const spendable = b.spendableSat;
+    const total = b.spendableSat + b.pendingSat;
+    const nSpend = ((arkStateNow() && arkStateNow().vtxos) || []).filter((v) => v.state === 'spendable').length;
+    const exits = arkExitStatusLines();
+    const back = () => { ui.arkExitPage = null; ui.arkError = ''; render(); };
+    return h('div', { class: 'col', style: 'gap:16px' },
+      h('div', { class: 'card col', style: 'gap:8px' },
+        h('h3', { class: 'row gap6', style: 'align-items:center;margin:0' }, h('span', { html: ARK_ICON(18) }), t('arkExitPageTitle')),
+        h('p', { class: 'small muted', style: 'margin:0' }, t('arkExitPageIntro')),
+        total > 0 ? h('div', { class: 'row between', style: 'margin-top:4px' },
+          h('span', { class: 'small muted' }, t('arkBalance')),
+          h('span', { class: 'small' }, fmtAmount(total) + ' ' + unitLabel())) : null),
+      // cooperative
+      h('div', { class: 'card col', style: 'gap:8px' },
+        h('h4', { style: 'margin:0' }, t('arkCoopTitle')),
+        h('p', { class: 'small muted', style: 'margin:0' }, t('arkCoopDesc')),
+        spendable > 0
+          ? h('button', { class: 'btn-primary btn-block', disabled: !!ui.arkBusy, onClick: doArkOffboard },
+              ui.arkBusy === 'offboard' ? h('span', { class: 'spinner sm' }) : t('arkOffboardBtn', { n: fmtAmount(spendable) + ' ' + unitLabel() }))
+          : h('div', { class: 'small faint' }, t('arkExitNoBalance'))),
+      // unilateral
+      h('div', { class: 'card col', style: 'gap:8px' },
+        h('h4', { style: 'margin:0' }, t('arkUniTitle')),
+        h('p', { class: 'small muted', style: 'margin:0' }, t('arkUniDesc')),
+        nSpend > 0
+          ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkExit },
+              ui.arkBusy === 'exit' ? h('span', { class: 'spinner sm' }) : t('arkExitBtn', { n: nSpend }))
+          : null,
+        ...exits),
+      ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null,
+      h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back'))
+    );
+  }
+
   return {
     id: 'ark',
     init() { initArk(); },
     stop() { stopArk(); },
+    screenView() { return ui.arkExitPage ? arkExitPage() : null; },
     receiveModes() {
       if (!arkAvailable()) return [];
       return [{ id: 'ark', label: t('receiveArkTab'), icon: ARK_MARK(18), render: (seg) => arkReceivePane(seg) }];
@@ -1059,7 +1092,13 @@ export function arkFeature(ctx) {
       const b = arkBalance();
       if (!b) return [];
       const lines = [];
-      if (b.spendableSat + b.pendingSat > 0) lines.push({ label: t('arkBalance'), sat: b.spendableSat + b.pendingSat });
+      if (b.spendableSat + b.pendingSat > 0) {
+        // "Ark balance … Exit" — the exit link opens the offboard/exit page.
+        const label = h('span', { class: 'row gap6', style: 'align-items:center' },
+          t('arkBalance'),
+          h('span', { class: 'linklike', style: 'font-size:12px', onClick: () => { ui.arkExitPage = true; ui.arkError = ''; render(); } }, t('arkExitLink')));
+        lines.push({ label, sat: b.spendableSat + b.pendingSat });
+      }
       // A board in flight: the sats already left the on-chain balance, so show
       // where they went instead of having them silently disappear.
       if (b.boardingSat > 0) lines.push({ label: t('arkBoarding'), sat: b.boardingSat });
