@@ -278,9 +278,15 @@ export function arkFeature(ctx) {
       { class: 'card col', style: 'gap:10px' },
       ...head,
       spendables.length ? row(t('arkVtxos'), String(spendables.length)) : null,
-      pendingActions.length
-        ? h('div', { class: 'small muted' }, t('arkPendingActions', { n: pendingActions.length }) + ' — ' + pendingActions.map((a) => `${a.type}:${a.step}`).join(', '))
-        : null,
+      // in-flight operations, summarized in plain words (exits get their own
+      // per-exit status lines below)
+      (() => {
+        const counts = {};
+        for (const a of pendingActions) { if (a.type !== 'exit') counts[a.type] = (counts[a.type] || 0) + 1; }
+        const LABEL = { board: 'arkOpsBoard', send: 'arkOpsSend', refresh: 'arkOpsRefresh', offboard: 'arkOpsOffboard' };
+        const parts = Object.entries(counts).map(([type, n]) => t(LABEL[type] || 'arkPendingActions', { n }));
+        return parts.length ? h('div', { class: 'small muted' }, parts.join(' · ')) : null;
+      })(),
       spendables.length >= 1
         ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkRefresh },
             ui.arkBusy === 'refresh' ? h('span', { class: 'spinner sm' }) : t('arkRefreshBtn', { n: spendables.length }))
@@ -295,7 +301,7 @@ export function arkFeature(ctx) {
           a.step === 'chain' ? t('arkExitChainStatus', { n: fmtAmount(a.amountSat) })
             : a.step === 'timelock' ? t('arkExitTimelockStatus', { n: fmtAmount(a.amountSat), blocks: String(a.claimableAt) })
             : t('arkExitClaimingStatus', { n: fmtAmount(a.amountSat) }),
-          a.lastError ? h('div', { class: 'small err' }, a.lastError) : null))
+          a.lastError ? h('div', { class: 'small faint' }, t('arkExitRetrying')) : null))
     );
   }
 

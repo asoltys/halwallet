@@ -150,11 +150,22 @@ export function buildExitClaim({ vtxo, keys, serverPub, destScript, feeRate }) {
 
 // Submit a [parent, child] (or single-tx) package via esplora -> bitcoind
 // submitpackage. Treats already-known txs as success so retries are safe.
+// Esploras without the endpoint (regtest electrs) fall back to sequential
+// /tx posts — which relays only if the node accepts zero-fee v3 parents
+// (regtest with -minrelaytxfee=0); otherwise the node's error surfaces.
 export async function submitPackage(esploraBase, hexes) {
   const r = await fetch(`${esploraBase}/txs/package`, { method: 'POST', body: JSON.stringify(hexes) });
   const body = await r.text();
-  if (!r.ok && !/already|duplicate/i.test(body)) {
-    throw new Error(`package submit failed: ${body.slice(0, 160)}`);
+  if (r.ok || /already|duplicate/i.test(body)) return body;
+  if (r.status === 404 || /endpoint does not exist/i.test(body)) {
+    for (const hx of hexes) {
+      const br = await fetch(`${esploraBase}/tx`, { method: 'POST', body: hx });
+      const bb = await br.text();
+      if (!br.ok && !/already|duplicate/i.test(bb)) {
+        throw new Error(`broadcast failed: ${bb.slice(0, 160)}`);
+      }
+    }
+    return 'sequential';
   }
-  return body;
+  throw new Error(`package submit failed: ${body.slice(0, 160)}`);
 }
