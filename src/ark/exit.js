@@ -156,7 +156,21 @@ export function buildExitClaim({ vtxo, keys, serverPub, destScript, feeRate }) {
 export async function submitPackage(esploraBase, hexes) {
   const r = await fetch(`${esploraBase}/txs/package`, { method: 'POST', body: JSON.stringify(hexes) });
   const body = await r.text();
-  if (r.ok || /already|duplicate/i.test(body)) return body;
+  if (r.ok) {
+    // submitpackage answers 200 even when it REJECTS the txs — the verdict is
+    // inside package_msg / per-tx errors. Treat anything but success (or
+    // already-known) as a real failure or the exit waits forever in silence.
+    let parsed = null;
+    try { parsed = JSON.parse(body); } catch {}
+    if (parsed && parsed.package_msg && parsed.package_msg !== 'success') {
+      const errs = Object.values(parsed['tx-results'] || {}).map((t) => t.error).filter(Boolean).join('; ');
+      if (!/already/i.test(errs)) {
+        throw new Error(`package rejected: ${(errs || parsed.package_msg).slice(0, 160)}`);
+      }
+    }
+    return body;
+  }
+  if (/already|duplicate/i.test(body)) return body;
   if (r.status === 404 || /endpoint does not exist/i.test(body)) {
     for (const hx of hexes) {
       const br = await fetch(`${esploraBase}/tx`, { method: 'POST', body: hx });

@@ -297,15 +297,34 @@ export function arkFeature(ctx) {
         ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkExit },
             ui.arkBusy === 'exit' ? h('span', { class: 'spinner sm' }) : t('arkExitBtn', { n: spendables.length }))
         : null,
-      ...ark.state.actions.filter((a) => a.type === 'exit' && !['done', 'failed'].includes(a.step)).map((a) =>
-        h('div', { class: 'small muted' },
-          a.step === 'chain' ? t('arkExitChainStatus', { n: fmtAmount(a.amountSat) })
-            : a.step === 'timelock' ? t('arkExitTimelockStatus', { n: fmtAmount(a.amountSat), blocks: String(a.claimableAt) })
+      ...ark.state.actions.filter((a) => a.type === 'exit' && !['done', 'failed'].includes(a.step)).map((a) => {
+        // blocks left in the timelock, with a rough wall-clock estimate
+        // (~10 min/block everywhere but regtest, where blocks are manual)
+        const left = a.step === 'timelock' ? Math.max(0, a.claimableAt - (a.tipSeen || 0)) : 0;
+        const mins = left * 10;
+        const eta = getNetwork() === 'regtest' ? ''
+          : mins >= 2880 ? ` (≈ ${Math.round(mins / 1440)} d)`
+          : mins >= 120 ? ` (≈ ${Math.round(mins / 60)} h)`
+          : ` (≈ ${mins} min)`;
+        return h('div', { class: 'small muted' },
+          a.step === 'chain' ? t('arkExitChainStatus', { n: fmtAmount(a.amountSat), done: String(a.hopsDone || 0), total: String((a.txids || []).length) })
+            : a.step === 'timelock' ? t('arkExitTimelockStatus', { n: fmtAmount(a.amountSat), blocks: String(left), eta })
             : t('arkExitClaimingStatus', { n: fmtAmount(a.amountSat) }),
           a.lastError
             ? h('div', { class: a.actionable ? 'small err' : 'small faint' },
                 a.actionable ? a.lastError : t('arkExitRetrying'))
-            : null))
+            : null,
+          // a stuck exit that never published anything can be safely undone
+          a.actionable && !(a.hopsDone > 0)
+            ? h('button', { class: 'linklike small', onClick: () => {
+                a.step = 'failed';
+                const v = ark._vtxo(a.vtxoId);
+                if (v && v.state === 'pending') v.state = 'spendable';
+                ark._save();
+                render();
+              } }, t('arkExitCancel'))
+            : null);
+      })
     );
   }
 
@@ -379,9 +398,10 @@ export function arkFeature(ctx) {
     if (action.step === 'chain') {
       const txs = signedExitTxs(decoded, mgr.serverPub);
       let lastConfirmedHeight = 0;
+      let hopsDone = 0;
       for (const txi of txs) {
         const st = await mgr.chain.getTxStatus(txi.txid);
-        if (st?.confirmed) { lastConfirmedHeight = st.block_height; continue; }
+        if (st?.confirmed) { lastConfirmedHeight = st.block_height; hopsDone++; if (action.hopsDone !== hopsDone) { action.hopsDone = hopsDone; mgr._save(); } continue; }
         // /tx/:txid/status answers {confirmed:false} even for UNKNOWN txids
         // (electrs + mempool.space) — only /tx/:txid 404s definitively
         if (await mgr.chain.getTxHex(txi.txid)) return; // in mempool — wait
@@ -433,6 +453,7 @@ export function arkFeature(ctx) {
     }
     if (action.step === 'timelock') {
       const tip = await mgr.chain.tipHeight();
+      if (action.tipSeen !== tip) { action.tipSeen = tip; mgr._save(); } // for the blocks-left display
       if (tip < action.claimableAt) return;
       const keys = mgr._keyForVtxo(rec);
       const feeRate = Math.max(1, (wallet.feeRates && wallet.feeRates.halfHourFee) || 2);
