@@ -7,6 +7,7 @@ import { HDKey } from '@scure/bip32';
 import { hex, base32nopad } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import { ArkManager } from '../ark/manager.js';
+import { boardFee } from '../ark/board.js';
 import { decodeVtxo, getVtxoStatus, VTXO_STATE_SPENT, concatBytes } from '../ark/proto.js';
 import { signedExitTxs, buildBumpChild, buildExitClaim, submitPackage } from '../ark/exit.js';
 import { utxoId } from '../wallet.js';
@@ -598,10 +599,18 @@ export function arkFeature(ctx) {
               type: 'number', inputmode: 'numeric', min: '0',
               placeholder: t('arkBoardPlaceholder', { n: minBoard.toLocaleString() }),
               value: ui.arkBoardAmt || '',
-              onInput: (e) => { ui.arkBoardAmt = e.target.value; },
+              onInput: (e) => { ui.arkBoardAmt = e.target.value; render(); },
             }),
             h('button', { class: 'btn-sm', disabled: !!ui.arkBusy || !canBoard, onClick: doArkBoard },
               ui.arkBusy === 'board' ? h('span', { class: 'spinner sm' }) : t('arkBoardBtn'))),
+          // show the server's board fee BEFORE the money moves, not after
+          (() => {
+            const sats = parseInt((ui.arkBoardAmt || '').trim(), 10);
+            if (!sats || sats < minBoard) return null;
+            const fee = boardFee(sats, ark.info.boardFees);
+            return h('div', { class: 'small muted', style: 'text-align:center' },
+              t('arkBoardFeeNote', { fee: fmtAmount(fee), net: fmtAmount(sats - fee) }));
+          })(),
           canBoard
             ? h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardAvailable', { n: fmtAmount(wallet.spendable) + ' ' + unitLabel() }))
             : h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardNoFunds', { n: minBoard.toLocaleString() })),
@@ -766,6 +775,11 @@ export function arkFeature(ctx) {
         h('div', { class: 'line' },
           h('span', { class: 'k' }, t('arkBalance')),
           h('span', { class: 'v' }, '+' + fmtAmount(a.amountSat - a.feeSat) + ' ' + unitLabel())),
+        a.feeSat > 0
+          ? h('div', { class: 'line' },
+              h('span', { class: 'k' }, t('arkBoardFeeLabel')),
+              h('span', { class: 'v' }, fmtAmount(a.feeSat) + ' ' + unitLabel()))
+          : null,
         done ? null : h('div', { class: 'small muted', style: 'margin-top:2px' }, t('arkBoardedNote')));
     },
     settingsCards() { return [arkCard()]; },

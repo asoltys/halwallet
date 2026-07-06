@@ -370,6 +370,8 @@ const STR = {
     arkPendingActions: '{n} operation(s) in progress',
     arkBoardPlaceholder: 'Board amount (min {n} sats)',
     arkBoardBtn: 'Board',
+    arkBoardFeeNote: 'Ark server fee {fee} sats — {net} sats will arrive in your Ark balance (funds the exit-path fee anchor).',
+    arkBoardFeeLabel: 'Ark server fee',
     arkBoardedTitle: 'Boarding!',
     arkBoardedNote: 'Spendable in the Ark after 1 confirmation.',
     arkBoardIntro: 'Or move this wallet\u2019s on-chain funds into Ark:',
