@@ -274,6 +274,9 @@ function nodeAtPath(path) {
 }
 
 function render() {
+  // A direct render subsumes any coalesced one queued by a background emit, so
+  // drop the pending frame (a user action must not trigger a second rebuild).
+  if (_renderRaf) { cancelAnimationFrame(_renderRaf); _renderRaf = 0; }
   // Preserve focus + caret across the rebuild, so a background update (poll, a
   // payment push, an SP scan) can't kick the user out of a field they're editing.
   const a = document.activeElement;
@@ -312,7 +315,22 @@ function render() {
   }
   syncHistory(); // mirror the current screen into browser history (Back/Forward)
 }
-wallet.subscribe(render);
+
+// Background state changes (a wake scan, cross-device sync merges, WS payment
+// pushes) can fire a burst of emits — especially when the PWA is refocused
+// after being backgrounded. Rendering synchronously on each one rebuilds the
+// whole screen dozens of times in a row and starves user input, so the app
+// feels frozen for a second or two. Coalesce those into at most one render per
+// animation frame. Direct user actions still call render() synchronously, and
+// the browser dispatches input events ahead of the queued frame, so a tap or
+// navigation always takes priority over background repaints. (rAF also skips
+// rendering entirely while the tab is hidden, and fires once on refocus.)
+let _renderRaf = 0;
+function scheduleRender() {
+  if (_renderRaf) return;
+  _renderRaf = requestAnimationFrame(() => { _renderRaf = 0; render(); });
+}
+wallet.subscribe(scheduleRender);
 
 // ---- browser-history navigation ------------------------------------------
 // Mirror the app's screen position into the browser history so the Back/Forward
