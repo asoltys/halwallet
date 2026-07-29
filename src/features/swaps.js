@@ -3,7 +3,7 @@
 // protocol layer lives in ../swap.js.
 
 import { SwapManager, installSwapWallet } from '../swap.js';
-import { getNetwork, getBoltzApi, BOLTZ_PRESETS, getBoltzProviderId, setBoltzProviderId, getBoltzCustom, setBoltzCustom } from '../api.js';
+import { getNetwork, getBoltzApi, boltzPresetsFor, getBoltzProviderId, setBoltzProviderId, getBoltzCustom, setBoltzCustom } from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { fmtBtc } from '../format.js';
@@ -84,7 +84,7 @@ export function swapsFeature(ctx) {
       h('h3', {}, '⚡ Swap provider'),
       h('p', { class: 'small muted', style: 'margin:0' }, 'Boltz-compatible provider for Lightning swaps. Non-custodial: a provider can fail a swap but never take your funds.'),
       h('select', { onChange: (e) => { setBoltzProviderId(e.target.value); ui.swapLimits = null; render(); } },
-        BOLTZ_PRESETS.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
+        boltzPresetsFor(getNetwork()).map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
       id === 'custom'
         ? h('div', { class: 'col', style: 'gap:8px' },
             h('label', { class: 'field' },

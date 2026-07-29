@@ -150,16 +150,25 @@ function nk(base, net) { return net === 'mainnet' ? base : `${base}:${net}`; }
 // Presets are independent Boltz-compatible instances from SwapMarket's list
 // (swapmarket.github.io); `local` is the regtest stack. Non-custodial either
 // way: a provider can fail a swap but never steal (we claim/refund on-chain).
+// `nets` is which Bitcoin networks a preset actually serves — a provider runs on
+// exactly one chain, so a regtest/mutinynet backend must never be offered (or
+// used) on mainnet, and vice versa. `custom` carries no `nets` and is available
+// everywhere.
 export const BOLTZ_PRESETS = [
-  { id: 'local', label: 'Local (regtest)', api: '/boltz', ws: 'ws://localhost:9004/v2/ws' },
-  { id: 'staging', label: 'coinos staging (mutinynet)', api: 'https://swap-staging.coinos.io', ws: 'wss://swap-staging.coinos.io/v2/ws' },
-  { id: 'coinos', label: 'coinos (swap.coinos.io)', api: 'https://swap.coinos.io', ws: 'wss://swap.coinos.io/v2/ws' },
-  { id: 'boltz', label: 'Boltz Exchange', api: 'https://api.boltz.exchange' },
-  { id: 'middleway', label: 'Middle Way', api: 'https://api.middle-way.space' },
-  { id: 'zeus', label: 'ZEUS Swaps', api: 'https://swaps.zeuslsp.com/api' },
-  { id: 'eldamar', label: 'Eldamar', api: 'https://boltz-api.eldamar.icu' },
+  { id: 'local', label: 'Local (regtest)', api: '/boltz', ws: 'ws://localhost:9004/v2/ws', nets: ['regtest'] },
+  { id: 'staging', label: 'coinos staging (mutinynet)', api: 'https://swap-staging.coinos.io', ws: 'wss://swap-staging.coinos.io/v2/ws', nets: ['mutinynet'] },
+  { id: 'coinos', label: 'coinos (swap.coinos.io)', api: 'https://swap.coinos.io', ws: 'wss://swap.coinos.io/v2/ws', nets: ['mainnet'] },
+  { id: 'boltz', label: 'Boltz Exchange', api: 'https://api.boltz.exchange', nets: ['mainnet'] },
+  { id: 'middleway', label: 'Middle Way', api: 'https://api.middle-way.space', nets: ['mainnet'] },
+  { id: 'zeus', label: 'ZEUS Swaps', api: 'https://swaps.zeuslsp.com/api', nets: ['mainnet'] },
+  { id: 'eldamar', label: 'Eldamar', api: 'https://boltz-api.eldamar.icu', nets: ['mainnet'] },
   { id: 'custom', label: 'Custom…', api: '', ws: '' },
 ];
+
+// Presets valid for a network: those that serve it, plus Custom (any network).
+export function boltzPresetsFor(net = getNetwork()) {
+  return BOLTZ_PRESETS.filter((p) => !p.nets || p.nets.includes(net));
+}
 const BOLTZ_PROVIDER_KEY = 'btc-wallet-boltz-provider'; // selected preset id
 const BOLTZ_CUSTOM_KEY = 'btc-wallet-boltz-custom';     // { api, ws } for custom
 
@@ -171,17 +180,20 @@ export function setBoltzCustom({ api, ws }) {
   try { localStorage.setItem(BOLTZ_CUSTOM_KEY, JSON.stringify({ api: (api || '').trim(), ws: (ws || '').trim() })); } catch {}
 }
 export function getBoltzProviderId() {
-  try { const id = localStorage.getItem(BOLTZ_PROVIDER_KEY); if (id && BOLTZ_PRESETS.some((p) => p.id === id)) return id; } catch {}
-  const net = getNetwork(); // default per network
-  // Mainnet defaults to public Boltz Exchange until our own swap.coinos.io
-  // node ('coinos') has channel liquidity; flip this to 'coinos' once funded.
-  // No Boltz-compatible instance runs on signet, so it defaults to custom/empty.
-  return net === 'regtest' ? 'local' : net === 'mutinynet' ? 'staging' : net === 'signet' ? 'custom' : 'boltz';
+  const net = getNetwork();
+  // Only honour a stored choice that's valid for the CURRENT network — otherwise
+  // switching to mainnet would silently keep a regtest/mutinynet backend.
+  try { const id = localStorage.getItem(BOLTZ_PROVIDER_KEY); if (id && boltzPresetsFor(net).some((p) => p.id === id)) return id; } catch {}
+  // Default per network. Mainnet uses public Boltz Exchange until our own
+  // swap.coinos.io node ('coinos') has channel liquidity; flip this to 'coinos'
+  // once funded. No Boltz-compatible instance runs on signet/testnet, so they
+  // default to custom/empty.
+  return net === 'regtest' ? 'local' : net === 'mutinynet' ? 'staging' : (net === 'signet' || net === 'testnet') ? 'custom' : 'boltz';
 }
 export function setBoltzProviderId(id) { try { localStorage.setItem(BOLTZ_PROVIDER_KEY, id); } catch {} }
 
 export function getBoltzProvider() {
-  const p = BOLTZ_PRESETS.find((x) => x.id === getBoltzProviderId()) || BOLTZ_PRESETS[1];
+  const p = BOLTZ_PRESETS.find((x) => x.id === getBoltzProviderId()) || BOLTZ_PRESETS.find((x) => x.id === 'custom');
   if (p.id === 'custom') { const c = getBoltzCustom(); return { id: 'custom', api: c.api, ws: c.ws }; }
   return { id: p.id, api: p.api, ws: p.ws || '' };
 }
