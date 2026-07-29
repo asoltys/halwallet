@@ -10,3 +10,6 @@ Thumbs.db
 # Env
 .env
 .env.*
+
+# Local scratch: E2E harnesses & perf repros (run against regtest)
+tools/.*.tmp.js
