@@ -547,6 +547,11 @@ export function arkFeature(ctx) {
       h('div', { class: 'small muted', style: 'word-break:break-all' }, z.npub),
       z.status === 'lookup' ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkZapLookup'))) : null,
       z.status === 'noark' ? h('div', { class: 'notice err' }, t('arkZapNoArk')) : null,
+      // No Ark address, but they may still take a Lightning zap — hand off to
+      // the zaps feature (present alongside swaps).
+      (z.status === 'noark' || z.status === 'wrongnet') && ctx.hook('canLnZap')
+        ? h('button', { class: 'btn-primary btn-block', onClick: () => { ctx.hook('lnZapNpub', z.pk, z.npub); } }, '⚡ ' + t('lnZapFallback'))
+        : null,
       z.status === 'wrongnet' ? h('div', { class: 'notice err' }, t('arkGiftWrongNet', { net: z.net })) : null,
       z.status === 'ready'
         ? h('div', { class: 'col gap6' },

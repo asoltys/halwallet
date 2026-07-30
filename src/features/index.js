@@ -7,11 +7,14 @@
 import { giftsFeature } from './gifts.js';
 import { swapsFeature } from './swaps.js';
 import { arkFeature } from './ark.js';
+import { zapsFeature } from './zaps.js';
 import { spFeature } from './sp.js';
 import { syncFeature } from './sync.js';
 
 // NB order is meaningful where hooks stack: gifts' receive takeover and
-// balance line come before ark's, matching the pre-plugin layout.
+// balance line come before ark's, matching the pre-plugin layout. zaps sits
+// after ark so an npub prefers an instant Ark zap and only falls through to a
+// Lightning zap when Ark can't serve it.
 export function buildFeatures(ctx) {
-  return [giftsFeature(ctx), swapsFeature(ctx), arkFeature(ctx), spFeature(ctx), syncFeature(ctx)];
+  return [giftsFeature(ctx), swapsFeature(ctx), arkFeature(ctx), zapsFeature(ctx), spFeature(ctx), syncFeature(ctx)];
 }

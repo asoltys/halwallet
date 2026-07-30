@@ -3,7 +3,7 @@
 // (used e.g. to DM locked-gift claim codes). Installed onto the core wallet;
 // a build without sync ships none of it and never talks to a relay.
 
-import { NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag, deviceDtag, isOurDtag } from '../nostr.js';
+import { NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag, deviceDtag, isOurDtag, fetchNostrProfile, PROFILE_RELAYS } from '../nostr.js';
 import { t } from '../i18n.js';
 
 // Keep a published snapshot under the relay's event-size cap. relay.coinos.io
@@ -60,6 +60,24 @@ export function installSyncWallet(wallet) {
       if (this.offline || !sync.enabled) return () => {};
       this.nostr.setRelays(sync.relays);
       return this.nostr.subscribeEvents(filter, onEvent);
+    },
+
+    // Sign an event with our nostr key without publishing (NIP-57 zap request).
+    nostrSign(partial) { return this.nostr ? this.nostr.signEvent(partial) : null; },
+
+    // Fetch a pubkey's profile (name/picture + lud16/lud06 for zaps) from the
+    // broad profile relays — independent of whether cross-device sync is on.
+    async nostrProfile(pkHex) {
+      if (this.offline) return null;
+      return fetchNostrProfile(pkHex);
+    },
+
+    // Relays to advertise in a zap request so we can later find the receipt:
+    // our sync relays plus the broad profile relays.
+    nostrRelays() {
+      const sync = getSyncConfig();
+      const base = sync.enabled ? sync.relays : [];
+      return [...new Set([...base, ...PROFILE_RELAYS])].slice(0, 8);
     },
 
     // Pull the latest state from Nostr; apply it if it's newer than what we have.

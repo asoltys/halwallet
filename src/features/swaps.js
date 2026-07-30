@@ -132,8 +132,8 @@ export function swapsFeature(ctx) {
       line(t('status'), swap.status === 'claimed' ? 'Settled ✓' : swap.status));
   }
 
-  async function startLnSend(invoice) {
-    ui.sendError = ''; ui.lnSend = null; ui.lnSent = null; ui.lnSendBusy = true; render();
+  async function startLnSend(invoice, meta = null) {
+    ui.sendError = ''; ui.lnSend = null; ui.lnSent = null; ui.lnPayMeta = meta; ui.lnSendBusy = true; render();
     try { ui.lnSend = await swaps.quoteSubmarine(invoice); }
     catch (e) { ui.sendError = e.message; }
     ui.lnSendBusy = false; render();
@@ -149,21 +149,25 @@ export function swapsFeature(ctx) {
 
   function lnSendReview() {
     const u = ' ' + unitLabel();
+    const zap = ui.lnPayMeta; // set when a NIP-57 zap routed through here
     if (ui.lnSent) {
       return h('div', { class: 'col', style: 'gap:16px' },
         h('div', { class: 'card col', style: 'align-items:center;text-align:center;gap:8px' },
           h('div', { class: 'check-badge' }, '⚡'),
-          h('h2', { style: 'margin:0' }, t('lnPaySentTitle')),
+          h('h2', { style: 'margin:0' }, zap ? t('arkZapSentTitle') : t('lnPaySentTitle')),
+          zap && zap.name ? h('div', { class: 'small muted' }, zap.name) : null,
           ui.lnSent.amount ? h('div', { class: 'amount-pos', style: 'font-size:18px' }, fmtAmount(ui.lnSent.amount) + u) : null,
-          h('p', { class: 'muted', style: 'margin:0' }, t('lnPaySentBody'))),
-        h('button', { class: 'btn-primary btn-block', onClick: () => { ui.lnSent = null; ui.lnSend = null; ui.send = blankSend(); ui.tab = 'history'; render(); } }, t('done')));
+          h('p', { class: 'muted', style: 'margin:0' }, zap ? t('lnZapSentBody') : t('lnPaySentBody'))),
+        h('button', { class: 'btn-primary btn-block', onClick: () => { ui.lnSent = null; ui.lnSend = null; ui.lnPayMeta = null; ui.send = blankSend(); ui.tab = 'history'; render(); } }, t('done')));
     }
     const q = ui.lnSend;
     const row = (label, sats, bold) => h('div', { class: 'row', style: 'justify-content:space-between' + (bold ? ';font-weight:600' : '') },
       h('span', { class: bold ? '' : 'small muted' }, label), h('span', {}, fmtAmount(sats) + u));
     return h('div', { class: 'col', style: 'gap:12px' },
       h('div', { class: 'card col', style: 'gap:10px' },
-        h('h3', { style: 'margin:0' }, t('lnPayTitle')),
+        h('h3', { style: 'margin:0' }, zap ? '⚡ ' + t('lnZapReviewTitle') : t('lnPayTitle')),
+        zap && (zap.name || zap.address) ? h('div', { class: 'small muted', style: 'word-break:break-all' }, zap.name || zap.address) : null,
+        zap && zap.comment ? h('div', { class: 'small faint', style: 'font-style:italic;word-break:break-word' }, '“' + zap.comment + '”') : null,
         q.invoiceAmount != null ? row(t('lnPayAmount'), q.invoiceAmount) : null,
         q.boltzFee != null ? row(t('lnPayBoltzFee'), q.boltzFee) : null,
         row(t('lnPayNetworkFee'), q.networkFee),
@@ -171,7 +175,7 @@ export function swapsFeature(ctx) {
         row(t('lnPayTotal'), q.total, true)),
       ui.sendError ? h('div', { class: 'notice err' }, ui.sendError) : null,
       h('button', { class: 'btn-primary btn-block', disabled: !!ui.lnSendBusy, onClick: doLnPay }, ui.lnSendBusy ? h('span', { class: 'spinner' }) : t('lnPayConfirm')),
-      h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.lnSend = null; ui.sendError = ''; render(); } }, t('back')));
+      h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.lnSend = null; ui.lnPayMeta = null; ui.sendError = ''; render(); } }, t('back')));
   }
 
   return {
@@ -215,5 +219,14 @@ export function swapsFeature(ctx) {
     },
     findByTxid(txid) { return swaps.findByTxid(txid); },
     settingsCards() { return [boltzProviderCard()]; },
+    // ---- cross-feature seam (the zaps feature pays a resolved bolt11) ----
+    // True when Lightning payment is possible from this wallet/build — the
+    // zaps feature checks this before offering a Lightning zap.
+    canLnPay() { return !wallet.watchOnly; },
+    // Pay a bolt11 that another feature resolved (e.g. a NIP-57 zap), reusing
+    // this feature's quote → review → confirm → success flow. `meta` decorates
+    // the review as a zap (recipient name, comment). Returns true so the hook
+    // dispatcher stops here.
+    startLnPay(invoice, meta) { startLnSend(invoice, meta || null); return true; },
   };
 }

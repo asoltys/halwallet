@@ -61,7 +61,15 @@ export async function fetchNostrProfile(pubkeyHex, relays = PROFILE_RELAYS) {
   if (!best) return null;
   try {
     const m = JSON.parse(best.content);
-    return { name: m.display_name || m.name || null, picture: m.picture || null, nip05: m.nip05 || null };
+    return {
+      name: m.display_name || m.name || null,
+      picture: m.picture || null,
+      nip05: m.nip05 || null,
+      // NIP-57/LUD-16/06: where to send a Lightning zap. lud16 is a
+      // lightning address (name@domain); lud06 is a bech32 lnurl.
+      lud16: typeof m.lud16 === 'string' ? m.lud16.trim() : null,
+      lud06: typeof m.lud06 === 'string' ? m.lud06.trim() : null,
+    };
   } catch { return null; }
 }
 
@@ -188,12 +196,20 @@ export class NostrSync {
   // Used by features that speak their own event kinds (e.g. ark zaps).
   async publishEvent(partial) {
     if (!this.sk) return null;
-    let evt;
-    try {
-      evt = finalizeEvent({ created_at: Math.floor(Date.now() / 1000), tags: [], content: '', ...partial }, this.sk);
-    } catch { return null; }
+    const evt = this.signEvent(partial);
+    if (!evt) return null;
     await Promise.allSettled(pool.publish(this.relays, evt));
     return evt;
+  }
+
+  // Sign an event with our key WITHOUT publishing it. A NIP-57 zap request
+  // (kind 9734) is signed by the sender but handed to the recipient's LNURL
+  // server — never broadcast to relays by us — so it needs signing alone.
+  signEvent(partial) {
+    if (!this.sk) return null;
+    try {
+      return finalizeEvent({ created_at: Math.floor(Date.now() / 1000), tags: [], content: '', ...partial }, this.sk);
+    } catch { return null; }
   }
 
   // Fetch events matching a filter from the relays (best-effort).
