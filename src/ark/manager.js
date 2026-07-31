@@ -977,6 +977,143 @@ export class ArkManager {
     }
   }
 
+  // ---- third-party HTLCs (trustless swaps with a non-ASP counterparty) ----
+  // These are the primitives a submarine swap with an external bridge needs:
+  // lock funds into an HTLC only the counterparty can claim (with the
+  // preimage) and only we can reclaim (after expiry). Requires a server that
+  // supports VtxoPolicy::Htlc — see docs/third-party-htlc.md.
+
+  // Lock `amountSat` into an HTLC claimable by `claimPubkey` against
+  // `paymentHash`, refundable by us after `htlcExpiry`. Returns the signed
+  // HTLC vtxo bytes (hand these to the counterparty) plus our refund key
+  // index so the refund can be driven later.
+  async htlcLock({ amountSat, claimPubkey, paymentHash, htlcExpiry }) {
+    const input = this._selectInput(amountSat);
+    const inputRec = input;
+    const decoded = this._decoded(inputRec);
+    const keys = this._keyForVtxo(inputRec);
+    const refundIndex = this.state.nextKeyIndex++;
+    const changeSat = inputRec.amountSat - amountSat;
+    const outputs = [{
+      amountSat,
+      policy: {
+        type: 'htlc',
+        claimPubkey: typeof claimPubkey === 'string' ? claimPubkey : hex.encode(claimPubkey),
+        refundPubkey: hex.encode(this._key(refundIndex).pubkey),
+        paymentHash: typeof paymentHash === 'string' ? paymentHash : hex.encode(paymentHash),
+        htlcExpiry,
+      },
+    }];
+    if (changeSat > 0) outputs.push({ amountSat: changeSat, userPubkey: this._key(refundIndex).pubkey });
+
+    await registerVtxoTransactions(this.arkUrl, [decoded._raw.bytes]);
+    const build = buildArkoorSend({ input: decoded, outputs, serverPubkey: this.serverPub, vtxoKeys: keys });
+    const sigs = await cosignWithServer(this.arkUrl, build, {
+      input: decoded, vtxoKeys: keys, serverPubkey: this.serverPub,
+    });
+    const all = buildAllSignedVtxos({ input: decoded, build, finalSigs: sigs, serverPubkey: this.serverPub })
+      .map((bytes) => ({ bytes, v: decodeVtxo(bytes) }));
+    const htlcs = all.filter((x) => x.v.policy.type === 'htlc');
+    const change = all.filter((x) => x.v.policy.type !== 'htlc');
+    inputRec.state = 'spent';
+    // the HTLC output isn't ours to spend (only to refund), so it is NOT
+    // added to the wallet's spendable set; change is
+    for (const x of change) this._addVtxo(x.v, x.bytes, refundIndex);
+    await registerVtxoTransactions(this.arkUrl, all.map((x) => x.bytes)).catch(() => {});
+    this._movement({
+      type: 'htlc-lock', amountSat, status: 'complete',
+      detail: `htlc expiry ${htlcExpiry}`,
+    });
+    this._save();
+    return {
+      htlcVtxos: htlcs.map((x) => hex.encode(x.bytes)),
+      refundIndex,
+      htlcExpiry,
+    };
+  }
+
+  // Claim an HTLC vtxo made out to one of our keys by revealing `preimage`.
+  // The server verifies the hash lock before cosigning, and records the
+  // preimage for the counterparty to fetch.
+  async htlcClaim({ htlcVtxoBytes, claimKeyIndex, preimage, destPubkey }) {
+    const input = decodeVtxo(hex.decode(htlcVtxoBytes));
+    if (input.policy.type !== 'htlc') throw new Error('not an htlc vtxo');
+    const keys = this._key(claimKeyIndex);
+    if (input.policy.claimPubkey !== hex.encode(keys.pubkey)) throw new Error('htlc not claimable by this key');
+    if (hex.encode(sha256(hex.decode(preimage))) !== input.policy.paymentHash) {
+      throw new Error('preimage does not match the htlc payment hash');
+    }
+    const outIndex = destPubkey ? null : this.state.nextKeyIndex++;
+    const outPub = destPubkey
+      ? (typeof destPubkey === 'string' ? hex.decode(destPubkey) : destPubkey)
+      : this._key(outIndex).pubkey;
+    await registerVtxoTransactions(this.arkUrl, [input._raw.bytes]).catch(() => {});
+    const build = buildArkoorSend({
+      input, outputs: [{ amountSat: input.amountSat, userPubkey: outPub }],
+      serverPubkey: this.serverPub, vtxoKeys: keys,
+    });
+    const sigs = await cosignWithServer(this.arkUrl, build, {
+      input, vtxoKeys: keys, serverPubkey: this.serverPub, preimage,
+    });
+    const outBytes = buildAllSignedVtxos({ input, build, finalSigs: sigs, serverPubkey: this.serverPub });
+    await registerVtxoTransactions(this.arkUrl, outBytes).catch(() => {});
+    if (outIndex != null) {
+      for (const b of outBytes) this._addVtxo(decodeVtxo(b), b, outIndex);
+      this._movement({ type: 'htlc-claim', amountSat: input.amountSat, status: 'complete' });
+      this._save();
+    }
+    return outBytes.map((b) => hex.encode(b));
+  }
+
+  // Cooperatively hand an HTLC back to its refunder. Called by the CLAIMER
+  // (who holds the taproot keyspend path with the server) — typically a swap
+  // provider releasing a swap it couldn't complete.
+  //
+  // This is safe to expose publicly: the server only cosigns a preimage-less
+  // spend of an HTLC when every output pays the refund pubkey, so the claimer
+  // has no way to redirect the funds. If the claimer never calls this, the
+  // refunder's guaranteed fallback is a unilateral exit through the refund
+  // tapscript leaf after `htlcExpiry` — no permission required.
+  async htlcCosignRefund({ htlcVtxoBytes, claimKeyIndex }) {
+    const input = decodeVtxo(hex.decode(htlcVtxoBytes));
+    if (input.policy.type !== 'htlc') throw new Error('not an htlc vtxo');
+    const keys = this._key(claimKeyIndex);
+    if (input.policy.claimPubkey !== hex.encode(keys.pubkey)) throw new Error('htlc not held by this key');
+    await registerVtxoTransactions(this.arkUrl, [input._raw.bytes]).catch(() => {});
+    const build = buildArkoorSend({
+      input,
+      outputs: [{ amountSat: input.amountSat, userPubkey: hex.decode(input.policy.refundPubkey) }],
+      serverPubkey: this.serverPub, vtxoKeys: keys,
+    });
+    const sigs = await cosignWithServer(this.arkUrl, build, {
+      input, vtxoKeys: keys, serverPubkey: this.serverPub, // no preimage: refund-only
+    });
+    const outBytes = buildAllSignedVtxos({ input, build, finalSigs: sigs, serverPubkey: this.serverPub });
+    await registerVtxoTransactions(this.arkUrl, outBytes).catch(() => {});
+    return outBytes.map((b) => hex.encode(b));
+  }
+
+  // Take ownership of refunded HTLC vtxos handed back by the claimer (they
+  // pay our refund key, so they're ours to spend once validated).
+  async acceptHtlcRefund({ vtxoBytesList, refundIndex }) {
+    const expect = hex.encode(this._key(refundIndex).pubkey);
+    let total = 0;
+    for (const b of vtxoBytesList) {
+      const bytes = hex.decode(b);
+      const v = decodeVtxo(bytes);
+      if (v.policy.type !== 'pubkey' || v.policy.userPubkey !== expect) {
+        throw new Error('refund vtxo is not paid to our refund key');
+      }
+      await validateVtxo(v, { serverPubkey: this.serverPub, chain: this.chain, expectPubkeys: [expect] });
+      if (this._addVtxo(v, bytes, refundIndex)) total += v.amountSat;
+    }
+    if (total) {
+      this._movement({ type: 'htlc-refund', amountSat: total, status: 'complete' });
+      this._save();
+    }
+    return total;
+  }
+
   // ---- board ----
   // Returns the onchain funding address; hal's onchain wallet pays it (the
   // board output MUST be vout 0), then completeBoard(actionId, txid).

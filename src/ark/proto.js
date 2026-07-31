@@ -316,6 +316,12 @@ function decodePolicy(r) {
     type: 'serverHtlcRecv', userPubkey: hex.encode(r.bytes(33)),
     paymentHash: hex.encode(r.bytes(32)), htlcExpiry: r.u32(), htlcExpiryDelta: r.u16(),
   };
+  // third-party HTLC (claim/refund between two users) — see the upstream
+  // proposal in docs/third-party-htlc.md
+  if (type === 0x08) return {
+    type: 'htlc', claimPubkey: hex.encode(r.bytes(33)), refundPubkey: hex.encode(r.bytes(33)),
+    paymentHash: hex.encode(r.bytes(32)), htlcExpiry: r.u32(),
+  };
   throw new Error('unknown vtxo policy type ' + type);
 }
 

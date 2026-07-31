@@ -222,3 +222,18 @@ export async function cancelLightningReceive(ark, paymentHash) {
   w.bytesField(1, paymentHash);
   await grpcCall(ark, 'bark_server.ArkService/CancelLightningReceive', w.finish());
 }
+
+// ---------------------------------------------------------------------------
+// third-party HTLCs (proposed VtxoPolicy::Htlc — see docs/third-party-htlc.md)
+// ---------------------------------------------------------------------------
+
+// The preimage revealed by a cosigned claim of an HTLC-policy vtxo, or null
+// until it has been revealed. This is how a swap provider learns the preimage
+// for the invoice it is holding.
+export async function getHtlcPreimage(ark, paymentHash) {
+  const w = pbWriter();
+  w.bytesField(1, paymentHash);
+  const data = await grpcCall(ark, 'bark_server.ArkService/GetHtlcPreimage', w.finish());
+  for (const { field, value } of pbFields(data)) if (field === 1) return hex.encode(value);
+  return null;
+}

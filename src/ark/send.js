@@ -14,6 +14,12 @@ import { concatBytes, reader, grpcCall, pbWriter, pbFields } from './proto.js';
 // hex string or byte array -> bytes (decoded vtxos carry hex-string fields)
 const asBytes = (v) => (typeof v === 'string' ? hex.decode(v) : Uint8Array.from(v));
 
+// The key that cosigns arkoor spends of a vtxo with this policy (bark's
+// VtxoPolicy::arkoor_pubkey). For a third-party HTLC that's the claimer, who
+// holds the taproot keyspend path together with the server.
+export const policyOwnerPubkey = (policy) =>
+  policy.type === 'htlc' ? policy.claimPubkey : policy.userPubkey;
+
 const te = new TextEncoder();
 
 // ---------------------------------------------------------------------------
@@ -132,6 +138,17 @@ export const checkpointPolicyTaproot = (userPub, serverPub, expiryHeight) =>
 // Taproot for any user-facing VTXO policy (mirror of bark's VtxoPolicy::taproot).
 // policy fields may be hex strings (decoded form) or byte arrays.
 export function policyTaproot(policy, serverPub, exitDelta) {
+  if (policy.type === 'htlc') {
+    // third-party HTLC: keyspend musig(claimer, server)
+    // leaf 1: claimer spends with the preimage after exit_delta
+    // leaf 2: refunder spends after htlc expiry + 2*exit_delta
+    const claim = asBytes(policy.claimPubkey);
+    const refund = asBytes(policy.refundPubkey);
+    const hash = asBytes(policy.paymentHash);
+    const claimLeaf = hashDelaySignScript(hash, exitDelta, xonly(claim));
+    const refundLeaf = delayTimelockSignScript(policy.htlcExpiry, 2 * exitDelta, xonly(refund));
+    return { ...taprootFromLeaves(claim, serverPub, [claimLeaf, refundLeaf]), claimLeaf, refundLeaf };
+  }
   const user = asBytes(policy.userPubkey);
   if (policy.type === 'pubkey') return pubkeyPolicyTaproot(user, serverPub, exitDelta);
   if (policy.type === 'serverHtlcSend') {
@@ -197,6 +214,10 @@ const encodePubkeyPolicy = (pub33) => concatBytes(Uint8Array.of(0x00), pub33);
 
 // Serialize any user-facing VtxoPolicy (mirror of proto.js decodePolicy).
 export function encodePolicy(p) {
+  if (p.type === 'htlc') {
+    return concatBytes(Uint8Array.of(0x08), asBytes(p.claimPubkey), asBytes(p.refundPubkey),
+      asBytes(p.paymentHash), u32le(p.htlcExpiry));
+  }
   const user = asBytes(p.userPubkey);
   if (p.type === 'pubkey') return encodePubkeyPolicy(user);
   if (p.type === 'serverHtlcSend') {
@@ -276,7 +297,7 @@ function isolateDust(outputs) {
 // buildAllSignedVtxos() and classify by policy rather than by index.
 export function buildArkoorSend({ input, outputs, serverPubkey, vtxoKeys }) {
   const userPub = vtxoKeys.pubkey;
-  if (hex.encode(userPub) !== input.policy.userPubkey) throw new Error('input not owned by our key');
+  if (hex.encode(userPub) !== policyOwnerPubkey(input.policy)) throw new Error('input not owned by our key');
 
   // normalize plain-pubkey outputs to policy form, then split off dust
   const normalized = outputs.map((o) => ({
@@ -365,7 +386,9 @@ export const genUserNonces = (build, vtxoKeys) =>
   build.sighashes.map((sh) => musig2.nonceGen(vtxoKeys.pubkey, vtxoKeys.privkey, undefined, sh));
 
 // Serialize one ArkoorCosignRequest part for a built arkoor spend.
-export function cosignPartBytes({ build, input, vtxoKeys, nonces }) {
+// `preimage` (32B) is required when the input carries an HTLC policy and the
+// claimer is claiming it; omitting it restricts the spend to a full refund.
+export function cosignPartBytes({ build, input, vtxoKeys, nonces, preimage }) {
   const destBytes = (o) => {
     const dest = pbWriter();
     dest.varintField(1, o.amountSat);
@@ -380,6 +403,7 @@ export function cosignPartBytes({ build, input, vtxoKeys, nonces }) {
   part.varintField(5, 1); // use_checkpoint = true
   part.bytesField(6, cosignAttestation(
     input.point.raw, [...build.outputs, ...build.isolated], vtxoKeys.privkey));
+  if (preimage) part.bytesField(7, asBytes(preimage));
   return part.finish();
 }
 
@@ -433,10 +457,10 @@ export function combineCosign({ build, nonces, serverResp, vtxoKeys, serverPubke
 }
 
 // full MuSig2 ceremony over the ASP's RequestArkoorCosign
-export async function cosignWithServer(ark, build, { input, vtxoKeys, serverPubkey }) {
+export async function cosignWithServer(ark, build, { input, vtxoKeys, serverPubkey, preimage }) {
   const nonces = genUserNonces(build, vtxoKeys);
   const req = pbWriter();
-  req.bytesField(1, cosignPartBytes({ build, input, vtxoKeys, nonces }));
+  req.bytesField(1, cosignPartBytes({ build, input, vtxoKeys, nonces, preimage }));
   const respBytes = await grpcCall(ark, 'bark_server.ArkService/RequestArkoorCosign', req.finish());
   const [serverResp] = parsePackageCosignResponse(respBytes);
   if (!serverResp) throw new Error('empty cosign response');
@@ -447,7 +471,7 @@ export async function cosignWithServer(ark, build, { input, vtxoKeys, serverPubk
 // indexes [regular outputs..., isolated outputs...]
 export function buildSignedVtxoBytes({ input, build, finalSigs, serverPubkey, idx }) {
   const isP2a = (out) => hex.encode(out.scriptPubKey) === hex.encode(P2A_SCRIPT);
-  const cosigners = [Uint8Array.from(hex.decode(input.policy.userPubkey))];
+  const cosigners = [Uint8Array.from(hex.decode(policyOwnerPubkey(input.policy)))];
   const raw = input._raw;
   const finish = (o, items, pointRaw) => encodeVtxo({
     amountSat: o.amountSat,
