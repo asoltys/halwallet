@@ -103,7 +103,19 @@ export function installSpWallet(wallet) {
         const id = ++this._spReqId;
         this._spPending.set(id, { res, rej });
         this._spWorker.postMessage({ id, op, ...data });
-        setTimeout(() => { if (this._spPending.has(id)) { this._spPending.delete(id); rej(new Error('sp worker timeout')); } }, 30000);
+        setTimeout(() => {
+          if (!this._spPending.has(id)) return;
+          // Timed out. TERMINATE the worker rather than let it keep grinding the
+          // orphaned request in the background — otherwise the caller's inline
+          // fallback runs the SAME work on the main thread and both threads peg.
+          // _ensureSpWorker() respawns a fresh worker (and re-sends keys) on the
+          // next call, so this only costs us the current chunk. With the tweak
+          // budget above, calls stay sub-second and this should never fire.
+          try { this._spWorker && this._spWorker.terminate(); } catch {}
+          this._spWorker = null;
+          for (const p of this._spPending.values()) p.rej(new Error('sp worker timeout'));
+          this._spPending.clear();
+        }, 30000);
       });
     },
 
@@ -222,17 +234,22 @@ export function installSpWallet(wallet) {
         const have = new Set(this.spUtxos.map((u) => `${u.txid}:${u.vout}`));
         const found = [];
         const blocks = res.blocks || [];
-        // Process in chunks. An imported wallet's first catch-up can be the
-        // indexer's whole window (hundreds of thousands of tweaks, ~25MB) —
-        // sent as ONE worker message it blew the 30s worker timeout, fell
-        // back to the inline loop (janking the UI for minutes while the
-        // worker kept grinding the orphaned request), and held the giant
-        // buffers live the whole time. Chunks keep each call sub-second, let
-        // the scan watermark advance as blocks complete (interruptions
-        // resume instead of restarting), and free memory as they go.
-        const CHUNK = 100;
-        for (let c = 0; c < blocks.length; c += CHUNK) {
-          const slice = blocks.slice(c, c + CHUNK);
+        // Process in chunks bounded by TWEAK count, not block count. The cost is
+        // one EC point-multiply per tweak, and mainnet blocks are wildly uneven
+        // (a few to 2500+ tweaks each). A fixed 100-block chunk could be ~25k
+        // tweaks — seconds of work that blew the 30s worker timeout, which then
+        // dropped the same chunk onto the main thread while the orphaned worker
+        // kept grinding it (both threads pegged). Budgeting by tweaks keeps every
+        // worker call sub-second regardless of block density; the watermark still
+        // advances per chunk so interruptions resume instead of restarting.
+        const TWEAK_BUDGET = 2000;
+        for (let c = 0; c < blocks.length; ) {
+          // grow the slice until it holds ~TWEAK_BUDGET tweaks (always ≥1 block,
+          // so a single dense block still goes as its own chunk).
+          let end = c, tw = 0;
+          do { tw += (blocks[end].tweaks || []).length; end++; } while (end < blocks.length && tw < TWEAK_BUDGET);
+          const slice = blocks.slice(c, end);
+          c = end;
           const hits = await this._spHitBlocks(slice);
           for (const block of slice) {
             if (!hits.has(block.height)) continue;
