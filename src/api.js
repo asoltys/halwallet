@@ -210,6 +210,7 @@ const ARK_PRESETS_BY_NET = {
   mainnet: [
     { id: 'off', label: 'Off', ark: '', esplora: '' },
     { id: 'second', label: 'Second (ark.second.tech)', ark: 'https://ark.second.tech', esplora: 'https://mempool.second.tech/api' },
+    { id: 'coinos', label: 'coinos (ark.coinos.io)', ark: 'https://ark.coinos.io', esplora: 'https://mempool.space/api' },
     { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
   ],
   // No public ASP on these networks (Second runs signet + mainnet only) —
@@ -225,6 +226,7 @@ const ARK_PRESETS_BY_NET = {
   ],
   mutinynet: [
     { id: 'off', label: 'Off', ark: '', esplora: '' },
+    { id: 'coinos', label: 'coinos (ark-staging.coinos.io)', ark: 'https://ark-staging.coinos.io', esplora: 'https://mutinynet.com/api' },
     { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
   ],
   regtest: [
@@ -266,6 +268,70 @@ export function getArkConfig(net = getNetwork()) {
   const p = arkPresets(net).find((x) => x.id === id);
   const cfg = p.id === 'custom' ? getArkCustom(net) : { ark: p.ark, esplora: p.esplora };
   return cfg.ark && cfg.esplora ? cfg : null;
+}
+
+// Ark->Lightning swap bridge — an optional third-party provider that pays
+// bolt11 invoices out of your Ark balance for less than the ASP charges. The
+// swap is trustless (funds are locked in an HTLC only the bridge can claim,
+// and only by revealing the invoice preimage), but it requires an ASP that
+// supports third-party HTLC vtxos. Off means bolt11 payments use the ASP's
+// own — pricier — lightning-send path.
+const BRIDGE_PRESETS_BY_NET = {
+  mainnet: [
+    { id: 'off', label: 'Off (use the ASP)', url: '' },
+    { id: 'coinos', label: 'coinos (arkswap.coinos.io)', url: 'https://arkswap.coinos.io' },
+    { id: 'custom', label: 'Custom…', url: '' },
+  ],
+  testnet: [{ id: 'off', label: 'Off (use the ASP)', url: '' }, { id: 'custom', label: 'Custom…', url: '' }],
+  signet: [{ id: 'off', label: 'Off (use the ASP)', url: '' }, { id: 'custom', label: 'Custom…', url: '' }],
+  mutinynet: [
+    { id: 'off', label: 'Off (use the ASP)', url: '' },
+    { id: 'coinos', label: 'coinos (arkswap-staging.coinos.io)', url: 'https://arkswap-staging.coinos.io' },
+    { id: 'custom', label: 'Custom…', url: '' },
+  ],
+  regtest: [
+    { id: 'off', label: 'Off (use the ASP)', url: '' },
+    { id: 'local', label: 'Local (regtest)', url: 'http://localhost:8790' },
+    { id: 'custom', label: 'Custom…', url: '' },
+  ],
+};
+const BRIDGE_DEFAULT = { mainnet: 'off', testnet: 'off', signet: 'off', mutinynet: 'off', regtest: 'off' };
+const BRIDGE_KEY = 'btc-wallet-ark-bridge';         // selected preset id, per network
+const BRIDGE_CUSTOM_KEY = 'btc-wallet-ark-bridge-custom'; // custom url, per network
+const BRIDGE_TOKEN_KEY = 'btc-wallet-ark-bridge-token';   // access token, per network
+
+export function bridgePresets(net = getNetwork()) {
+  return BRIDGE_PRESETS_BY_NET[net] || BRIDGE_PRESETS_BY_NET.mainnet;
+}
+export function getBridgeProviderId(net = getNetwork()) {
+  try {
+    const id = localStorage.getItem(nk(BRIDGE_KEY, net));
+    if (id && bridgePresets(net).some((p) => p.id === id)) return id;
+  } catch {}
+  return BRIDGE_DEFAULT[net] || 'off';
+}
+export function setBridgeProviderId(id, net = getNetwork()) {
+  try { localStorage.setItem(nk(BRIDGE_KEY, net), id); } catch {}
+}
+export function getBridgeCustom(net = getNetwork()) {
+  try { return localStorage.getItem(nk(BRIDGE_CUSTOM_KEY, net)) || ''; } catch { return ''; }
+}
+export function setBridgeCustom(url, net = getNetwork()) {
+  try { localStorage.setItem(nk(BRIDGE_CUSTOM_KEY, net), (url || '').trim()); } catch {}
+}
+export function getBridgeToken(net = getNetwork()) {
+  try { return localStorage.getItem(nk(BRIDGE_TOKEN_KEY, net)) || ''; } catch { return ''; }
+}
+export function setBridgeToken(tok, net = getNetwork()) {
+  try { localStorage.setItem(nk(BRIDGE_TOKEN_KEY, net), (tok || '').trim()); } catch {}
+}
+// { url, token } when a bridge is configured, else null.
+export function getBridgeConfig(net = getNetwork()) {
+  const id = getBridgeProviderId(net);
+  if (id === 'off') return null;
+  const p = bridgePresets(net).find((x) => x.id === id);
+  const url = id === 'custom' ? getBridgeCustom(net) : p.url;
+  return url ? { url: url.replace(/\/$/, ''), token: getBridgeToken(net) } : null;
 }
 
 // Silent-payment (BIP-352) tweak indexer — a separate, optional endpoint used

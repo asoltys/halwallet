@@ -12,7 +12,12 @@ import { maybeBolt11, lnSendFee } from '../ark/lightning.js';
 import { decodeVtxo, getVtxoStatus, VTXO_STATE_SPENT, concatBytes } from '../ark/proto.js';
 import { signedExitTxs, buildBumpChild, buildExitClaim, submitPackage } from '../ark/exit.js';
 import { utxoId } from '../wallet.js';
-import { getNetwork, setNetwork, arkPresets, getArkProviderId, setArkProviderId, getArkCustom, setArkCustom, getArkConfig } from '../api.js';
+import {
+  getNetwork, setNetwork, arkPresets, getArkProviderId, setArkProviderId,
+  getArkCustom, setArkCustom, getArkConfig,
+  bridgePresets, getBridgeProviderId, setBridgeProviderId, getBridgeCustom,
+  setBridgeCustom, getBridgeToken, setBridgeToken, getBridgeConfig,
+} from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { shortAddr, shortTxid, timeAgo, ARK_ICON, ARK_MARK } from '../format.js';
@@ -217,6 +222,7 @@ export function arkFeature(ctx) {
       // against the server, so a stale spendable is caught here rather than
       // only at send time.
       mgr.reconcile().catch(() => {});
+      resumeBridgeSwaps(mgr).catch(() => {}); // refund any HTLC a bridge left hanging
       // Receives arrive in real time over the mailbox stream; the poll is the
       // fallback and what drives in-flight boards/refreshes forward.
       mgr.startMailboxStream();
@@ -334,6 +340,108 @@ export function arkFeature(ctx) {
     }, 2500));
   }
 
+  // ---- third-party swap bridge (cheaper bolt11 sends) ---------------------
+  // When a bridge is configured we lock the amount in an HTLC only it can
+  // claim — and only by revealing the invoice preimage. Trustless: if it
+  // never pays we get a cosigned refund, or exit through the refund leaf.
+  // Requires an ASP supporting HTLC vtxos, so any failure falls back to the
+  // ASP's own (pricier) lightning-send.
+  async function bridgeQuote(invoice) {
+    const cfg = getBridgeConfig();
+    if (!cfg) return null;
+    const r = await fetch(`${cfg.url}/quote?invoice=${encodeURIComponent(invoice)}`,
+      { headers: cfg.token ? { authorization: `Bearer ${cfg.token}` } : {} });
+    const q = await r.json();
+    if (!r.ok || q.error) throw new Error(q.error || `bridge quote failed (${r.status})`);
+    return { ...q, bridgeUrl: cfg.url, token: cfg.token };
+  }
+
+  // Lock the HTLC, hand it to the bridge, and record the swap so a crash or
+  // a failed payment can still be refunded later.
+  async function bridgePay(quote, invoice) {
+    const mgr = await connectArk();
+    const lock = await mgr.htlcLock({
+      amountSat: quote.totalSat,
+      claimPubkey: quote.claimPubkey,
+      paymentHash: quote.paymentHash,
+      htlcExpiry: quote.htlcExpiry,
+    });
+    // persist before handing it over: the HTLC exists on the server now
+    const swaps = (mgr.state.bridgeSwaps = mgr.state.bridgeSwaps || []);
+    const rec = {
+      paymentHash: quote.paymentHash, invoice, bridgeUrl: quote.bridgeUrl,
+      amountSat: quote.amountSat, feeSat: quote.feeSat,
+      htlcVtxo: lock.htlcVtxos[0], refundIndex: lock.refundIndex,
+      htlcExpiry: quote.htlcExpiry, step: 'submitted', ts: Date.now(),
+    };
+    swaps.push(rec);
+    mgr._save();
+
+    let res;
+    try {
+      const r = await fetch(`${quote.bridgeUrl}/swap`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(quote.token ? { authorization: `Bearer ${quote.token}` } : {}),
+        },
+        body: JSON.stringify({ invoice, htlcVtxo: lock.htlcVtxos[0] }),
+      });
+      res = await r.json();
+      if (!r.ok || res.error) throw new Error(res.error || `bridge error (${r.status})`);
+    } catch (e) {
+      rec.step = 'failed';
+      rec.error = e.message;
+      mgr._save();
+      await tryBridgeRefund(rec).catch(() => {});
+      throw e;
+    }
+    if (res.step !== 'done') {
+      rec.step = 'unpaid';
+      mgr._save();
+      await tryBridgeRefund(rec).catch(() => {});
+      throw new Error(res.error || t('arkLnRefunded'));
+    }
+    // proof of payment: the preimage must hash to the invoice's payment hash
+    if (!res.preimage || hex.encode(sha256(hex.decode(res.preimage))) !== quote.paymentHash) {
+      rec.step = 'suspect';
+      mgr._save();
+      throw new Error('bridge returned an invalid preimage');
+    }
+    rec.step = 'done';
+    rec.preimage = res.preimage;
+    mgr._save();
+    mgr._movement({
+      type: 'ln-send', amountSat: quote.amountSat, status: 'complete',
+      detail: `via bridge · fee ${quote.feeSat} sat`, invoice, preimage: res.preimage,
+    });
+    mgr._save();
+    return res;
+  }
+
+  // Ask the bridge to hand an unpaid HTLC back, and take ownership of it.
+  async function tryBridgeRefund(rec) {
+    const mgr = await connectArk();
+    const r = await fetch(`${rec.bridgeUrl}/refund`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paymentHash: rec.paymentHash }),
+    });
+    const out = await r.json();
+    if (!r.ok || out.error) throw new Error(out.error || 'refund failed');
+    const got = await mgr.acceptHtlcRefund({
+      vtxoBytesList: out.refundVtxos, refundIndex: rec.refundIndex,
+    });
+    rec.step = 'refunded';
+    mgr._save();
+    return got;
+  }
+
+  // Retry refunds for any bridge swap left hanging (called on connect).
+  async function resumeBridgeSwaps(mgr) {
+    const open = (mgr.state.bridgeSwaps || []).filter((r) => ['unpaid', 'failed'].includes(r.step));
+    for (const rec of open) await tryBridgeRefund(rec).catch(() => {});
+  }
+
   // A bolt11 lands in Send (via the swaps feature's delegation hook, or
   // directly when swaps is absent): take over when the ark balance can
   // plausibly cover it, else decline so the Boltz path handles it.
@@ -364,6 +472,23 @@ export function arkFeature(ctx) {
     const p = ui.arkLnPay;
     if (!p || p.invoice !== invoice) return;
     if (!p.amountSat) { p.status = 'ready'; render(); return; }
+    // A configured bridge is cheaper than the ASP; quote it first and fall
+    // back silently if it's unreachable or won't take the swap.
+    try {
+      const q = await bridgeQuote(invoice);
+      if (q && ui.arkLnPay === p) {
+        const covers = mgr.vtxos().some((v) => v.state === 'spendable' && v.amountSat >= q.totalSat);
+        if (covers) {
+          p.bridge = q;
+          p.feeSat = q.feeSat;
+          p.status = 'ready';
+          render();
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('bridge quote failed, using the ASP:', e.message);
+    }
     const tip = await mgr.chain.tipHeight();
     const candidates = mgr.vtxos().filter((v) => v.state === 'spendable')
       .sort((a, b) => a.amountSat - b.amountSat);
@@ -401,6 +526,21 @@ export function arkFeature(ctx) {
     ui.busy = true; ui.sendError = ''; render();
     try {
       const mgr = await connectArk();
+      if (p.bridge) {
+        p.status = 'paying'; render();
+        try {
+          await bridgePay(p.bridge, p.invoice);
+          ui.arkLnPaid = { amountSat: p.amountSat, meta: p.meta };
+          ui.arkLnPay = null;
+          ui.busy = false; render();
+          return;
+        } catch (e) {
+          // the bridge couldn't do it (and has refunded us) — fall back to
+          // the ASP rather than dead-ending the payment
+          console.warn('bridge swap failed, falling back to the ASP:', e.message);
+          p.bridge = null; p.status = 'ready';
+        }
+      }
       const id = await mgr.payLnInvoice(p.invoice, { amountSat: sats });
       const settle = (a) => {
         if (a.step === 'done') {
@@ -461,7 +601,7 @@ export function arkFeature(ctx) {
               h('div', { style: 'display:flex;align-items:center' }, unitTag()))
           : null,
         p.amountSat != null ? row(t('lnPayAmount'), p.amountSat) : null,
-        p.feeSat != null && p.feeSat > 0 ? row(t('arkLnFee'), p.feeSat) : null,
+        p.feeSat != null && p.feeSat > 0 ? row(p.bridge ? t('arkLnBridgeFee') : t('arkLnFee'), p.feeSat) : null,
         p.amountSat != null && p.feeSat != null
           ? [h('div', { style: 'border-top:1px solid var(--line, #ddd);margin:2px 0' }), row(t('lnPayTotal'), total, true)]
           : null),
@@ -667,6 +807,41 @@ export function arkFeature(ctx) {
         ? h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.arkExitPage = true; ui.arkError = ''; render(); } }, t('arkExitPageTitle'))
         : null
     );
+  }
+
+  // Swap-bridge settings: an optional cheaper route for bolt11 sends.
+  function bridgeCard() {
+    const net = getNetwork();
+    const id = getBridgeProviderId(net);
+    const presets = bridgePresets(net);
+    if (presets.length <= 1 || !arkAvailable()) return null;
+    return h('div', { class: 'card col' },
+      h('h3', { class: 'row gap6', style: 'align-items:center' }, '⚡', t('arkBridgeTitle')),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('arkBridgeDesc')),
+      h('select', {
+        onChange: (e) => { setBridgeProviderId(e.target.value, net); render(); },
+      }, presets.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
+      id === 'custom'
+        ? h('label', { class: 'field' },
+            h('span', { class: 'lab' }, t('arkBridgeUrl')),
+            h('input', {
+              type: 'text', class: 'mono-input', placeholder: 'https://swap.example.com',
+              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
+              value: getBridgeCustom(net),
+              onChange: (e) => { setBridgeCustom(e.target.value, net); render(); },
+            }))
+        : null,
+      id !== 'off'
+        ? h('label', { class: 'field' },
+            h('span', { class: 'lab' }, t('arkBridgeToken')),
+            h('input', {
+              type: 'password', class: 'mono-input', placeholder: t('arkBridgeTokenPh'),
+              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
+              value: getBridgeToken(net),
+              onChange: (e) => { setBridgeToken(e.target.value, net); render(); },
+            }))
+        : null,
+      id !== 'off' ? h('div', { class: 'small faint' }, t('arkBridgeTrust')) : null);
   }
 
   async function doArkBoard() {
@@ -1420,7 +1595,7 @@ export function arkFeature(ctx) {
           : null,
         done ? null : h('div', { class: 'small muted', style: 'margin-top:2px' }, t('arkBoardedNote')));
     },
-    settingsCards() { return [arkCard()]; },
+    settingsCards() { return [arkCard(), bridgeCard()]; },
 
     // ---- ark-gift hooks (called by the gifts feature via ctx.hook) ----
     arkGiftInfo() {
