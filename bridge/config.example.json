@@ -1,0 +1,12 @@
+{
+  "port": 8790,
+  "network": "regtest",
+  "ark": "http://127.0.0.1:3535",
+  "esplora": "http://127.0.0.1:30002",
+  "mnemonic": "REPLACE with a 12/24-word mnemonic — this wallet holds bridge float",
+  "stateFile": "./data/bridge.json",
+  "ln": { "kind": "docker", "container": "clc", "network": "regtest" },
+  "fee": { "baseSat": 0, "ppm": 1000, "minSat": 1 },
+  "limits": { "minSat": 1, "maxSat": 1000000, "htlcBlocks": 144 },
+  "tokens": []
+}
