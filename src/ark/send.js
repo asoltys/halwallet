@@ -246,36 +246,63 @@ function encodeVtxo({ amountSat, expiryHeight, serverPubkey, exitDelta, anchorPo
 // the send itself
 // ---------------------------------------------------------------------------
 
+const DUST_SAT = 330; // P2TR dust threshold
+
+// Mirror of bark's ArkoorBuilder::new_isolate_dust: the server rejects an
+// arkoor whose outputs mix dust and non-dust, so dust outputs are routed
+// through a combined isolation output (spent by a fanout tx). When the dust
+// alone can't reach the threshold, a non-dust output is split to pad it.
+function isolateDust(outputs) {
+  const sum = (l) => l.reduce((n, o) => n + o.amountSat, 0);
+  const dust = outputs.filter((o) => o.amountSat < DUST_SAT);
+  const nonDust = outputs.filter((o) => o.amountSat >= DUST_SAT);
+  if (!dust.length || !nonDust.length) return { outs: outputs, isolated: [] };
+  if (sum(dust) >= DUST_SAT) return { outs: nonDust, isolated: dust };
+  // if breaking a vtxo would just create more dust, accept the mix
+  if (sum(nonDust) < 2 * DUST_SAT) return { outs: outputs, isolated: [] };
+  const deficit = DUST_SAT - sum(dust);
+  const idx = nonDust.findIndex((o) => o.amountSat - deficit >= DUST_SAT);
+  if (idx < 0) return { outs: [...nonDust, ...dust], isolated: [] };
+  const outs = nonDust.slice();
+  outs[idx] = { amountSat: outs[idx].amountSat - deficit, policy: outs[idx].policy };
+  return { outs, isolated: [{ amountSat: deficit, policy: nonDust[idx].policy }, ...dust] };
+}
+
 // Build everything for a checkpointed single-input arkoor send.
 // input: decoded vtxo (from decodeVtxo, with _raw), owned by keys.vtxo
 // outputs: [{ amountSat, userPubkey (33B) }...] or [{ amountSat, policy }...]
-// — destination first, change last
+// — destination first, change last. NB an output may come back SPLIT across
+// two result vtxos (dust padding), so callers should consume
+// buildAllSignedVtxos() and classify by policy rather than by index.
 export function buildArkoorSend({ input, outputs, serverPubkey, vtxoKeys }) {
   const userPub = vtxoKeys.pubkey;
   if (hex.encode(userPub) !== input.policy.userPubkey) throw new Error('input not owned by our key');
 
-  // normalize plain-pubkey outputs to policy form
-  const outs = outputs.map((o) => ({
+  // normalize plain-pubkey outputs to policy form, then split off dust
+  const normalized = outputs.map((o) => ({
     amountSat: o.amountSat,
     policy: o.policy || { type: 'pubkey', userPubkey: hex.encode(o.userPubkey) },
   }));
+  const { outs, isolated } = isolateDust(normalized);
+  const isolationSat = isolated.reduce((n, o) => n + o.amountSat, 0);
 
   const inputTaproot = policyTaproot(input.policy, serverPubkey, input.exitDelta);
   const checkpointTaproot = checkpointPolicyTaproot(userPub, serverPubkey, input.expiryHeight);
 
-  // checkpoint tx: spends the input vtxo, one output per destination
-  // (all with the checkpoint policy spk) + P2A fee anchor
+  // checkpoint tx: spends the input vtxo, one output per destination plus the
+  // combined dust isolation output (all with the checkpoint policy spk) + P2A
   const checkpointTx = {
     version: 3, locktime: 0,
     inputs: [{ prevout: input.point.raw, sequence: 0 }],
     outputs: [
       ...outs.map((o) => ({ valueSat: o.amountSat, scriptPubKey: checkpointTaproot.scriptPubKey })),
+      ...(isolated.length ? [{ valueSat: isolationSat, scriptPubKey: checkpointTaproot.scriptPubKey }] : []),
       { valueSat: 0, scriptPubKey: P2A_SCRIPT },
     ],
   };
   const checkpointTxid = txid(checkpointTx);
 
-  // one arkoor tx per output, spending checkpoint:vout
+  // one arkoor tx per non-dust output, spending checkpoint:vout
   const arkoorTxs = outs.map((o, vout) => {
     const destTaproot = policyTaproot(o.policy, serverPubkey, input.exitDelta);
     return {
@@ -288,21 +315,41 @@ export function buildArkoorSend({ input, outputs, serverPubkey, vtxoKeys }) {
     };
   });
 
-  // sighashes: [checkpoint spend of input, arkoor_i spend of checkpoint:i]
+  // fanout tx: spends the isolation output, one output per isolated dest
+  const fanoutTx = isolated.length ? {
+    version: 3, locktime: 0,
+    inputs: [{ prevout: outpointBytes(checkpointTxid, outs.length), sequence: 0 }],
+    outputs: [
+      ...isolated.map((o) => ({
+        valueSat: o.amountSat,
+        scriptPubKey: policyTaproot(o.policy, serverPubkey, input.exitDelta).scriptPubKey,
+      })),
+      { valueSat: 0, scriptPubKey: P2A_SCRIPT },
+    ],
+  } : null;
+
+  // sighashes: [checkpoint spend of input, arkoor_i of checkpoint:i, fanout?]
   const inputPrevout = { valueSat: input.amountSat, scriptPubKey: inputTaproot.scriptPubKey };
   const sighashes = [
     taprootSighash(checkpointTx, [inputPrevout]),
     ...arkoorTxs.map((tx, i) => taprootSighash(tx, [checkpointTx.outputs[i]])),
+    ...(fanoutTx ? [taprootSighash(fanoutTx, [checkpointTx.outputs[outs.length]])] : []),
   ];
-  // taptweaks per signature (bark: taptweak_at)
-  const tweaks = [inputTaproot.tapTweak, ...arkoorTxs.map(() => checkpointTaproot.tapTweak)];
+  // taptweaks per signature (bark: taptweak_at) — everything after the input
+  // spends a checkpoint-policy output
+  const tweaks = [inputTaproot.tapTweak, ...sighashes.slice(1).map(() => checkpointTaproot.tapTweak)];
 
-  return { outputs: outs, checkpointTx, checkpointTxid, arkoorTxs, sighashes, tweaks, inputTaproot, checkpointTaproot };
+  return {
+    outputs: outs, isolated, checkpointTx, checkpointTxid, arkoorTxs, fanoutTx,
+    sighashes, tweaks, inputTaproot, checkpointTaproot,
+  };
 }
 
 // "arkoor cosign attestation       " — 32-byte prefix
 const ATTESTATION_PREFIX = te.encode('arkoor cosign attestation       ');
 
+// outputs here = regular outputs followed by isolated outputs (bark's
+// all_outputs() order)
 export function cosignAttestation(inputVtxoIdRaw, outputs, vtxoPrivkey) {
   const msg = sha256(concatBytes(
     ATTESTATION_PREFIX,
@@ -319,17 +366,20 @@ export const genUserNonces = (build, vtxoKeys) =>
 
 // Serialize one ArkoorCosignRequest part for a built arkoor spend.
 export function cosignPartBytes({ build, input, vtxoKeys, nonces }) {
-  const part = pbWriter();
-  part.bytesField(1, input.point.raw); // vtxo id = outpoint bytes
-  for (const o of build.outputs) {
+  const destBytes = (o) => {
     const dest = pbWriter();
     dest.varintField(1, o.amountSat);
     dest.bytesField(2, encodePolicy(o.policy));
-    part.bytesField(2, dest.finish());
-  }
+    return dest.finish();
+  };
+  const part = pbWriter();
+  part.bytesField(1, input.point.raw); // vtxo id = outpoint bytes
+  for (const o of build.outputs) part.bytesField(2, destBytes(o));
   for (const n of nonces) part.bytesField(3, n.public);
+  for (const o of build.isolated) part.bytesField(4, destBytes(o)); // dust isolation
   part.varintField(5, 1); // use_checkpoint = true
-  part.bytesField(6, cosignAttestation(input.point.raw, build.outputs, vtxoKeys.privkey));
+  part.bytesField(6, cosignAttestation(
+    input.point.raw, [...build.outputs, ...build.isolated], vtxoKeys.privkey));
   return part.finish();
 }
 
@@ -393,38 +443,13 @@ export async function cosignWithServer(ark, build, { input, vtxoKeys, serverPubk
   return combineCosign({ build, nonces, serverResp, vtxoKeys, serverPubkey });
 }
 
-// assemble the final signed Vtxo<Full> bytes for output `idx`
+// assemble the final signed Vtxo<Full> bytes for output `idx`, where idx
+// indexes [regular outputs..., isolated outputs...]
 export function buildSignedVtxoBytes({ input, build, finalSigs, serverPubkey, idx }) {
-  const o = build.outputs[idx];
-  // NB nb_outputs on the wire counts own output + other_outputs — the P2A
-  // fee anchor is excluded (bark: other_outputs.len() + 1).
-  const checkpointOthers = build.checkpointTx.outputs.filter((out, i) =>
-    i !== idx && hex.encode(out.scriptPubKey) !== hex.encode(P2A_SCRIPT));
-  const checkpointItem = encodeGenesisItem({
-    transition: encodeArkoorTransition({
-      cosigners: [Uint8Array.from(hex.decode(input.policy.userPubkey))],
-      tapTweak: build.inputTaproot.tapTweak,
-      signature: finalSigs[0],
-    }),
-    nbOutputs: checkpointOthers.length + 1,
-    outputIdx: idx,
-    otherOutputs: checkpointOthers,
-    feeSat: 0,
-  });
-  const arkoorItem = encodeGenesisItem({
-    transition: encodeArkoorTransition({
-      cosigners: [Uint8Array.from(hex.decode(input.policy.userPubkey))],
-      tapTweak: build.checkpointTaproot.tapTweak,
-      signature: finalSigs[1 + idx],
-    }),
-    nbOutputs: 1,
-    outputIdx: 0,
-    otherOutputs: [],
-    feeSat: 0,
-  });
-
+  const isP2a = (out) => hex.encode(out.scriptPubKey) === hex.encode(P2A_SCRIPT);
+  const cosigners = [Uint8Array.from(hex.decode(input.policy.userPubkey))];
   const raw = input._raw;
-  return encodeVtxo({
+  const finish = (o, items, pointRaw) => encodeVtxo({
     amountSat: o.amountSat,
     expiryHeight: input.expiryHeight,
     serverPubkey,
@@ -432,10 +457,71 @@ export function buildSignedVtxoBytes({ input, build, finalSigs, serverPubkey, id
     anchorPointRaw: input.anchorPoint.raw,
     inputGenesisRaw: raw.bytes.slice(raw.itemsStart, raw.itemsEnd),
     inputGenesisCount: raw.nItems,
-    newItems: [checkpointItem, arkoorItem],
+    newItems: items,
     policyBytes: encodePolicy(o.policy),
-    pointRaw: outpointBytes(txid(build.arkoorTxs[idx]), 0),
+    pointRaw,
   });
+
+  // NB nb_outputs on the wire counts own output + other_outputs — the P2A
+  // fee anchor is excluded (bark: other_outputs.len() + 1).
+  if (idx < build.outputs.length) {
+    // regular output: input -> checkpoint (own vout idx) -> arkoor
+    const o = build.outputs[idx];
+    const checkpointOthers = build.checkpointTx.outputs.filter((out, i) => i !== idx && !isP2a(out));
+    const checkpointItem = encodeGenesisItem({
+      transition: encodeArkoorTransition({
+        cosigners, tapTweak: build.inputTaproot.tapTweak, signature: finalSigs[0],
+      }),
+      nbOutputs: checkpointOthers.length + 1,
+      outputIdx: idx,
+      otherOutputs: checkpointOthers,
+      feeSat: 0,
+    });
+    const arkoorItem = encodeGenesisItem({
+      transition: encodeArkoorTransition({
+        cosigners, tapTweak: build.checkpointTaproot.tapTweak, signature: finalSigs[1 + idx],
+      }),
+      nbOutputs: 1,
+      outputIdx: 0,
+      otherOutputs: [],
+      feeSat: 0,
+    });
+    return finish(o, [checkpointItem, arkoorItem], outpointBytes(txid(build.arkoorTxs[idx]), 0));
+  }
+
+  // isolated output: input -> checkpoint (isolation vout) -> fanout (own vout)
+  const j = idx - build.outputs.length;
+  const o = build.isolated[j];
+  const isolationIdx = build.outputs.length;
+  const fanoutSigIdx = 1 + build.outputs.length;
+  const checkpointOthers = build.checkpointTx.outputs.filter((out, i) => i !== isolationIdx && !isP2a(out));
+  const checkpointItem = encodeGenesisItem({
+    transition: encodeArkoorTransition({
+      cosigners, tapTweak: build.inputTaproot.tapTweak, signature: finalSigs[0],
+    }),
+    nbOutputs: checkpointOthers.length + 1,
+    outputIdx: isolationIdx,
+    otherOutputs: checkpointOthers,
+    feeSat: 0,
+  });
+  const fanoutOthers = build.fanoutTx.outputs.filter((out, i) => i !== j && !isP2a(out));
+  const fanoutItem = encodeGenesisItem({
+    transition: encodeArkoorTransition({
+      cosigners, tapTweak: build.checkpointTaproot.tapTweak, signature: finalSigs[fanoutSigIdx],
+    }),
+    nbOutputs: fanoutOthers.length + 1,
+    outputIdx: j,
+    otherOutputs: fanoutOthers,
+    feeSat: 0,
+  });
+  return finish(o, [checkpointItem, fanoutItem], outpointBytes(txid(build.fanoutTx), j));
+}
+
+// All result vtxos of an arkoor build (regular then isolated), signed.
+export function buildAllSignedVtxos({ input, build, finalSigs, serverPubkey }) {
+  const n = build.outputs.length + build.isolated.length;
+  return Array.from({ length: n }, (_, idx) =>
+    buildSignedVtxoBytes({ input, build, finalSigs, serverPubkey, idx }));
 }
 
 // ---------------------------------------------------------------------------

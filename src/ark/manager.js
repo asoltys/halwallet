@@ -24,7 +24,7 @@ import {
   getVtxoStatus, VTXO_STATE_SPENT,
 } from './proto.js';
 import {
-  buildArkoorSend, cosignWithServer, buildSignedVtxoBytes,
+  buildArkoorSend, cosignWithServer, buildAllSignedVtxos,
   registerVtxoTransactions, postArkoorMessage, txid,
   genUserNonces, cosignPartBytes, combineCosign,
 } from './send.js';
@@ -502,34 +502,40 @@ export class ArkManager {
         }
         throw e;
       }
-      // the input is spent server-side from this moment: persist immediately
-      action.destBytes = hex.encode(buildSignedVtxoBytes({ input, outputs, build, finalSigs: sigs, serverPubkey: this.serverPub, idx: 0 }));
-      if (action.changeSat > 0) {
-        const changeBytes = buildSignedVtxoBytes({ input, outputs, build, finalSigs: sigs, serverPubkey: this.serverPub, idx: 1 });
-        action.changeBytes = hex.encode(changeBytes);
-        this._addVtxo(decodeVtxo(changeBytes), changeBytes, action.changeIndex, 'pending');
-      }
+      // the input is spent server-side from this moment: persist immediately.
+      // Dust padding may SPLIT the destination or change across two vtxos —
+      // classify results by policy key rather than by output index.
+      const all = buildAllSignedVtxos({ input, build, finalSigs: sigs, serverPubkey: this.serverPub })
+        .map((bytes) => ({ bytes, v: decodeVtxo(bytes) }));
+      const dest = all.filter((x) => x.v.policy.userPubkey === action.destPubkey);
+      const change = all.filter((x) => x.v.policy.userPubkey !== action.destPubkey);
+      action.destBytesList = dest.map((x) => hex.encode(x.bytes));
+      action.changeBytesList = change.map((x) => hex.encode(x.bytes));
+      for (const x of change) this._addVtxo(x.v, x.bytes, action.changeIndex, 'pending');
       inputRec.state = 'spent';
       action.step = 'cosigned';
       this._save();
     }
+    // legacy single-field actions (pre-dust-isolation) resume transparently
+    const destList = () => action.destBytesList || [action.destBytes];
+    const changeList = () => action.changeBytesList || (action.changeBytes ? [action.changeBytes] : []);
     if (action.step === 'cosigned') {
-      const list = [hex.decode(action.destBytes)];
-      if (action.changeBytes) list.push(hex.decode(action.changeBytes));
-      await registerVtxoTransactions(this.arkUrl, list);
+      await registerVtxoTransactions(this.arkUrl,
+        [...destList(), ...changeList()].map((b) => hex.decode(b)));
       action.step = 'registered';
       this._save();
     }
     if (action.step === 'registered') {
-      await postArkoorMessage(this.arkUrl, hex.decode(action.destBlindedId), [hex.decode(action.destBytes)]);
-      if (action.changeBytes) {
-        const change = this._vtxo(decodeVtxo(hex.decode(action.changeBytes)).id);
-        if (change) change.state = 'spendable';
+      await postArkoorMessage(this.arkUrl, hex.decode(action.destBlindedId),
+        destList().map((b) => hex.decode(b)));
+      for (const b of changeList()) {
+        const change = this._vtxo(decodeVtxo(hex.decode(b)).id);
+        if (change && change.state === 'pending') change.state = 'spendable';
       }
       action.step = 'done';
       this._movement({
         type: 'send', amountSat: action.amountSat, status: 'complete',
-        to: action.destAddress, vtxoId: decodeVtxo(hex.decode(action.destBytes)).id,
+        to: action.destAddress, vtxoId: decodeVtxo(hex.decode(destList()[0])).id,
       });
       this._save();
     }
@@ -652,35 +658,38 @@ export class ArkManager {
       }
       if (!resp) throw new Error('empty cosign response');
       const sigs = combineCosign({ build, nonces, serverResp: resp, vtxoKeys: keys, serverPubkey: this.serverPub });
-      // the input is spent server-side from this moment: persist immediately
-      const htlcBytes = buildSignedVtxoBytes({ input, build, finalSigs: sigs, serverPubkey: this.serverPub, idx: 0 });
-      action.htlcBytes = hex.encode(htlcBytes);
-      const htlcDecoded = decodeVtxo(htlcBytes);
-      action.htlcVtxoId = htlcDecoded.id;
-      this._addVtxo(htlcDecoded, htlcBytes, action.htlcKeyIndex, 'pending');
-      if (action.changeSat > 0) {
-        const changeBytes = buildSignedVtxoBytes({ input, build, finalSigs: sigs, serverPubkey: this.serverPub, idx: 1 });
-        action.changeBytes = hex.encode(changeBytes);
-        this._addVtxo(decodeVtxo(changeBytes), changeBytes, action.htlcKeyIndex, 'pending');
-      }
+      // the input is spent server-side from this moment: persist immediately.
+      // Dust padding may split the HTLC (or change) across two vtxos —
+      // classify by policy type.
+      const all = buildAllSignedVtxos({ input, build, finalSigs: sigs, serverPubkey: this.serverPub })
+        .map((bytes) => ({ bytes, v: decodeVtxo(bytes) }));
+      const htlcs = all.filter((x) => x.v.policy.type === 'serverHtlcSend');
+      const changes = all.filter((x) => x.v.policy.type !== 'serverHtlcSend');
+      action.htlcBytesList = htlcs.map((x) => hex.encode(x.bytes));
+      action.htlcVtxoIds = htlcs.map((x) => x.v.id);
+      action.changeBytesList = changes.map((x) => hex.encode(x.bytes));
+      for (const x of all) this._addVtxo(x.v, x.bytes, action.htlcKeyIndex, 'pending');
       inputRec.state = 'spent';
       action.step = 'cosigned';
       this._save();
     }
+    // legacy single-field actions resume transparently
+    const htlcList = () => action.htlcBytesList || [action.htlcBytes];
+    const htlcIds = () => action.htlcVtxoIds || [action.htlcVtxoId];
+    const changeList = () => action.changeBytesList || (action.changeBytes ? [action.changeBytes] : []);
     if (action.step === 'cosigned') {
-      const list = [hex.decode(action.htlcBytes)];
-      if (action.changeBytes) list.push(hex.decode(action.changeBytes));
-      await registerVtxoTransactions(this.arkUrl, list).catch(() => {}); // best-effort (bark warns too)
+      await registerVtxoTransactions(this.arkUrl,
+        [...htlcList(), ...changeList()].map((b) => hex.decode(b))).catch(() => {}); // best-effort (bark warns too)
       // the change is a plain cosigned vtxo, good regardless of what the
       // payment does from here
-      if (action.changeBytes) {
-        const change = this._vtxo(decodeVtxo(hex.decode(action.changeBytes)).id);
+      for (const b of changeList()) {
+        const change = this._vtxo(decodeVtxo(hex.decode(b)).id);
         if (change && change.state === 'pending') change.state = 'spendable';
       }
       try {
         await initiateLightningPayment(this.arkUrl, {
           invoice: action.invoice,
-          htlcVtxoIdRaws: [decodeVtxo(hex.decode(action.htlcBytes)).point.raw],
+          htlcVtxoIdRaws: htlcList().map((b) => decodeVtxo(hex.decode(b)).point.raw),
           amountSat: action.amountSat,
           mailboxPubkey: this._mailboxKey().pubkey,
         });
@@ -720,8 +729,10 @@ export class ArkManager {
   }
 
   _settleLnPay(action, preimageHex) {
-    const htlc = this._vtxo(action.htlcVtxoId);
-    if (htlc) htlc.state = 'spent';
+    for (const id of action.htlcVtxoIds || [action.htlcVtxoId]) {
+      const htlc = this._vtxo(id);
+      if (htlc) htlc.state = 'spent';
+    }
     action.preimage = preimageHex;
     action.step = 'done';
     this._movement({
@@ -737,24 +748,33 @@ export class ArkManager {
   // 'revoking' (retried every sync); near expiry the remaining option is a
   // unilateral exit of the HTLC vtxo.
   async _revokeLnPay(action) {
-    const htlcRec = this._vtxo(action.htlcVtxoId);
-    const input = this._decoded(htlcRec);
     const keys = this._key(action.htlcKeyIndex);
     const revKey = this._key(action.revKeyIndex);
-    const build = buildArkoorSend({
+    const inputs = (action.htlcBytesList || [action.htlcBytes])
+      .map((b) => decodeVtxo(hex.decode(b)));
+    const builds = inputs.map((input) => buildArkoorSend({
       input,
       outputs: [{ amountSat: input.amountSat, userPubkey: revKey.pubkey }],
       serverPubkey: this.serverPub, vtxoKeys: keys,
-    });
-    const nonces = genUserNonces(build, keys);
-    const [resp] = await requestLightningPayHtlcRevocation(this.arkUrl,
-      [cosignPartBytes({ build, input, vtxoKeys: keys, nonces })]);
-    if (!resp) throw new Error('empty revocation response');
-    const sigs = combineCosign({ build, nonces, serverResp: resp, vtxoKeys: keys, serverPubkey: this.serverPub });
-    const bytes = buildSignedVtxoBytes({ input, build, finalSigs: sigs, serverPubkey: this.serverPub, idx: 0 });
-    await registerVtxoTransactions(this.arkUrl, [bytes]).catch(() => {});
-    htlcRec.state = 'spent';
-    this._addVtxo(decodeVtxo(bytes), bytes, action.revKeyIndex);
+    }));
+    const noncesList = builds.map((b) => genUserNonces(b, keys));
+    const parts = builds.map((b, i) =>
+      cosignPartBytes({ build: b, input: inputs[i], vtxoKeys: keys, nonces: noncesList[i] }));
+    const resps = await requestLightningPayHtlcRevocation(this.arkUrl, parts);
+    if (resps.length !== builds.length) throw new Error('bad revocation cosign response');
+    for (let i = 0; i < builds.length; i++) {
+      const sigs = combineCosign({
+        build: builds[i], nonces: noncesList[i], serverResp: resps[i],
+        vtxoKeys: keys, serverPubkey: this.serverPub,
+      });
+      const outBytes = buildAllSignedVtxos({
+        input: inputs[i], build: builds[i], finalSigs: sigs, serverPubkey: this.serverPub,
+      });
+      await registerVtxoTransactions(this.arkUrl, outBytes).catch(() => {});
+      const htlcRec = this._vtxo(inputs[i].id);
+      if (htlcRec) htlcRec.state = 'spent';
+      for (const bts of outBytes) this._addVtxo(decodeVtxo(bts), bts, action.revKeyIndex);
+    }
     action.step = 'failed';
     action.error = action.error || 'payment failed';
     this._movement({
@@ -916,7 +936,7 @@ export class ArkManager {
           build: b, nonces: noncesList[i], serverResp: resps[i],
           vtxoKeys: keys, serverPubkey: this.serverPub,
         });
-        return buildSignedVtxoBytes({ input: decoded[i], build: b, finalSigs: sigs, serverPubkey: this.serverPub, idx: 0 });
+        return buildAllSignedVtxos({ input: decoded[i], build: b, finalSigs: sigs, serverPubkey: this.serverPub })[0];
       });
       await registerVtxoTransactions(this.arkUrl, outBytes).catch(() => {});
       let total = 0;

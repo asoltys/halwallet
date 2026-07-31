@@ -722,7 +722,7 @@ export function arkFeature(ctx) {
       const actionId = await mgr.send(z.address, sats);
       const action = mgr.state.actions.find((a) => a.id === actionId);
       if (!action || action.step === 'failed') throw new Error(action?.error || t('claimFailed'));
-      const vtxoId = decodeVtxo(hex.decode(action.destBytes)).id;
+      const vtxoId = decodeVtxo(hex.decode((action.destBytesList || [action.destBytes])[0])).id;
       // the receipt is best-effort: the sats are already delivered via mailbox
       await wallet.nostrPublish({
         kind: ARK_ZAP_KIND,
@@ -1425,7 +1425,7 @@ export function arkFeature(ctx) {
       const actionId = await mgr.send(gm.address(), amountSat);
       const action = mgr.state.actions.find((a) => a.id === actionId);
       if (!action || action.step === 'failed') throw new Error(action?.error || t('claimFailed'));
-      const vtxoId = decodeVtxo(hex.decode(action.destBytes)).id;
+      const vtxoId = decodeVtxo(hex.decode((action.destBytesList || [action.destBytes])[0])).id;
       arkGiftRecords().push({ id: vtxoId, amountSat, secretHex, created: Date.now(), revoked: false, claimed: false });
       mgr._save();
       return { code: encodeArkGiftCode(getNetwork(), amountSat, secret), amount: amountSat };
