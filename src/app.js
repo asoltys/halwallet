@@ -2408,6 +2408,9 @@ function recipientRow(s, r, i) {
   const single = s.recipients.length === 1;
   const maxOn = single && s.max;
   r._ready = destReady(r.address); // reflected each render; onInput re-renders on a flip
+  // same idea for destination annotations (e.g. the lightning-address zap
+  // button): they only exist in the rendered tree, so a flip must re-render
+  r._note = !!featureHook('sendFormNote', r.address);
 
   // Updated imperatively on input (and on render) so paste, typing, and scan
   // all reflect immediately without disrupting the input's focus/cursor.
@@ -2431,8 +2434,9 @@ function recipientRow(s, r, i) {
       const hadError = !!ui.sendError;
       ui.sendError = ''; // editing the destination starts over — drop stale errors
       if (tryFeature(v, true)) return;              // a bolt11 advances to its own confirmation
-      // reveal/hide amount + controls as validity flips (or an error clears)
-      if (hadError || destReady(v) !== r._ready) render();
+      // reveal/hide amount + controls as validity flips, an annotation
+      // (zap button) appears/disappears, or an error clears
+      if (hadError || destReady(v) !== r._ready || !!featureHook('sendFormNote', v) !== r._note) render();
     },
   });
   const row = h(
