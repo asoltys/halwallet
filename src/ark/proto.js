@@ -368,6 +368,8 @@ export async function getArkInfo(ark) {
     boardFees: {},
     refreshFees: { baseFeeSat: 0, ppmExpiryTable: [] },
     offboardFees: { baseFeeSat: 0, fixedAdditionalVb: 0, ppmExpiryTable: [] },
+    lnReceiveFees: { baseFeeSat: 0, ppm: 0 },
+    lnSendFees: { minFeeSat: 0, baseFeeSat: 0, ppmExpiryTable: [] },
   };
   for (const { field, value } of pbFields(data)) {
     if (field === 1) info.network = td.decode(value);
@@ -375,8 +377,12 @@ export async function getArkInfo(ark) {
     if (field === 3) info.roundIntervalSecs = Number(value);
     if (field === 5) info.vtxoExitDelta = Number(value);
     if (field === 6) info.vtxoExpiryDelta = Number(value);
+    if (field === 7) info.htlcSendExpiryDelta = Number(value);
+    if (field === 8) info.htlcExpiryDelta = Number(value);
     if (field === 10) info.requiredBoardConfirmations = Number(value);
+    if (field === 11) info.maxUserInvoiceCltvDelta = Number(value);
     if (field === 13) info.minBoardAmountSat = Number(value);
+    if (field === 15) info.lnReceiveAntiDosRequired = Number(value) !== 0;
     if (field === 16) info.mailboxPubkey = hex.encode(value);
     if (field === 20) info.maxOffboardInputs = Number(value);
     if (field === 18) { // FeeSchedule
@@ -421,6 +427,26 @@ export async function getArkInfo(ark) {
           }
           info.refreshFees = rf;
         }
+        if (f.field === 4) { // lightning receive
+          for (const g of pbFields(f.value)) {
+            if (g.field === 1) info.lnReceiveFees.baseFeeSat = Number(g.value);
+            if (g.field === 2) info.lnReceiveFees.ppm = Number(g.value);
+          }
+        }
+        if (f.field === 5) { // lightning send
+          for (const g of pbFields(f.value)) {
+            if (g.field === 1) info.lnSendFees.minFeeSat = Number(g.value);
+            if (g.field === 2) info.lnSendFees.baseFeeSat = Number(g.value);
+            if (g.field === 3) {
+              const e = { thresholdBlocks: 0, ppm: 0 };
+              for (const h of pbFields(g.value)) {
+                if (h.field === 1) e.thresholdBlocks = Number(h.value);
+                if (h.field === 2) e.ppm = Number(h.value);
+              }
+              info.lnSendFees.ppmExpiryTable.push(e);
+            }
+          }
+        }
       }
     }
   }
@@ -462,6 +488,20 @@ export function decodeMailboxMessage(value) {
       msg.kind = 'arkoor';
       for (const a of pbFields(f.value)) {
         if (a.field === 1) msg.vtxos.push(decodeVtxo(a.value));
+      }
+    }
+    if (f.field === 5) { // IncomingLightningPaymentMessage
+      msg.kind = 'lnIncoming';
+      for (const a of pbFields(f.value)) {
+        if (a.field === 1) msg.paymentHash = hex.encode(a.value);
+        if (a.field === 2) msg.amountMsat = Number(a.value);
+      }
+    }
+    if (f.field === 7) { // LightningSendFinishedMessage
+      msg.kind = 'lnSendFinished';
+      for (const a of pbFields(f.value)) {
+        if (a.field === 1) msg.paymentHash = hex.encode(a.value);
+        if (a.field === 2) msg.preimage = hex.encode(a.value);
       }
     }
   }

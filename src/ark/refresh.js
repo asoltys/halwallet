@@ -12,7 +12,7 @@ import { schnorr, secp256k1 } from '@noble/curves/secp256k1';
 import * as musig2 from '@scure/btc-signer/musig2';
 
 import { grpcCall, pbWriter, pbFields, concatBytes, reader } from './proto.js';
-import { musigInternalKey, taprootSighash, txid, P2A_SCRIPT, pubkeyPolicyTaproot } from './send.js';
+import { musigInternalKey, taprootSighash, txid, P2A_SCRIPT, pubkeyPolicyTaproot, policyTaproot } from './send.js';
 
 const te = new TextEncoder();
 const u32le = (n) => Uint8Array.of(n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 24) & 0xff);
@@ -144,7 +144,7 @@ export function vtxoTransactions(vtxo, serverPub) {
     const nextOutput = i + 1 < vtxo.genesis.length
       ? transitionInputTxout(vtxo.genesis[i + 1].transition, nextAmount, serverPub, vtxo.expiryHeight)
       : { valueSat: vtxo.amountSat,
-          scriptPubKey: pubkeyPolicyTaproot(hex.decode(vtxo.policy.userPubkey), serverPub, vtxo.exitDelta).scriptPubKey };
+          scriptPubKey: policyTaproot(vtxo.policy, serverPub, vtxo.exitDelta).scriptPubKey };
     // decoded txouts carry hex-string scripts — normalize to bytes
     const others = item.otherOutputs.map((o) => ({ valueSat: o.valueSat, scriptPubKey: hex.decode(o.scriptPubKey) }));
     const outs = [

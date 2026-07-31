@@ -26,7 +26,15 @@ import {
 import {
   buildArkoorSend, cosignWithServer, buildSignedVtxoBytes,
   registerVtxoTransactions, postArkoorMessage, txid,
+  genUserNonces, cosignPartBytes, combineCosign,
 } from './send.js';
+import {
+  decodeBolt11, lnSendFee, lnReceiveFee,
+  requestLightningPayHtlcCosign, initiateLightningPayment, checkLightningPayment,
+  requestLightningPayHtlcRevocation, startLightningReceive, checkLightningReceive,
+  prepareLightningReceiveClaim, claimLightningReceive, cancelLightningReceive,
+  lightningReceiveAttestation,
+} from './lightning.js';
 import {
   boardFee, p2trAddress, buildBoard, requestBoardCosign,
   combineBoardSignature, encodeBoardVtxo, registerBoardVtxo,
@@ -63,6 +71,7 @@ export class ArkManager {
     this.onUpdate = onUpdate || (() => {});
     this.state = null;
     this.info = null;
+    this._lnDriving = new Set(); // re-entrancy guard: sync poll vs UI fast-poll vs mailbox push
   }
 
   // ---- keys ----
@@ -160,7 +169,7 @@ export class ArkManager {
     const ack = this.state.receiveAckTs || 0;
     const cutoff = Date.now() - 2 * 3600 * 1000;
     return this.state.movements.filter((m) =>
-      m.type === 'receive' && m.status === 'complete' && m.ts > ack && m.ts > cutoff);
+      ['receive', 'ln-receive'].includes(m.type) && m.status === 'complete' && m.ts > ack && m.ts > cutoff);
   }
   ackReceives() {
     this.state.receiveAckTs = Date.now();
@@ -187,6 +196,26 @@ export class ArkManager {
   async _processMailboxMessage(m) {
     let changed = false;
     if (m.checkpoint > this.state.mailboxCheckpoint) { this.state.mailboxCheckpoint = m.checkpoint; changed = true; }
+    if (m.kind === 'lnSendFinished') {
+      const a = this.state.actions.find((x) =>
+        x.type === 'ln-pay' && x.paymentHash === m.paymentHash && !['done', 'failed'].includes(x.step));
+      if (a && m.preimage && a.step === 'initiated'
+          && hex.encode(sha256(hex.decode(m.preimage))) === a.paymentHash) {
+        this._settleLnPay(a, m.preimage);
+        changed = true;
+      } else if (a && !m.preimage && a.step === 'initiated') {
+        a.step = 'revoking';
+        changed = true;
+        this._driveLnPay(a).catch(() => {}); // revocation retried on sync if this fails
+      }
+      return changed;
+    }
+    if (m.kind === 'lnIncoming') {
+      const a = this.state.actions.find((x) =>
+        x.type === 'ln-recv' && x.paymentHash === m.paymentHash && !['done', 'failed'].includes(x.step));
+      if (a) this._driveLnRecv(a).catch(() => {}); // claim promptly; sync poll is the fallback
+      return changed;
+    }
     if (m.kind !== 'arkoor') return changed;
     const ourKeys = [hex.encode(this._key(0).pubkey)];
     for (const v of m.vtxos) {
@@ -274,9 +303,13 @@ export class ArkManager {
         if (action.type === 'board') await this._driveBoard(action);
         if (action.type === 'refresh') await this._driveRefresh(action);
         if (action.type === 'offboard') await this._driveOffboard(action);
+        if (action.type === 'ln-pay') await this._driveLnPay(action);
+        if (action.type === 'ln-recv') await this._driveLnRecv(action);
+        if (action.lastError) { delete action.lastError; this._save(); }
       } catch (e) {
         // transient errors leave the action where it is; a later sync retries
         if (!(e instanceof GrpcError)) throw e;
+        if (action.type.startsWith('ln-')) { action.lastError = e.message; this._save(); }
       }
     }
   }
@@ -498,6 +531,402 @@ export class ArkManager {
         type: 'send', amountSat: action.amountSat, status: 'complete',
         to: action.destAddress, vtxoId: decodeVtxo(hex.decode(action.destBytes)).id,
       });
+      this._save();
+    }
+  }
+
+  // ---- lightning (the ASP is the swap counterparty; see ark/lightning.js) ----
+
+  // Deterministic receive preimage: no secret ever hits storage — only the
+  // derivation index does, so a restored seed can always re-derive it.
+  _lnPreimage(idx) {
+    return sha256(this.account.deriveChild(5).deriveChild(idx).privateKey);
+  }
+
+  _expiryMargin() { return this.network === 'regtest' ? 12 : 144; }
+
+  lnAction(id) {
+    return this.state.actions.find((a) => a.id === id && a.type.startsWith('ln-'));
+  }
+
+  // Drive one lightning action forward (the UI's fast poll while its screen
+  // is open); transient gRPC errors are recorded, not thrown.
+  async driveLn(id) {
+    const a = this.lnAction(id);
+    if (!a || ['done', 'failed'].includes(a.step)) return a;
+    try {
+      if (a.type === 'ln-pay') await this._driveLnPay(a);
+      else await this._driveLnRecv(a);
+      if (a.lastError) { delete a.lastError; this._save(); }
+    } catch (e) {
+      if (!(e instanceof GrpcError)) throw e;
+      a.lastError = e.message;
+      this._save();
+    }
+    return a;
+  }
+
+  // Pay a bolt11 invoice with ark funds. Returns the action id; drive to a
+  // terminal step ('done' | 'failed') via driveLn()/sync.
+  async payLnInvoice(invoice, { amountSat: userAmountSat } = {}) {
+    const dec = decodeBolt11(invoice);
+    const expectNet = { bitcoin: 'mainnet', regtest: 'regtest', signet: 'signet', testnet: 'testnet' }[this.info.network];
+    if (expectNet && dec.network !== expectNet) throw new Error(`invoice is for ${dec.network}, wallet is on ${expectNet}`);
+    const amountSat = dec.amountSat ?? userAmountSat;
+    if (!amountSat || amountSat <= 0) throw new Error('invoice has no amount');
+    if (this.state.actions.some((a) =>
+      a.type === 'ln-pay' && a.paymentHash === dec.paymentHash && a.step !== 'failed')) {
+      throw new Error('this invoice was already paid or is being paid');
+    }
+    const tip = await this.chain.tipHeight();
+    // smallest single vtxo that covers amount + its expiry-dependent fee
+    const candidates = this.state.vtxos
+      .filter((v) => v.state === 'spendable')
+      .sort((a, b) => a.amountSat - b.amountSat);
+    let input = null, feeSat = 0;
+    for (const v of candidates) {
+      const fee = lnSendFee(amountSat, this.info.lnSendFees, [v], tip);
+      if (v.amountSat >= amountSat + fee) { input = v; feeSat = fee; break; }
+    }
+    if (!input) {
+      const total = this.balance().spendableSat;
+      throw new Error(total >= amountSat
+        ? 'no single vtxo covers this amount — consolidate with refresh() first'
+        : 'insufficient ark balance');
+    }
+    const action = {
+      id: `lnpay-${Date.now()}`, type: 'ln-pay', step: 'created',
+      invoice, paymentHash: dec.paymentHash, amountSat, feeSat,
+      inputId: input.id,
+      htlcKeyIndex: this.state.nextKeyIndex++, // HTLC lock key, reused for change (bark does the same)
+      revKeyIndex: this.state.nextKeyIndex++,
+      htlcExpiry: tip + (this.info.htlcSendExpiryDelta || 258),
+      changeSat: input.amountSat - amountSat - feeSat,
+    };
+    input.state = 'pending';
+    this.state.actions.push(action);
+    this._save();
+    await this._driveLnPay(action);
+    return action.id;
+  }
+
+  async _driveLnPay(action) {
+    if (this._lnDriving.has(action.id)) return;
+    this._lnDriving.add(action.id);
+    try { await this._driveLnPayInner(action); } finally { this._lnDriving.delete(action.id); }
+  }
+
+  async _driveLnPayInner(action) {
+    if (action.step === 'created') {
+      const inputRec = this._vtxo(action.inputId);
+      const input = this._decoded(inputRec);
+      const keys = this._keyForVtxo(inputRec);
+      const htlcKey = this._key(action.htlcKeyIndex);
+      const outputs = [{
+        amountSat: action.amountSat + action.feeSat,
+        policy: {
+          type: 'serverHtlcSend', userPubkey: hex.encode(htlcKey.pubkey),
+          paymentHash: action.paymentHash, htlcExpiry: action.htlcExpiry,
+        },
+      }];
+      if (action.changeSat > 0) outputs.push({ amountSat: action.changeSat, userPubkey: htlcKey.pubkey });
+      await registerVtxoTransactions(this.arkUrl, [input._raw.bytes]);
+      const build = buildArkoorSend({ input, outputs, serverPubkey: this.serverPub, vtxoKeys: keys });
+      const nonces = genUserNonces(build, keys);
+      let resp;
+      try {
+        // idempotent on payment hash server-side: a re-drive after a crash
+        // gets fresh partials for fresh nonces
+        [resp] = await requestLightningPayHtlcCosign(this.arkUrl,
+          [cosignPartBytes({ build, input, vtxoKeys: keys, nonces })]);
+      } catch (e) {
+        if (e instanceof GrpcError && /already spent|not spendable/i.test(e.message)) {
+          inputRec.state = 'spent';
+          action.step = 'failed';
+          action.error = e.message;
+          this._movement({ type: 'ln-send', amountSat: action.amountSat, status: 'failed', detail: e.message });
+          this._save();
+          return;
+        }
+        throw e;
+      }
+      if (!resp) throw new Error('empty cosign response');
+      const sigs = combineCosign({ build, nonces, serverResp: resp, vtxoKeys: keys, serverPubkey: this.serverPub });
+      // the input is spent server-side from this moment: persist immediately
+      const htlcBytes = buildSignedVtxoBytes({ input, build, finalSigs: sigs, serverPubkey: this.serverPub, idx: 0 });
+      action.htlcBytes = hex.encode(htlcBytes);
+      const htlcDecoded = decodeVtxo(htlcBytes);
+      action.htlcVtxoId = htlcDecoded.id;
+      this._addVtxo(htlcDecoded, htlcBytes, action.htlcKeyIndex, 'pending');
+      if (action.changeSat > 0) {
+        const changeBytes = buildSignedVtxoBytes({ input, build, finalSigs: sigs, serverPubkey: this.serverPub, idx: 1 });
+        action.changeBytes = hex.encode(changeBytes);
+        this._addVtxo(decodeVtxo(changeBytes), changeBytes, action.htlcKeyIndex, 'pending');
+      }
+      inputRec.state = 'spent';
+      action.step = 'cosigned';
+      this._save();
+    }
+    if (action.step === 'cosigned') {
+      const list = [hex.decode(action.htlcBytes)];
+      if (action.changeBytes) list.push(hex.decode(action.changeBytes));
+      await registerVtxoTransactions(this.arkUrl, list).catch(() => {}); // best-effort (bark warns too)
+      // the change is a plain cosigned vtxo, good regardless of what the
+      // payment does from here
+      if (action.changeBytes) {
+        const change = this._vtxo(decodeVtxo(hex.decode(action.changeBytes)).id);
+        if (change && change.state === 'pending') change.state = 'spendable';
+      }
+      try {
+        await initiateLightningPayment(this.arkUrl, {
+          invoice: action.invoice,
+          htlcVtxoIdRaws: [decodeVtxo(hex.decode(action.htlcBytes)).point.raw],
+          amountSat: action.amountSat,
+          mailboxPubkey: this._mailboxKey().pubkey,
+        });
+        action.step = 'initiated';
+        this._save();
+      } catch (e) {
+        // INVALID_ARGUMENT: the server itself deems the invoice unpayable —
+        // retrying can never succeed, revoke the HTLC instead
+        if (e instanceof GrpcError && e.grpcStatus === 3) {
+          action.error = e.message;
+          action.step = 'revoking';
+          this._save();
+        } else {
+          throw e;
+        }
+      }
+    }
+    if (action.step === 'initiated') {
+      const res = await checkLightningPayment(this.arkUrl, hex.decode(action.paymentHash), false);
+      if (res.status === 'success' && res.preimage
+          && hex.encode(sha256(hex.decode(res.preimage))) === action.paymentHash) {
+        this._settleLnPay(action, res.preimage);
+        return;
+      }
+      if (res.status === 'failed') {
+        action.step = 'revoking';
+        this._save();
+      } else {
+        // still pending: past the HTLC expiry the payment can't complete — revoke
+        const tip = await this.chain.tipHeight();
+        if (tip <= action.htlcExpiry) return; // poll again next sync
+        action.step = 'revoking';
+        this._save();
+      }
+    }
+    if (action.step === 'revoking') await this._revokeLnPay(action);
+  }
+
+  _settleLnPay(action, preimageHex) {
+    const htlc = this._vtxo(action.htlcVtxoId);
+    if (htlc) htlc.state = 'spent';
+    action.preimage = preimageHex;
+    action.step = 'done';
+    this._movement({
+      type: 'ln-send', amountSat: action.amountSat, status: 'complete',
+      detail: action.feeSat ? `fee ${action.feeSat} sat` : undefined,
+      invoice: action.invoice, preimage: preimageHex,
+    });
+    this._save();
+  }
+
+  // Payment failed: ask the server to cosign the HTLC vtxo back to a fresh
+  // pubkey vtxo of ours. A refusing/unreachable server leaves the action in
+  // 'revoking' (retried every sync); near expiry the remaining option is a
+  // unilateral exit of the HTLC vtxo.
+  async _revokeLnPay(action) {
+    const htlcRec = this._vtxo(action.htlcVtxoId);
+    const input = this._decoded(htlcRec);
+    const keys = this._key(action.htlcKeyIndex);
+    const revKey = this._key(action.revKeyIndex);
+    const build = buildArkoorSend({
+      input,
+      outputs: [{ amountSat: input.amountSat, userPubkey: revKey.pubkey }],
+      serverPubkey: this.serverPub, vtxoKeys: keys,
+    });
+    const nonces = genUserNonces(build, keys);
+    const [resp] = await requestLightningPayHtlcRevocation(this.arkUrl,
+      [cosignPartBytes({ build, input, vtxoKeys: keys, nonces })]);
+    if (!resp) throw new Error('empty revocation response');
+    const sigs = combineCosign({ build, nonces, serverResp: resp, vtxoKeys: keys, serverPubkey: this.serverPub });
+    const bytes = buildSignedVtxoBytes({ input, build, finalSigs: sigs, serverPubkey: this.serverPub, idx: 0 });
+    await registerVtxoTransactions(this.arkUrl, [bytes]).catch(() => {});
+    htlcRec.state = 'spent';
+    this._addVtxo(decodeVtxo(bytes), bytes, action.revKeyIndex);
+    action.step = 'failed';
+    action.error = action.error || 'payment failed';
+    this._movement({
+      type: 'ln-send', amountSat: action.amountSat, status: 'failed',
+      detail: 'payment failed — funds returned', invoice: action.invoice,
+    });
+    this._save();
+  }
+
+  // Mint a bolt11 invoice payable to this wallet's ark balance.
+  async createLnInvoice(amountSat, description) {
+    if (!(amountSat > 0)) throw new Error('invalid amount');
+    // CLTV budget: exit delta + server htlc delta + exit margin + claim delta
+    // + 2-block prepare leniency (bark's composition, defaults inlined)
+    const minCltvDelta = (this.info.vtxoExitDelta || 0) + (this.info.htlcExpiryDelta || 6) + 12 + 18 + 2;
+    if (this.info.maxUserInvoiceCltvDelta && minCltvDelta > this.info.maxUserInvoiceCltvDelta) {
+      throw new Error('server max invoice CLTV delta is too low');
+    }
+    const idx = this.state.nextLnRecvIndex || 0;
+    this.state.nextLnRecvIndex = idx + 1;
+    const keyIndex = this.state.nextKeyIndex++;
+    const paymentHash = sha256(this._lnPreimage(idx));
+    const invoice = await startLightningReceive(this.arkUrl, {
+      paymentHash, amountSat, minCltvDelta,
+      mailboxPubkey: this._mailboxKey().pubkey, description,
+    });
+    const decInv = decodeBolt11(invoice);
+    if (decInv.paymentHash !== hex.encode(paymentHash)) {
+      throw new Error('server invoice payment hash mismatch');
+    }
+    const action = {
+      id: `lnrecv-${Date.now()}`, type: 'ln-recv', step: 'awaiting',
+      paymentHash: hex.encode(paymentHash), preimageIndex: idx, keyIndex,
+      amountSat, minCltvDelta, invoice, expiresAt: decInv.expiresAt,
+    };
+    this.state.actions.push(action);
+    this._save();
+    return action;
+  }
+
+  // Cancel an unpaid invoice. Only valid before HTLCs are granted; the server
+  // cancel is best-effort (an abandoned hold invoice expires server-side).
+  async cancelLnInvoice(id) {
+    const a = this.lnAction(id);
+    if (!a || a.type !== 'ln-recv') throw new Error('unknown invoice');
+    if (a.step !== 'awaiting') throw new Error('receive already in progress');
+    await cancelLightningReceive(this.arkUrl, hex.decode(a.paymentHash)).catch(() => {});
+    a.step = 'failed';
+    a.error = 'canceled';
+    this._save();
+  }
+
+  async _driveLnRecv(action) {
+    if (this._lnDriving.has(action.id)) return;
+    this._lnDriving.add(action.id);
+    try { await this._driveLnRecvInner(action); } finally { this._lnDriving.delete(action.id); }
+  }
+
+  async _driveLnRecvInner(action) {
+    if (action.step === 'awaiting') {
+      const st = await checkLightningReceive(this.arkUrl, hex.decode(action.paymentHash));
+      if (st.status === 'canceled') {
+        action.step = 'failed';
+        action.error = 'canceled server-side';
+        this._save();
+        return;
+      }
+      if (st.status === 'created') {
+        // unpaid past the invoice expiry (+grace): reap
+        if (action.expiresAt && Date.now() > action.expiresAt + 60_000) {
+          action.step = 'failed';
+          action.error = 'invoice expired';
+          this._save();
+        }
+        return;
+      }
+      if (st.status === 'settled') {
+        // settled without us claiming — shouldn't happen; surface it
+        action.step = 'failed';
+        action.error = 'settled server-side without local claim';
+        this._save();
+        return;
+      }
+      // accepted | htlcsReady: ask for our HTLC vtxos and validate them
+      const tip = await this.chain.tipHeight();
+      const keys = this._key(action.keyIndex);
+      const htlcRecvExpiry = tip + action.minCltvDelta;
+      let antiDos = null;
+      if (this.info.lnReceiveAntiDosRequired) {
+        const proof = this.state.vtxos.filter((v) => v.state === 'spendable')
+          .map((v) => ({ v, d: this._decoded(v) }))
+          .find(({ d }) => d.expiryHeight > tip + 2);
+        if (proof) {
+          antiDos = {
+            vtxoIdRaw: proof.d.point.raw,
+            attestation: lightningReceiveAttestation(
+              hex.decode(action.paymentHash), proof.d.point.raw, this._keyForVtxo(proof.v).privkey),
+          };
+        }
+      }
+      const res = await prepareLightningReceiveClaim(this.arkUrl, {
+        paymentHash: hex.decode(action.paymentHash),
+        userPubkey: keys.pubkey, htlcRecvExpiry, antiDos,
+      });
+      if (!res.htlcVtxos.length) return; // not ready after all; retry on sync
+      let total = 0;
+      for (const b of res.htlcVtxos) {
+        const v = decodeVtxo(b);
+        if (v.policy.type !== 'serverHtlcRecv') throw new Error('unexpected HTLC vtxo policy from server');
+        if (v.policy.paymentHash !== action.paymentHash) throw new Error('HTLC vtxo payment hash mismatch');
+        if (v.policy.userPubkey !== hex.encode(keys.pubkey)) throw new Error('HTLC vtxo pubkey mismatch');
+        if (v.policy.htlcExpiry < htlcRecvExpiry) throw new Error('HTLC vtxo expiry lower than requested');
+        await validateVtxo(v, { serverPubkey: this.serverPub, chain: this.chain, allowPolicies: ['serverHtlcRecv'] });
+        total += v.amountSat;
+      }
+      if (total + lnReceiveFee(action.amountSat, this.info.lnReceiveFees) < action.amountSat) {
+        throw new Error('server returned insufficient HTLC value');
+      }
+      action.htlcBytes = res.htlcVtxos.map((b) => hex.encode(b));
+      action.step = 'htlcsReady';
+      this._save();
+    }
+    if (action.step === 'htlcsReady') {
+      const keys = this._key(action.keyIndex);
+      const decoded = action.htlcBytes.map((b) => decodeVtxo(hex.decode(b)))
+        .sort((a, b) => (a.id < b.id ? -1 : 1));
+      // preimage not revealed yet + HTLCs near expiry: abandon rather than
+      // commit (the inbound HTLC times out and the sender is refunded)
+      if (!action.preimageRevealed) {
+        const tip = await this.chain.tipHeight();
+        if (tip > decoded[0].policy.htlcExpiry - this._expiryMargin()) {
+          action.step = 'failed';
+          action.error = 'HTLCs near expiry — abandoned before preimage reveal';
+          this._movement({ type: 'ln-receive', amountSat: action.amountSat, status: 'failed', detail: action.error });
+          this._save();
+          return;
+        }
+      }
+      const builds = decoded.map((input) => buildArkoorSend({
+        input,
+        outputs: [{ amountSat: input.amountSat, userPubkey: keys.pubkey }],
+        serverPubkey: this.serverPub, vtxoKeys: keys,
+      }));
+      const noncesList = builds.map((b) => genUserNonces(b, keys));
+      const parts = builds.map((b, i) =>
+        cosignPartBytes({ build: b, input: decoded[i], vtxoKeys: keys, nonces: noncesList[i] }));
+      // past this point the preimage is out; the claim is idempotent
+      // server-side, so persist the fact and retry until it lands
+      action.preimageRevealed = true;
+      this._save();
+      const resps = await claimLightningReceive(this.arkUrl, {
+        paymentHash: hex.decode(action.paymentHash),
+        preimage: this._lnPreimage(action.preimageIndex),
+        parts,
+      });
+      if (resps.length !== builds.length) throw new Error('bad claim cosign response');
+      const outBytes = builds.map((b, i) => {
+        const sigs = combineCosign({
+          build: b, nonces: noncesList[i], serverResp: resps[i],
+          vtxoKeys: keys, serverPubkey: this.serverPub,
+        });
+        return buildSignedVtxoBytes({ input: decoded[i], build: b, finalSigs: sigs, serverPubkey: this.serverPub, idx: 0 });
+      });
+      await registerVtxoTransactions(this.arkUrl, outBytes).catch(() => {});
+      let total = 0;
+      for (const bts of outBytes) {
+        const v = decodeVtxo(bts);
+        this._addVtxo(v, bts, action.keyIndex);
+        total += v.amountSat;
+      }
+      action.step = 'done';
+      this._movement({ type: 'ln-receive', amountSat: total, status: 'complete', invoice: action.invoice });
       this._save();
     }
   }

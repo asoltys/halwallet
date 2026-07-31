@@ -132,7 +132,11 @@ export function swapsFeature(ctx) {
       line(t('status'), swap.status === 'claimed' ? 'Settled ✓' : swap.status));
   }
 
-  async function startLnSend(invoice, meta = null) {
+  async function startLnSend(invoice, meta = null, skipArk = false) {
+    // The ark feature pays bolt11 straight from the ark balance when it can
+    // cover it (the ASP is the swap counterparty) — cheaper and instant, so
+    // it gets first refusal before the on-chain Boltz submarine path.
+    if (!skipArk && ctx.hook('startArkLnPay', invoice, meta)) return;
     ui.sendError = ''; ui.lnSend = null; ui.lnSent = null; ui.lnPayMeta = meta; ui.lnSendBusy = true; render();
     try { ui.lnSend = await swaps.quoteSubmarine(invoice); }
     catch (e) { ui.sendError = e.message; }
@@ -228,5 +232,8 @@ export function swapsFeature(ctx) {
     // the review as a zap (recipient name, comment). Returns true so the hook
     // dispatcher stops here.
     startLnPay(invoice, meta) { startLnSend(invoice, meta || null); return true; },
+    // The ark feature falls back here when the ark balance can't cover an
+    // invoice after fees — skipArk avoids bouncing back and forth.
+    startLnPayBoltz(invoice, meta) { startLnSend(invoice, meta || null, true); return true; },
   };
 }

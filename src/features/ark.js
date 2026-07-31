@@ -8,6 +8,7 @@ import { hex, base32nopad, bech32 } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import { ArkManager } from '../ark/manager.js';
 import { boardFee } from '../ark/board.js';
+import { maybeBolt11, lnSendFee } from '../ark/lightning.js';
 import { decodeVtxo, getVtxoStatus, VTXO_STATE_SPENT, concatBytes } from '../ark/proto.js';
 import { signedExitTxs, buildBumpChild, buildExitClaim, submitPackage } from '../ark/exit.js';
 import { utxoId } from '../wallet.js';
@@ -94,6 +95,7 @@ export function mergeArkStates(a, b) {
   out.gifts = [...gifts.values()];
   out.mailboxCheckpoint = Math.max(a.mailboxCheckpoint || 0, b.mailboxCheckpoint || 0);
   out.nextKeyIndex = Math.max(a.nextKeyIndex || 1, b.nextKeyIndex || 1);
+  out.nextLnRecvIndex = Math.max(a.nextLnRecvIndex || 0, b.nextLnRecvIndex || 0);
   out.receiveAckTs = Math.max(a.receiveAckTs || 0, b.receiveAckTs || 0);
   return out;
 }
@@ -148,6 +150,8 @@ export function arkFeature(ctx) {
     arkTimer = null;
     if (ark) ark.stopMailboxStream();
     stopNwcFunding();
+    for (const timer of arkLnTimers.values()) clearInterval(timer);
+    arkLnTimers.clear();
     ark = null;
     arkConnectPromise = null;
   }
@@ -310,16 +314,220 @@ export function arkFeature(ctx) {
     ui.busy = false; render();
   }
 
+  // ---- lightning via the ASP (captaind pays/holds invoices natively) -------
+  // One poll timer per in-flight lightning action; cleared on settle.
+  const arkLnTimers = new Map();
+  function stopArkLnPoll(id) {
+    const timer = arkLnTimers.get(id);
+    if (timer) { clearInterval(timer); arkLnTimers.delete(id); }
+  }
+  function pollArkLn(id, onSettle) {
+    stopArkLnPoll(id);
+    arkLnTimers.set(id, setInterval(async () => {
+      if (!ark) return;
+      const a = await ark.driveLn(id).catch(() => null);
+      if (a && ['done', 'failed'].includes(a.step)) {
+        stopArkLnPoll(id);
+        onSettle(a);
+      }
+      render();
+    }, 2500));
+  }
+
+  // A bolt11 lands in Send (via the swaps feature's delegation hook, or
+  // directly when swaps is absent): take over when the ark balance can
+  // plausibly cover it, else decline so the Boltz path handles it.
+  function startArkLnPay(invoice, meta) {
+    const dec = maybeBolt11(invoice);
+    if (!dec || !arkAvailable() || wallet.watchOnly) return false;
+    const s = arkStateNow();
+    const canCover = (sats) =>
+      !!s && (s.vtxos || []).some((v) => v.state === 'spendable' && v.amountSat >= sats);
+    if (!canCover(dec.amountSat || 1)) return false;
+    ui.arkLnPay = { invoice, meta: meta || null, amountSat: dec.amountSat, amount: '', feeSat: null, status: 'quote' };
+    ui.sendError = '';
+    render();
+    connectArk().then(async (mgr) => {
+      const p = ui.arkLnPay;
+      if (!p || p.invoice !== invoice) return;
+      if (p.amountSat) {
+        // real quote: smallest vtxo that covers amount + its expiry-based fee
+        const tip = await mgr.chain.tipHeight();
+        const candidates = mgr.vtxos().filter((v) => v.state === 'spendable')
+          .sort((a, b) => a.amountSat - b.amountSat);
+        let fee = null;
+        for (const v of candidates) {
+          const f = lnSendFee(p.amountSat, mgr.info.lnSendFees, [v], tip);
+          if (v.amountSat >= p.amountSat + f) { fee = f; break; }
+        }
+        if (fee == null) {
+          // can't cover once fees are in — hand off to the Boltz path
+          ui.arkLnPay = null;
+          if (!ctx.hook('startLnPayBoltz', invoice, meta)) { ui.sendError = t('arkNotConnected'); }
+          render();
+          return;
+        }
+        p.feeSat = fee;
+      }
+      p.status = 'ready';
+      render();
+    }).catch((e) => {
+      if (ui.arkLnPay && ui.arkLnPay.invoice === invoice) { ui.sendError = e.message; render(); }
+    });
+    return true;
+  }
+
+  async function doArkLnPay() {
+    const p = ui.arkLnPay;
+    const sats = p.amountSat || ctx.parseAmount(p.amount, ctx.getUnit());
+    if (!sats || sats <= 0) { ui.sendError = t('enterValidAmtForN', { n: 1 }); render(); return; }
+    ui.busy = true; ui.sendError = ''; render();
+    try {
+      const mgr = await connectArk();
+      const id = await mgr.payLnInvoice(p.invoice, { amountSat: sats });
+      const settle = (a) => {
+        if (a.step === 'done') {
+          ui.arkLnPaid = { amountSat: a.amountSat, meta: p.meta };
+          ui.arkLnPay = null;
+        } else if (ui.arkLnPay) {
+          ui.arkLnPay.status = 'ready';
+          ui.sendError = a.error === 'payment failed' ? t('arkLnRefunded') : (a.error || t('arkLnPayFailed'));
+        }
+        render();
+      };
+      const a = mgr.lnAction(id);
+      if (['done', 'failed'].includes(a.step)) settle(a);
+      else { p.actionId = id; p.status = 'paying'; pollArkLn(id, settle); }
+    } catch (e) {
+      ui.sendError = e.message;
+    }
+    ui.busy = false; render();
+  }
+
+  function arkLnPayView() {
+    const u = ' ' + unitLabel();
+    if (ui.arkLnPaid) {
+      const zap = ui.arkLnPaid.meta;
+      return h('div', {
+        class: 'card col',
+        style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
+        onClick: () => { ui.arkLnPaid = null; ui.send = blankSend(); render(); },
+      },
+        h('div', { class: 'check-badge' }, '⚡'),
+        h('h2', { style: 'margin:0' }, zap ? t('arkZapSentTitle') : t('arkLnPaidTitle')),
+        zap && zap.name ? h('div', { class: 'small muted' }, zap.name) : null,
+        h('div', { class: 'amount-neg', style: 'font-size:18px' }, '-' + fmtAmount(ui.arkLnPaid.amountSat) + u),
+        h('div', { class: 'small muted' }, t('tapToProceed')));
+    }
+    const p = ui.arkLnPay;
+    if (!p) return null;
+    const zap = p.meta;
+    const row = (label, sats, bold) => h('div', { class: 'row between' + (bold ? '' : ''), style: bold ? 'font-weight:600' : '' },
+      h('span', { class: bold ? '' : 'small muted' }, label), h('span', {}, fmtAmount(sats) + u));
+    const total = (p.amountSat || 0) + (p.feeSat || 0);
+    return h('div', { class: 'col', style: 'gap:12px' },
+      h('div', { class: 'card col', style: 'gap:10px' },
+        h('h3', { style: 'margin:0' }, '⚡ ' + (zap ? t('lnZapReviewTitle') : t('lnPayTitle'))),
+        h('div', { class: 'small muted' }, t('arkLnPayVia')),
+        zap && (zap.name || zap.address) ? h('div', { class: 'small muted', style: 'word-break:break-all' }, zap.name || zap.address) : null,
+        zap && zap.comment ? h('div', { class: 'small faint', style: 'font-style:italic;word-break:break-word' }, '“' + zap.comment + '”') : null,
+        p.status === 'quote'
+          ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('lnQuoting')))
+          : null,
+        p.amountSat == null && p.status !== 'quote'
+          ? h('div', { class: 'input-group' },
+              h('input', { type: 'number', min: '0', inputmode: 'decimal', placeholder: t('lnPayAmount'), value: p.amount,
+                onInput: (e) => { p.amount = e.target.value; } }),
+              h('div', { style: 'display:flex;align-items:center' }, unitTag()))
+          : null,
+        p.amountSat != null ? row(t('lnPayAmount'), p.amountSat) : null,
+        p.feeSat != null && p.feeSat > 0 ? row(t('arkLnFee'), p.feeSat) : null,
+        p.amountSat != null && p.feeSat != null
+          ? [h('div', { style: 'border-top:1px solid var(--line, #ddd);margin:2px 0' }), row(t('lnPayTotal'), total, true)]
+          : null),
+      ui.sendError ? h('div', { class: 'notice err' }, ui.sendError) : null,
+      p.status === 'paying'
+        ? h('div', { class: 'card row gap6', style: 'align-items:center' },
+            h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkLnPaying')))
+        : h('button', { class: 'btn-primary btn-block', disabled: !!ui.busy || p.status === 'quote', onClick: doArkLnPay },
+            ui.busy ? h('span', { class: 'spinner' }) : t('lnPayConfirm')),
+      p.status !== 'paying'
+        ? h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.arkLnPay = null; ui.sendError = ''; ui.send = blankSend(); render(); } }, t('back'))
+        : null);
+  }
+
+  async function doArkLnInvoice() {
+    const sats = parseInt((ui.arkLnRecvAmt || '').trim(), 10);
+    if (!sats) return;
+    ui.arkBusy = 'lninvoice'; ui.arkError = ''; render();
+    try {
+      const mgr = await connectArk();
+      const a = await mgr.createLnInvoice(sats);
+      ui.arkLnRecvId = a.id;
+      pollArkLn(a.id, () => render()); // 'done' -> celebration via unseenReceives
+    } catch (e) {
+      ui.arkError = e.message;
+    }
+    ui.arkBusy = null; render();
+  }
+
+  // Lightning-receive block on the Ark receive pane: amount form -> invoice QR.
+  function arkLnReceiveSection() {
+    if (!ark || !ark.info || !ark.info.htlcExpiryDelta) return null; // server without lightning
+    const s = arkStateNow();
+    let rec = ui.arkLnRecvId ? ((s && s.actions) || []).find((a) => a.id === ui.arkLnRecvId) : null;
+    if (rec && ['done', 'failed'].includes(rec.step)) {
+      // settled (celebration takes over) or dead — reset to the form
+      if (rec.step === 'failed' && rec.error && rec.error !== 'canceled') ui.arkError = rec.error;
+      ui.arkLnRecvId = null;
+      ui.arkLnRecvAmt = '';
+      rec = null;
+    }
+    const divider = { class: 'col', style: 'width:100%;gap:8px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:14px' };
+    if (rec) {
+      let svg = null;
+      try { svg = qrSvg(rec.invoice.toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }); } catch {}
+      return h('div', divider,
+        h('div', { class: 'small muted', style: 'text-align:center' }, t('lnReceiveAwaiting')),
+        svg ? h('div', { style: 'align-self:center', html: svg }) : null,
+        h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, rec.invoice),
+        h('div', { class: 'row gap6', style: 'justify-content:center' }, copyBtn(rec.invoice, t('copyInvoice'))),
+        h('div', { class: 'row gap6', style: 'align-items:center;justify-content:center' },
+          h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('lnReceiveWatching'))),
+        rec.step === 'awaiting'
+          ? h('button', { class: 'btn-ghost btn-block', onClick: async () => {
+              stopArkLnPoll(rec.id);
+              try { await ark.cancelLnInvoice(rec.id); } catch {}
+              ui.arkLnRecvId = null; ui.arkLnRecvAmt = ''; render();
+            } }, t('arkLnCancelInvoice'))
+          : null);
+    }
+    return h('div', divider,
+      h('div', { class: 'small muted', style: 'text-align:center' }, t('arkLnInvoiceIntro')),
+      h('div', { class: 'input-group' },
+        h('input', {
+          type: 'number', inputmode: 'numeric', min: '0',
+          placeholder: t('amountSatsLabel'),
+          value: ui.arkLnRecvAmt || '',
+          onInput: (e) => { ui.arkLnRecvAmt = e.target.value; render(); },
+        }),
+        h('button', { class: 'btn-sm', disabled: !!ui.arkBusy || !parseInt(ui.arkLnRecvAmt || '', 10), onClick: doArkLnInvoice },
+          ui.arkBusy === 'lninvoice' ? h('span', { class: 'spinner sm' }) : '⚡ ' + t('lnCreateInvoice'))));
+  }
+
   function arkHistoryItem(m) {
-    const incoming = !['send', 'offboard', 'exit'].includes(m.type);
+    const incoming = !['send', 'offboard', 'exit', 'ln-send'].includes(m.type);
     const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded')
+      : m.type === 'ln-send' ? t('arkLnPaidHistory') : m.type === 'ln-receive' ? t('arkLnReceivedHistory')
       : m.type === 'offboard' ? t('arkOffboarded') : m.type === 'exit' ? t('arkExited') : t('sent');
     return h(
       'div',
       { class: 'item', style: 'cursor:pointer', onClick: () => { ui.arkMoveDetail = m.id; render(); } },
       // Ark mark in the (direction-colored) circle carries the rail; the label
       // + signed amount carry direction, so no redundant "Ark" text chip.
-      h('div', { class: `ico ${incoming ? 'in' : 'out'}`, html: ARK_MARK(15) }),
+      m.type.startsWith('ln-')
+        ? h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, '⚡')
+        : h('div', { class: `ico ${incoming ? 'in' : 'out'}`, html: ARK_MARK(15) }),
       h('div', { class: 'grow' },
         h('div', { class: 'row gap6' },
           label,
@@ -331,8 +539,9 @@ export function arkFeature(ctx) {
   }
 
   function arkMoveDetailView(m) {
-    const incoming = !['send', 'offboard', 'exit'].includes(m.type);
+    const incoming = !['send', 'offboard', 'exit', 'ln-send'].includes(m.type);
     const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded')
+      : m.type === 'ln-send' ? t('arkLnPaidHistory') : m.type === 'ln-receive' ? t('arkLnReceivedHistory')
       : m.type === 'offboard' ? t('arkOffboarded') : m.type === 'exit' ? t('arkExited') : t('sent');
     const row = (k, v) => h('div', { class: 'row between', style: 'gap:12px' },
       h('span', { class: 'small muted', style: 'flex-shrink:0' }, k), h('span', { class: 'small', style: 'text-align:right;word-break:break-all' }, v));
@@ -424,7 +633,7 @@ export function arkFeature(ctx) {
       (() => {
         const counts = {};
         for (const a of pendingActions) { if (a.type !== 'exit') counts[a.type] = (counts[a.type] || 0) + 1; }
-        const LABEL = { board: 'arkOpsBoard', send: 'arkOpsSend', refresh: 'arkOpsRefresh', offboard: 'arkOpsOffboard' };
+        const LABEL = { board: 'arkOpsBoard', send: 'arkOpsSend', refresh: 'arkOpsRefresh', offboard: 'arkOpsOffboard', 'ln-pay': 'arkOpsLnPay', 'ln-recv': 'arkOpsLnRecv' };
         const parts = Object.entries(counts).map(([type, n]) => t(LABEL[type] || 'arkPendingActions', { n }));
         return parts.length ? h('div', { class: 'small muted' }, parts.join(' · ')) : null;
       })(),
@@ -919,7 +1128,9 @@ export function arkFeature(ctx) {
           canBoard
             ? h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardAvailable', { n: fmtAmount(wallet.spendable) + ' ' + unitLabel() }))
             : h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardNoFunds', { n: minBoard.toLocaleString() })),
-          ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null)
+          ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null),
+        // Lightning receive straight into the ark balance (ASP-native swap)
+        arkLnReceiveSection()
       );
     }
     throw new Error('unreachable');
@@ -1083,6 +1294,10 @@ export function arkFeature(ctx) {
       return h('div', { class: 'small faint' }, t('arkSendHint'));
     },
     interceptReview(s) {
+      if (s.recipients.length === 1) {
+        const inv = (s.recipients[0].address || '').trim().replace(/^lightning:/i, '');
+        if (maybeBolt11(inv) && startArkLnPay(inv)) return true;
+      }
       if (s.recipients.length === 1 && isArkAddress(s.recipients[0].address)) {
         if (!arkAvailable()) throw new Error(t('arkNotConnected'));
         const sats = ctx.parseAmount(s.recipients[0].amount, ctx.getUnit());
@@ -1094,13 +1309,22 @@ export function arkFeature(ctx) {
       return false;
     },
     sendView() {
+      if (ui.arkLnPaid || ui.arkLnPay) return arkLnPayView();
       if (ui.arkZapped || ui.arkZap) return arkZapView();
       if (ui.arkSent || ui.arkSend) return arkSendReview();
       return null;
     },
+    // A bolt11 pays from the ark balance when it can cover it. Reached via the
+    // swaps feature's delegation (its matcher runs first) or directly in
+    // builds without the swaps feature.
+    startArkLnPay(invoice, meta) { return startArkLnPay(invoice, meta); },
     // An npub pasted into Send becomes an ark zap (needs the nostr seam from
-    // the sync feature and a connected-able ark).
+    // the sync feature and a connected-able ark). A bolt11 is handled here
+    // only in builds without the swaps feature (whose matcher runs first and
+    // delegates back via the startArkLnPay hook).
     matchSendText(text) {
+      const inv = (text || '').trim().replace(/^lightning:/i, '');
+      if (maybeBolt11(inv)) return startArkLnPay(inv);
       const pk = npubToHex(text);
       if (!pk || !arkAvailable() || !wallet.nostrFetch) return false;
       ui.arkZap = { npub: String(text).trim(), pk, amount: '', comment: '', status: 'lookup' };
@@ -1115,7 +1339,7 @@ export function arkFeature(ctx) {
       const s = arkStateNow();
       if (!s) return [];
       return (s.movements || [])
-        .filter((m) => ['receive', 'send', 'board', 'offboard', 'exit'].includes(m.type) && m.status === 'complete')
+        .filter((m) => ['receive', 'send', 'board', 'offboard', 'exit', 'ln-send', 'ln-receive'].includes(m.type) && m.status === 'complete')
         .map((m) => ({ time: m.ts, render: () => arkHistoryItem(m) }));
     },
     historyDetail() {

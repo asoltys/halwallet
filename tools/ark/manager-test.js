@@ -22,7 +22,7 @@ const ARK = process.env.ARK_URL || 'http://127.0.0.1:3535';
 const ESPLORA = process.env.ESPLORA_URL || 'http://127.0.0.1:30002';
 const BARK = `${process.env.HOME}/bark/target/debug/bark`;
 const ALICE = `${BARK} --datadir ${process.env.HOME}/ark-regtest/alice`;
-const BCLI = `bitcoin-cli -regtest -datadir=${process.env.HOME}/ark-regtest/bitcoind -rpcport=18543 -rpcwallet=miner`;
+const BCLI = `docker exec bc bitcoin-cli -rpcwallet=coinos`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sh = (cmd) => execSync(cmd, { shell: '/bin/bash' }).toString().trim();
@@ -110,8 +110,7 @@ const fundingTxid = sh(`${BCLI} sendrawtransaction ${signed.hex}`);
 await mgr.completeBoard(actionId, fundingTxid);
 check('board waits for confirmations', mgr.pendingActions().length === 1);
 mine(2);
-await sleep(2000);
-await mgr.sync();
+for (let i = 0; i < 20 && mgr.pendingActions().length; i++) { await sleep(2000); await mgr.sync(); }
 check('board vtxo spendable', mgr.balance().spendableSat === 11000 + 30000 - feeSat, JSON.stringify(mgr.balance()));
 
 // --- 5. refresh: consolidate everything into one vtxo ---

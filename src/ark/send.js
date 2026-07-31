@@ -5,10 +5,14 @@
 
 import { hex } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
+import { ripemd160 } from '@noble/hashes/ripemd160';
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1';
 import * as musig2 from '@scure/btc-signer/musig2';
 
 import { concatBytes, reader, grpcCall, pbWriter, pbFields } from './proto.js';
+
+// hex string or byte array -> bytes (decoded vtxos carry hex-string fields)
+const asBytes = (v) => (typeof v === 'string' ? hex.decode(v) : Uint8Array.from(v));
 
 const te = new TextEncoder();
 
@@ -47,7 +51,7 @@ function pushInt(n) {
   return Uint8Array.of(bytes.length, ...bytes);
 }
 
-const OP = { CSV: 0xb2, CLTV: 0xb1, DROP: 0x75, CHECKSIG: 0xac };
+const OP = { CSV: 0xb2, CLTV: 0xb1, DROP: 0x75, CHECKSIG: 0xac, HASH160: 0xa9, EQUALVERIFY: 0x88 };
 export const P2A_SCRIPT = hex.decode('51024e73');
 
 // delayed_sign: <csv> OP_CSV OP_DROP <xonly> OP_CHECKSIG
@@ -57,6 +61,17 @@ const delayedSignScript = (delta, xonly) =>
 // timelock_sign: <height> OP_CLTV OP_DROP <xonly> OP_CHECKSIG
 const timelockSignScript = (height, xonly) =>
   concatBytes(pushInt(height), Uint8Array.of(OP.CLTV, OP.DROP, 0x20), xonly, Uint8Array.of(OP.CHECKSIG));
+
+// hash_delay_sign: <csv> OP_CSV OP_DROP OP_HASH160 <ripemd160(hash)> OP_EQUALVERIFY <xonly> OP_CHECKSIG
+// (the witness reveals the 32B preimage; HASH160(preimage) = ripemd160(sha256(preimage)))
+const hashDelaySignScript = (paymentHash, delta, xonly) => concatBytes(
+  pushInt(delta), Uint8Array.of(OP.CSV, OP.DROP, OP.HASH160, 0x14), ripemd160(paymentHash),
+  Uint8Array.of(OP.EQUALVERIFY, 0x20), xonly, Uint8Array.of(OP.CHECKSIG));
+
+// delay_timelock_sign: <height> OP_CLTV OP_DROP <csv> OP_CSV OP_DROP <xonly> OP_CHECKSIG
+const delayTimelockSignScript = (height, delta, xonly) => concatBytes(
+  pushInt(height), Uint8Array.of(OP.CLTV, OP.DROP), pushInt(delta),
+  Uint8Array.of(OP.CSV, OP.DROP, 0x20), xonly, Uint8Array.of(OP.CHECKSIG));
 
 // ---------------------------------------------------------------------------
 // taproot + musig key aggregation
@@ -74,11 +89,20 @@ export function musigInternalKey(keys) {
 const tapLeafHash = (script) =>
   taggedHash('TapLeaf', Uint8Array.of(0xc0), varint(script.length), script);
 
-// One-leaf taproot around a musig2 internal key.
+// BIP-341 branch hash: children sorted lexicographically
+const tapBranch = (a, b) => {
+  let swap = false;
+  for (let i = 0; i < 32; i++) { if (a[i] !== b[i]) { swap = a[i] > b[i]; break; } }
+  return swap ? taggedHash('TapBranch', b, a) : taggedHash('TapBranch', a, b);
+};
+
+// Taproot around a musig2(user,server) internal key with 1 or 2 script leaves
+// (two leaves sit at depth 1, mirroring bark's TaprootBuilder usage).
 // Returns everything both tx-building and signing need.
-export function taprootOneLeaf(userPub, serverPub, leafScript) {
+export function taprootFromLeaves(userPub, serverPub, leafScripts) {
   const { sortedKeys, internalXOnly } = musigInternalKey([userPub, serverPub]);
-  const merkleRoot = tapLeafHash(leafScript);
+  const leafHashes = leafScripts.map(tapLeafHash);
+  const merkleRoot = leafHashes.length === 1 ? leafHashes[0] : tapBranch(leafHashes[0], leafHashes[1]);
   const tapTweak = taggedHash('TapTweak', internalXOnly, merkleRoot);
   const P = secp256k1.ProjectivePoint;
   // lift internal x-only, add tweak*G
@@ -91,6 +115,9 @@ export function taprootOneLeaf(userPub, serverPub, leafScript) {
   return { sortedKeys, internalXOnly, merkleRoot, tapTweak, outputXOnly, outputParity, scriptPubKey };
 }
 
+export const taprootOneLeaf = (userPub, serverPub, leafScript) =>
+  taprootFromLeaves(userPub, serverPub, [leafScript]);
+
 // PubkeyVtxoPolicy: keyspend musig(user,server); leaf = delayed_sign(exit_delta, user).
 // leafScript is returned so a unilateral exit can claim through it after the CSV.
 export const pubkeyPolicyTaproot = (userPub, serverPub, exitDelta) => {
@@ -101,6 +128,30 @@ export const pubkeyPolicyTaproot = (userPub, serverPub, exitDelta) => {
 // CheckpointVtxoPolicy: keyspend musig(user,server); leaf = timelock_sign(expiry, server)
 export const checkpointPolicyTaproot = (userPub, serverPub, expiryHeight) =>
   taprootOneLeaf(userPub, serverPub, timelockSignScript(expiryHeight, xonly(serverPub)));
+
+// Taproot for any user-facing VTXO policy (mirror of bark's VtxoPolicy::taproot).
+// policy fields may be hex strings (decoded form) or byte arrays.
+export function policyTaproot(policy, serverPub, exitDelta) {
+  const user = asBytes(policy.userPubkey);
+  if (policy.type === 'pubkey') return pubkeyPolicyTaproot(user, serverPub, exitDelta);
+  if (policy.type === 'serverHtlcSend') {
+    const hash = asBytes(policy.paymentHash);
+    // leaf 1: server spends with preimage after exit_delta
+    // leaf 2: user refund after htlc expiry + 2*exit_delta delay
+    const serverClaim = hashDelaySignScript(hash, exitDelta, xonly(serverPub));
+    const userRefund = delayTimelockSignScript(policy.htlcExpiry, 2 * exitDelta, xonly(user));
+    return { ...taprootFromLeaves(user, serverPub, [serverClaim, userRefund]), serverClaim, userRefund };
+  }
+  if (policy.type === 'serverHtlcRecv') {
+    const hash = asBytes(policy.paymentHash);
+    // leaf 1: server reclaim after htlc expiry + exit_delta delay
+    // leaf 2: user spends with preimage after htlc_expiry_delta + exit_delta
+    const serverRefund = delayTimelockSignScript(policy.htlcExpiry, exitDelta, xonly(serverPub));
+    const userClaim = hashDelaySignScript(hash, policy.htlcExpiryDelta + exitDelta, xonly(user));
+    return { ...taprootFromLeaves(user, serverPub, [serverRefund, userClaim]), serverRefund, userClaim };
+  }
+  throw new Error('unsupported vtxo policy type ' + policy.type);
+}
 
 // ---------------------------------------------------------------------------
 // transactions (version 3, zero locktime, sequence 0)
@@ -144,6 +195,20 @@ export function taprootSighash(tx, prevouts) {
 
 const encodePubkeyPolicy = (pub33) => concatBytes(Uint8Array.of(0x00), pub33);
 
+// Serialize any user-facing VtxoPolicy (mirror of proto.js decodePolicy).
+export function encodePolicy(p) {
+  const user = asBytes(p.userPubkey);
+  if (p.type === 'pubkey') return encodePubkeyPolicy(user);
+  if (p.type === 'serverHtlcSend') {
+    return concatBytes(Uint8Array.of(0x01), user, asBytes(p.paymentHash), u32le(p.htlcExpiry));
+  }
+  if (p.type === 'serverHtlcRecv') {
+    return concatBytes(Uint8Array.of(0x02), user, asBytes(p.paymentHash),
+      u32le(p.htlcExpiry), u16le(p.htlcExpiryDelta));
+  }
+  throw new Error('unsupported vtxo policy type ' + p.type);
+}
+
 // GenesisTransition::Arkoor
 const encodeArkoorTransition = ({ cosigners, tapTweak, signature }) => concatBytes(
   Uint8Array.of(0x02),
@@ -183,12 +248,19 @@ function encodeVtxo({ amountSat, expiryHeight, serverPubkey, exitDelta, anchorPo
 
 // Build everything for a checkpointed single-input arkoor send.
 // input: decoded vtxo (from decodeVtxo, with _raw), owned by keys.vtxo
-// outputs: [{ amountSat, userPubkey (33B) }...] — destination first, change last
+// outputs: [{ amountSat, userPubkey (33B) }...] or [{ amountSat, policy }...]
+// — destination first, change last
 export function buildArkoorSend({ input, outputs, serverPubkey, vtxoKeys }) {
   const userPub = vtxoKeys.pubkey;
   if (hex.encode(userPub) !== input.policy.userPubkey) throw new Error('input not owned by our key');
 
-  const inputTaproot = pubkeyPolicyTaproot(userPub, serverPubkey, input.exitDelta);
+  // normalize plain-pubkey outputs to policy form
+  const outs = outputs.map((o) => ({
+    amountSat: o.amountSat,
+    policy: o.policy || { type: 'pubkey', userPubkey: hex.encode(o.userPubkey) },
+  }));
+
+  const inputTaproot = policyTaproot(input.policy, serverPubkey, input.exitDelta);
   const checkpointTaproot = checkpointPolicyTaproot(userPub, serverPubkey, input.expiryHeight);
 
   // checkpoint tx: spends the input vtxo, one output per destination
@@ -197,15 +269,15 @@ export function buildArkoorSend({ input, outputs, serverPubkey, vtxoKeys }) {
     version: 3, locktime: 0,
     inputs: [{ prevout: input.point.raw, sequence: 0 }],
     outputs: [
-      ...outputs.map((o) => ({ valueSat: o.amountSat, scriptPubKey: checkpointTaproot.scriptPubKey })),
+      ...outs.map((o) => ({ valueSat: o.amountSat, scriptPubKey: checkpointTaproot.scriptPubKey })),
       { valueSat: 0, scriptPubKey: P2A_SCRIPT },
     ],
   };
   const checkpointTxid = txid(checkpointTx);
 
   // one arkoor tx per output, spending checkpoint:vout
-  const arkoorTxs = outputs.map((o, vout) => {
-    const destTaproot = pubkeyPolicyTaproot(o.userPubkey, serverPubkey, input.exitDelta);
+  const arkoorTxs = outs.map((o, vout) => {
+    const destTaproot = policyTaproot(o.policy, serverPubkey, input.exitDelta);
     return {
       version: 3, locktime: 0,
       inputs: [{ prevout: outpointBytes(checkpointTxid, vout), sequence: 0 }],
@@ -225,7 +297,7 @@ export function buildArkoorSend({ input, outputs, serverPubkey, vtxoKeys }) {
   // taptweaks per signature (bark: taptweak_at)
   const tweaks = [inputTaproot.tapTweak, ...arkoorTxs.map(() => checkpointTaproot.tapTweak)];
 
-  return { checkpointTx, checkpointTxid, arkoorTxs, sighashes, tweaks, inputTaproot, checkpointTaproot };
+  return { outputs: outs, checkpointTx, checkpointTxid, arkoorTxs, sighashes, tweaks, inputTaproot, checkpointTaproot };
 }
 
 // "arkoor cosign attestation       " — 32-byte prefix
@@ -236,50 +308,54 @@ export function cosignAttestation(inputVtxoIdRaw, outputs, vtxoPrivkey) {
     ATTESTATION_PREFIX,
     inputVtxoIdRaw,
     u32le(outputs.length),
-    ...outputs.flatMap((o) => [u64le(o.amountSat), encodePubkeyPolicy(o.userPubkey)]),
+    ...outputs.flatMap((o) => [u64le(o.amountSat), encodePolicy(o.policy)]),
   ));
   return schnorr.sign(msg, vtxoPrivkey);
 }
 
-// full MuSig2 ceremony over the ASP's RequestArkoorCosign
-export async function cosignWithServer(ark, build, { input, outputs, vtxoKeys, serverPubkey }) {
-  const nSigs = build.sighashes.length;
+// One musig2 nonce per sighash, bound to it.
+export const genUserNonces = (build, vtxoKeys) =>
+  build.sighashes.map((sh) => musig2.nonceGen(vtxoKeys.pubkey, vtxoKeys.privkey, undefined, sh));
 
-  // 1. nonces, bound to each sighash
-  const nonces = build.sighashes.map((sh) =>
-    musig2.nonceGen(vtxoKeys.pubkey, vtxoKeys.privkey, undefined, sh));
-
-  // 2. request
+// Serialize one ArkoorCosignRequest part for a built arkoor spend.
+export function cosignPartBytes({ build, input, vtxoKeys, nonces }) {
   const part = pbWriter();
   part.bytesField(1, input.point.raw); // vtxo id = outpoint bytes
-  for (const o of outputs) {
+  for (const o of build.outputs) {
     const dest = pbWriter();
     dest.varintField(1, o.amountSat);
-    dest.bytesField(2, encodePubkeyPolicy(o.userPubkey));
+    dest.bytesField(2, encodePolicy(o.policy));
     part.bytesField(2, dest.finish());
   }
   for (const n of nonces) part.bytesField(3, n.public);
   part.varintField(5, 1); // use_checkpoint = true
-  part.bytesField(6, cosignAttestation(input.point.raw, outputs, vtxoKeys.privkey));
+  part.bytesField(6, cosignAttestation(input.point.raw, build.outputs, vtxoKeys.privkey));
+  return part.finish();
+}
 
-  const req = pbWriter();
-  req.bytesField(1, part.finish());
-  const respBytes = await grpcCall(ark, 'bark_server.ArkService/RequestArkoorCosign', req.finish());
-
-  // 3. parse response
-  const serverNonces = [], serverPartials = [];
+// Parse an ArkoorPackageCosignResponse into per-part nonce/partial lists.
+export function parsePackageCosignResponse(respBytes) {
+  const parts = [];
   for (const { field, value } of pbFields(respBytes)) {
     if (field !== 1) continue;
+    const p = { serverNonces: [], serverPartials: [] };
     for (const f of pbFields(value)) {
-      if (f.field === 1) serverNonces.push(f.value);
-      if (f.field === 2) serverPartials.push(f.value);
+      if (f.field === 1) p.serverNonces.push(f.value);
+      if (f.field === 2) p.serverPartials.push(f.value);
     }
+    parts.push(p);
   }
+  return parts;
+}
+
+// Combine our partials with the server's into final schnorr signatures,
+// verifying the server partial and the combined signature along the way.
+export function combineCosign({ build, nonces, serverResp, vtxoKeys, serverPubkey }) {
+  const nSigs = build.sighashes.length;
+  const { serverNonces, serverPartials } = serverResp;
   if (serverNonces.length !== nSigs || serverPartials.length !== nSigs) {
     throw new Error(`bad cosign response: ${serverNonces.length} nonces, ${serverPartials.length} partials, wanted ${nSigs}`);
   }
-
-  // 4. combine: session per sighash with the taptweak as x-only tweak
   const finalSigs = [];
   for (let i = 0; i < nSigs; i++) {
     const aggNonce = musig2.nonceAggregate([nonces[i].public, serverNonces[i]]);
@@ -306,9 +382,20 @@ export async function cosignWithServer(ark, build, { input, outputs, vtxoKeys, s
   return finalSigs;
 }
 
+// full MuSig2 ceremony over the ASP's RequestArkoorCosign
+export async function cosignWithServer(ark, build, { input, vtxoKeys, serverPubkey }) {
+  const nonces = genUserNonces(build, vtxoKeys);
+  const req = pbWriter();
+  req.bytesField(1, cosignPartBytes({ build, input, vtxoKeys, nonces }));
+  const respBytes = await grpcCall(ark, 'bark_server.ArkService/RequestArkoorCosign', req.finish());
+  const [serverResp] = parsePackageCosignResponse(respBytes);
+  if (!serverResp) throw new Error('empty cosign response');
+  return combineCosign({ build, nonces, serverResp, vtxoKeys, serverPubkey });
+}
+
 // assemble the final signed Vtxo<Full> bytes for output `idx`
-export function buildSignedVtxoBytes({ input, outputs, build, finalSigs, serverPubkey, idx }) {
-  const o = outputs[idx];
+export function buildSignedVtxoBytes({ input, build, finalSigs, serverPubkey, idx }) {
+  const o = build.outputs[idx];
   // NB nb_outputs on the wire counts own output + other_outputs — the P2A
   // fee anchor is excluded (bark: other_outputs.len() + 1).
   const checkpointOthers = build.checkpointTx.outputs.filter((out, i) =>
@@ -346,7 +433,7 @@ export function buildSignedVtxoBytes({ input, outputs, build, finalSigs, serverP
     inputGenesisRaw: raw.bytes.slice(raw.itemsStart, raw.itemsEnd),
     inputGenesisCount: raw.nItems,
     newItems: [checkpointItem, arkoorItem],
-    policyBytes: encodePubkeyPolicy(o.userPubkey),
+    policyBytes: encodePolicy(o.policy),
     pointRaw: outpointBytes(txid(build.arkoorTxs[idx]), 0),
   });
 }

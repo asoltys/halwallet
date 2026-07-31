@@ -22,11 +22,13 @@ const fail = (msg) => { throw new VtxoValidationError(msg); };
 
 // chain: an object with getTxHex(txid) -> hex|null and tipHeight() -> number,
 // plus getTxStatus(txid) -> {confirmed, block_height} (esplora semantics)
-export async function validateVtxo(vtxo, { serverPubkey, chain, expectPubkeys }) {
+// allowPolicies: acceptable policy types (default plain pubkey only; lightning
+// flows pass ['serverHtlcSend'] / ['serverHtlcRecv'] for their HTLC vtxos)
+export async function validateVtxo(vtxo, { serverPubkey, chain, expectPubkeys, allowPolicies = ['pubkey'] }) {
   const serverHex = hex.encode(serverPubkey);
 
   // -- structural --
-  if (vtxo.policy.type !== 'pubkey') fail(`unsupported policy: ${vtxo.policy.type}`);
+  if (!allowPolicies.includes(vtxo.policy.type)) fail(`unsupported policy: ${vtxo.policy.type}`);
   if (vtxo.serverPubkey !== serverHex) fail('vtxo server pubkey does not match ours');
   if (expectPubkeys && !expectPubkeys.includes(vtxo.policy.userPubkey)) {
     fail('vtxo not paid to one of our keys');
