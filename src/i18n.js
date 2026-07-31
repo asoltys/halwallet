@@ -435,6 +435,8 @@ const STR = {
     arkLnPayFailed: 'Payment failed',
     arkLnRefunded: 'Payment failed — funds returned to your Ark balance.',
     arkLnPaidTitle: 'Paid!',
+    arkLnFundsPending: 'Your Ark funds are settling from a previous payment — retrying…',
+    lnZapOffer: 'Zap {addr}',
     arkLnInvoiceIntro: 'Or receive over Lightning, straight into your Ark balance.',
     arkLnPaidHistory: 'Paid Lightning invoice',
     arkLnReceivedHistory: 'Received over Lightning',

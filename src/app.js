@@ -38,7 +38,9 @@ const featureHook = (name, ...args) => {
   return null;
 };
 const featureAll = (name, ...args) => FEATURES.flatMap((f) => (f[name] ? f[name](...args) : []));
-const featureMatchSend = (text) => FEATURES.some((f) => f.matchSendText && f.matchSendText(text));
+// `typed` distinguishes keystroke input from paste/scan: some matchers (a
+// lightning address) match mid-typing and must not yank the form away.
+const featureMatchSend = (text, typed) => FEATURES.some((f) => f.matchSendText && f.matchSendText(text, typed));
 
 
 
@@ -1973,6 +1975,7 @@ function tabsBar() {
     tabs.map(([id, label]) =>
       tabBtn(label, ui.tab === id, () => {
         ui.tab = id;
+        ui.sendError = ''; // a stale send error never survives a tab change
         ui.revealShown = false; // re-mask the recovery phrase whenever tabs change
         ui.txDetail = null; // back to the history list when leaving/returning
         ui.arkMoveDetail = null;
@@ -2418,15 +2421,18 @@ function recipientRow(s, r, i) {
 
   // A pasted/typed/scanned payload a feature recognizes (e.g. a bolt11) jumps
   // straight to that feature's own confirmation flow.
-  const tryFeature = (v) => featureMatchSend(v);
+  const tryFeature = (v, typed) => featureMatchSend(v, typed);
   const addrInput = h('input', {
     type: 'text', class: 'mono-input grow', placeholder: i === 0 ? t('destPlaceholder') : 'bc1q…',
     autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: r.address,
     onInput: (e) => {
       const v = e.target.value;
       r.address = v; syncCheck();
-      if (tryFeature(v)) return;                    // a bolt11 advances to its own confirmation
-      if (destReady(v) !== r._ready) render();  // reveal/hide amount + controls as validity flips
+      const hadError = !!ui.sendError;
+      ui.sendError = ''; // editing the destination starts over — drop stale errors
+      if (tryFeature(v, true)) return;              // a bolt11 advances to its own confirmation
+      // reveal/hide amount + controls as validity flips (or an error clears)
+      if (hadError || destReady(v) !== r._ready) render();
     },
   });
   const row = h(
@@ -2434,7 +2440,7 @@ function recipientRow(s, r, i) {
     { class: 'col gap6' },
     h('div', { class: 'input-group' },
       addrInput,
-      pasteBtn((text) => { addrInput.value = text; r.address = text; syncCheck(); if (!tryFeature(text) && destReady(text) !== r._ready) render(); }),
+      pasteBtn((text) => { addrInput.value = text; r.address = text; ui.sendError = ''; syncCheck(); if (!tryFeature(text)) render(); }),
       i === 0 && canScan() && h('button', {
         type: 'button', class: 'btn-sm', title: t('scanQr'), onClick: scanIntoSend,
         html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/></svg>',
@@ -2500,7 +2506,9 @@ function sendForm() {
           onClick: () => { s.recipients.push({ address: '', amount: '' }); s.max = false; render(); },
         }, t('addRecipient'))
     ),
-    ready && arkDest && (featureHook('sendFormNote', plainAddr) || null),
+    // any feature may annotate the destination (ark hint, lightning-address
+    // zap offer, …) — each hook decides for itself whether the text is its
+    s.recipients.length === 1 ? (featureHook('sendFormNote', plainAddr) || null) : null,
     ready && !arkDest && h(
       'div',
       { class: 'field' },

@@ -491,9 +491,12 @@ export class ArkManager {
       try {
         sigs = await cosignWithServer(this.arkUrl, build, { input, outputs, vtxoKeys: keys, serverPubkey: this.serverPub });
       } catch (e) {
-        if (e instanceof GrpcError && /already spent|not spendable/i.test(e.message)) {
-          // the input is gone (possibly a prior crashed attempt) — don't retry
-          inputRec.state = 'spent';
+        const spent = e instanceof GrpcError && /already spent|not spendable/i.test(e.message);
+        if (spent || (e instanceof GrpcError && e.grpcStatus === 3)) {
+          // "already spent": the input is gone (possibly a prior crashed
+          // attempt). Status 3: the server rejected the cosign outright, so
+          // the input is untouched and returns to spendable. Neither retries.
+          inputRec.state = spent ? 'spent' : 'spendable';
           action.step = 'failed';
           action.error = e.message;
           this._movement({ type: 'send', amountSat: action.amountSat, status: 'failed', detail: e.message });
@@ -646,8 +649,12 @@ export class ArkManager {
         [resp] = await requestLightningPayHtlcCosign(this.arkUrl,
           [cosignPartBytes({ build, input, vtxoKeys: keys, nonces })]);
       } catch (e) {
-        if (e instanceof GrpcError && /already spent|not spendable/i.test(e.message)) {
-          inputRec.state = 'spent';
+        // INVALID_ARGUMENT (status 3): the server rejected the cosign outright
+        // — nothing was spent, so the input goes back to spendable instead of
+        // rotting in pending. "already spent" means the input really is gone.
+        const spent = e instanceof GrpcError && /already spent|not spendable/i.test(e.message);
+        if (spent || (e instanceof GrpcError && e.grpcStatus === 3)) {
+          inputRec.state = spent ? 'spent' : 'spendable';
           action.step = 'failed';
           action.error = e.message;
           this._movement({ type: 'ln-send', amountSat: action.amountSat, status: 'failed', detail: e.message });
@@ -861,7 +868,14 @@ export class ArkManager {
       // accepted | htlcsReady: ask for our HTLC vtxos and validate them
       const tip = await this.chain.tipHeight();
       const keys = this._key(action.keyIndex);
-      const htlcRecvExpiry = tip + action.minCltvDelta;
+      // anchor the requested expiry on the FIRST attempt: the server's grant
+      // is fixed by the inbound HTLC, so recomputing from a later tip would
+      // inflate our own requirement until it exceeds the grant
+      if (!action.htlcRecvExpiry) {
+        action.htlcRecvExpiry = tip + action.minCltvDelta;
+        this._save();
+      }
+      const htlcRecvExpiry = action.htlcRecvExpiry;
       let antiDos = null;
       if (this.info.lnReceiveAntiDosRequired) {
         const proof = this.state.vtxos.filter((v) => v.state === 'spendable')
@@ -887,7 +901,19 @@ export class ArkManager {
         if (v.policy.paymentHash !== action.paymentHash) throw new Error('HTLC vtxo payment hash mismatch');
         if (v.policy.userPubkey !== hex.encode(keys.pubkey)) throw new Error('HTLC vtxo pubkey mismatch');
         if (v.policy.htlcExpiry < htlcRecvExpiry) throw new Error('HTLC vtxo expiry lower than requested');
-        await validateVtxo(v, { serverPubkey: this.serverPub, chain: this.chain, allowPolicies: ['serverHtlcRecv'] });
+        try {
+          await validateVtxo(v, { serverPubkey: this.serverPub, chain: this.chain, allowPolicies: ['serverHtlcRecv'] });
+        } catch (e) {
+          // a granted vtxo can anchor to a round the chain hasn't confirmed
+          // yet — park (no preimage revealed, nothing at risk) and retry on
+          // sync; the invoice-expiry reap bounds how long we'll wait
+          if (e instanceof VtxoValidationError) {
+            action.lastError = e.message;
+            this._save();
+            return;
+          }
+          throw e;
+        }
         total += v.amountSat;
       }
       if (total + lnReceiveFee(action.amountSat, this.info.lnReceiveFees) < action.amountSat) {

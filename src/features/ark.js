@@ -341,40 +341,57 @@ export function arkFeature(ctx) {
     const dec = maybeBolt11(invoice);
     if (!dec || !arkAvailable() || wallet.watchOnly) return false;
     const s = arkStateNow();
-    const canCover = (sats) =>
-      !!s && (s.vtxos || []).some((v) => v.state === 'spendable' && v.amountSat >= sats);
-    if (!canCover(dec.amountSat || 1)) return false;
+    const covers = (state, sats) =>
+      !!s && (s.vtxos || []).some((v) => v.state === state && v.amountSat >= sats);
+    // pending funds count for the take-over decision: an in-flight payment or
+    // revocation frees them in seconds, and the Boltz fallback can't do small
+    // amounts at all — better to wait for ark than bounce off Boltz's minimum
+    if (!covers('spendable', dec.amountSat || 1) && !covers('pending', dec.amountSat || 1)) return false;
     ui.arkLnPay = { invoice, meta: meta || null, amountSat: dec.amountSat, amount: '', feeSat: null, status: 'quote' };
     ui.sendError = '';
     render();
-    connectArk().then(async (mgr) => {
-      const p = ui.arkLnPay;
-      if (!p || p.invoice !== invoice) return;
-      if (p.amountSat) {
-        // real quote: smallest vtxo that covers amount + its expiry-based fee
-        const tip = await mgr.chain.tipHeight();
-        const candidates = mgr.vtxos().filter((v) => v.state === 'spendable')
-          .sort((a, b) => a.amountSat - b.amountSat);
-        let fee = null;
-        for (const v of candidates) {
-          const f = lnSendFee(p.amountSat, mgr.info.lnSendFees, [v], tip);
-          if (v.amountSat >= p.amountSat + f) { fee = f; break; }
-        }
-        if (fee == null) {
-          // can't cover once fees are in — hand off to the Boltz path
-          ui.arkLnPay = null;
-          if (!ctx.hook('startLnPayBoltz', invoice, meta)) { ui.sendError = t('arkNotConnected'); }
-          render();
-          return;
-        }
-        p.feeSat = fee;
-      }
-      p.status = 'ready';
-      render();
-    }).catch((e) => {
+    quoteArkLnPay(invoice, meta).catch((e) => {
       if (ui.arkLnPay && ui.arkLnPay.invoice === invoice) { ui.sendError = e.message; render(); }
     });
     return true;
+  }
+
+  // Quote (or re-quote) an in-form lightning pay: smallest vtxo that covers
+  // amount + its expiry-based fee. Funds locked by a settling action retry
+  // themselves free; genuinely insufficient funds hand off to Boltz.
+  async function quoteArkLnPay(invoice, meta) {
+    const mgr = await connectArk();
+    const p = ui.arkLnPay;
+    if (!p || p.invoice !== invoice) return;
+    if (!p.amountSat) { p.status = 'ready'; render(); return; }
+    const tip = await mgr.chain.tipHeight();
+    const candidates = mgr.vtxos().filter((v) => v.state === 'spendable')
+      .sort((a, b) => a.amountSat - b.amountSat);
+    let fee = null;
+    for (const v of candidates) {
+      const f = lnSendFee(p.amountSat, mgr.info.lnSendFees, [v], tip);
+      if (v.amountSat >= p.amountSat + f) { fee = f; break; }
+    }
+    if (fee == null) {
+      const pendingCover = mgr.vtxos().some((v) => v.state === 'pending' && v.amountSat >= p.amountSat);
+      if (pendingCover) {
+        p.status = 'fundsPending';
+        render();
+        mgr.resumePending().catch(() => {}); // nudge whatever holds them
+        setTimeout(() => {
+          if (ui.arkLnPay === p) quoteArkLnPay(invoice, meta).catch(() => {});
+        }, 4000);
+        return;
+      }
+      // can't cover once fees are in — hand off to the Boltz path
+      ui.arkLnPay = null;
+      if (!ctx.hook('startLnPayBoltz', invoice, meta)) { ui.sendError = t('arkNotConnected'); }
+      render();
+      return;
+    }
+    p.feeSat = fee;
+    p.status = 'ready';
+    render();
   }
 
   async function doArkLnPay() {
@@ -434,6 +451,9 @@ export function arkFeature(ctx) {
         p.status === 'quote'
           ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('lnQuoting')))
           : null,
+        p.status === 'fundsPending'
+          ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkLnFundsPending')))
+          : null,
         p.amountSat == null && p.status !== 'quote'
           ? h('div', { class: 'input-group' },
               h('input', { type: 'number', min: '0', inputmode: 'decimal', placeholder: t('lnPayAmount'), value: p.amount,
@@ -449,7 +469,7 @@ export function arkFeature(ctx) {
       p.status === 'paying'
         ? h('div', { class: 'card row gap6', style: 'align-items:center' },
             h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkLnPaying')))
-        : h('button', { class: 'btn-primary btn-block', disabled: !!ui.busy || p.status === 'quote', onClick: doArkLnPay },
+        : h('button', { class: 'btn-primary btn-block', disabled: !!ui.busy || p.status !== 'ready', onClick: doArkLnPay },
             ui.busy ? h('span', { class: 'spinner' }) : t('lnPayConfirm')),
       p.status !== 'paying'
         ? h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.arkLnPay = null; ui.sendError = ''; ui.send = blankSend(); render(); } }, t('back'))

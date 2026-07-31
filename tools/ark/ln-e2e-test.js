@@ -112,6 +112,9 @@ const payerDone = new Promise((r) => payer.on('close', (code) => r(code)));
 
 for (let i = 0; i < 40 && !['done', 'failed'].includes(mgr.lnAction(recv.id).step); i++) {
   await sleep(1500);
+  // fresh pool vtxos anchor to a possibly-unconfirmed issuance round — keep
+  // blocks coming so the HTLC vtxo validation can pass
+  if (i % 3 === 2) sh('docker exec bc bitcoin-cli -rpcwallet=coinos -generate 1 >/dev/null');
   await mgr.driveLn(recv.id);
 }
 const r = mgr.lnAction(recv.id);

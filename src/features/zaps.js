@@ -21,13 +21,6 @@ export function zapsFeature(ctx) {
   // Lightning payment has to be possible for a zap to make sense.
   const canPay = () => !wallet.watchOnly && !!hook('canLnPay');
 
-  // A lightning address (name@domain) matches its regex mid-typing — at
-  // `a@b.co` before the user finishes `.com` — so we debounce those; npub and
-  // lnurl carry a bech32 checksum and only match when complete, so they fire
-  // immediately.
-  let resolveTimer = null;
-  const clearResolve = () => { if (resolveTimer) { clearTimeout(resolveTimer); resolveTimer = null; } };
-
   const shortNpub = (npub) => (npub && npub.length > 16 ? npub.slice(0, 12) + '…' + npub.slice(-6) : npub);
 
   // Kick off resolution of a parsed target. `display` is what we show as the
@@ -136,17 +129,32 @@ export function zapsFeature(ctx) {
   return {
     id: 'zaps',
     // A lightning address / lnurl (always), or an npub that Ark didn't claim.
-    matchSendText(text) {
-      if (!canPay() || !ui.send || ui.send.recipients.length !== 1) { clearResolve(); return false; }
+    matchSendText(text, typed) {
+      if (!canPay() || !ui.send || ui.send.recipients.length !== 1) return false;
       const target = parseZapTarget(text);
-      if (!target) { clearResolve(); return false; }
+      if (!target) return false;
       // npub with no nostr seam to look up a profile → can't resolve here.
       if (target.kind === 'npub' && !wallet.nostrProfile) return false;
+      // A TYPED lightning address matches mid-keystroke (`a@b.co` before the
+      // user finishes `.com`), so never auto-advance while typing — the send
+      // form offers a zap button via sendFormNote instead. Pasted/scanned
+      // text is complete and advances immediately; npub/lnurl carry a bech32
+      // checksum and only ever match when complete.
+      if (typed && target.kind === 'lnaddr') return false;
       const display = target.kind === 'npub' ? shortNpub(npubOf(target.pk) || text.trim()) : (target.address || text.trim());
-      clearResolve();
-      if (target.kind === 'lnaddr') resolveTimer = setTimeout(() => { resolveTimer = null; begin(target, display); }, 600);
-      else begin(target, display);
+      begin(target, display);
       return true;
+    },
+    // The typed-lightning-address affordance on the send form.
+    sendFormNote(a) {
+      if (!canPay() || !ui.send || ui.send.recipients.length !== 1) return null;
+      const target = parseZapTarget(a);
+      if (!target || target.kind === 'npub') return null;
+      const display = target.address || String(a || '').trim();
+      return h('button', {
+        type: 'button', class: 'btn-primary btn-block',
+        onClick: () => begin(target, display),
+      }, '⚡ ' + t('lnZapOffer', { addr: display }));
     },
     // True when an npub can be zapped over Lightning from this build/wallet —
     // ark's "no Ark address" screen checks this before offering the fallback.
