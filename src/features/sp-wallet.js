@@ -460,9 +460,43 @@ export function installSpWallet(wallet) {
     wallet.spUtxos = [];
     wallet.lastSpScan = 0;
   });
+  // Ride the encrypted sync snapshot so the (expensive) SP block catch-up runs
+  // ONCE across all devices instead of on each. Like Ark, this is a commutative
+  // merge (mergeAlways) — applied even for snapshots older than local state — so
+  // whichever device scans furthest carries the rest.
   wallet.registerCacheExtension({
+    mergeAlways: true,
     save: () => ({ spUtxos: wallet.spUtxos, lastSpScan: wallet.lastSpScan }),
-    load: (d) => { wallet.spUtxos = d.spUtxos || []; wallet.lastSpScan = d.lastSpScan || 0; },
+    load: (d) => {
+      let grew = false;
+      // Watermark is a HIGH-water mark: adopt the furthest height any device
+      // reached, never regress. This is what stops every device re-grinding the
+      // ~1M-tweak backlog. (A manual rescan forces from=1 synchronously, so it
+      // still re-scans everything regardless of this.)
+      const remoteScan = d.lastSpScan || 0;
+      if (remoteScan > (wallet.lastSpScan || 0)) wallet.lastSpScan = remoteScan;
+      else if ((wallet.lastSpScan || 0) > remoteScan) grew = true; // our watermark is ahead
+      // Additive union of found coins by outpoint — bring in ones we lack, but
+      // NEVER mutate a coin we already track. Spend detection is each device's
+      // own job (_refreshSpUtxos drops coins the backend reports spent), so a
+      // stale coin merged in from another device self-heals on the next refresh
+      // rather than needing spent-state to propagate.
+      if (Array.isArray(d.spUtxos)) {
+        const have = new Set(wallet.spUtxos.map((u) => `${u.txid}:${u.vout}`));
+        let added = false;
+        for (const ru of d.spUtxos) {
+          if (!ru || ru.txid == null || ru.vout == null) continue;
+          const id = `${ru.txid}:${ru.vout}`;
+          if (!have.has(id)) { wallet.spUtxos.push(ru); have.add(id); added = true; }
+        }
+        if (wallet.spUtxos.length > d.spUtxos.length) grew = true; // we hold coins it lacked
+        if (added) wallet._recomputeBalanceFromChains();
+      }
+      // Anti-entropy: if we ended up knowing more than this snapshot did, push
+      // our superset back so the shared slot converges. Guarded, so once every
+      // device agrees it stops (matches the Ark merge).
+      if (grew) { try { wallet.saveCache(); } catch {} }
+    },
   });
   // Confirmed SP coins are spendable like any other coin — including to fund a
   // silent payment. Unconfirmed ones are excluded (the sender's tx could be
