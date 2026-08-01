@@ -11,6 +11,7 @@
 
 import * as nip06 from 'nostr-tools/nip06';
 import * as nip44 from 'nostr-tools/nip44';
+import * as nip04 from 'nostr-tools/nip04';
 import { wrapEvent as nip17WrapEvent } from 'nostr-tools/nip17';
 import { getPublicKey, finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { decode as nip19decode, npubEncode } from 'nostr-tools/nip19';
@@ -24,6 +25,11 @@ const pool = new SimplePool();
 
 // --- locking a gift to a recipient's Nostr key ---------------------------
 // An npub or 64-hex nostr pubkey → hex, or null if it isn't one.
+// NIP-47 wallet services sign with their own per-connection key and must
+// speak whichever encryption the client asked for, so export both schemes.
+export { nip04, nip44 };
+export { getPublicKey, finalizeEvent, generateSecretKey };
+
 export function parseNostrPubkey(input) {
   const s = (input || '').trim();
   if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase();
@@ -210,6 +216,13 @@ export class NostrSync {
     try {
       return finalizeEvent({ created_at: Math.floor(Date.now() / 1000), tags: [], content: '', ...partial }, this.sk);
     } catch { return null; }
+  }
+
+  // Publish an event signed by some other key (the NWC service key). The
+  // wallet's own key must not sign wallet-service traffic — connections are
+  // revocable and shouldn't be tied to the user's nostr identity.
+  async publishSigned(evt, relays = this.relays) {
+    try { await Promise.allSettled(pool.publish(relays, evt)); return true; } catch { return false; }
   }
 
   // Fetch events matching a filter from the relays (best-effort).

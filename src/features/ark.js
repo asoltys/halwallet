@@ -543,6 +543,43 @@ export function arkFeature(ctx) {
     for (const rec of open) await tryBridgeRefund(rec).catch(() => {});
   }
 
+  // Pay a bolt11 with no UI at all — used by the NWC wallet service. Same
+  // routing as the interactive path: the cheaper bridge first, the ASP's own
+  // lightning-send as fallback. Resolves { preimage, feeSat, amountSat }.
+  async function payInvoiceHeadless(invoice, { maxAmountSat } = {}) {
+    const dec = maybeBolt11(invoice);
+    if (!dec) throw new Error('not a bolt11 invoice');
+    if (!dec.amountSat) throw new Error('zero-amount invoices are not supported');
+    if (maxAmountSat && dec.amountSat > maxAmountSat) {
+      throw new Error(`amount ${dec.amountSat} exceeds the limit of ${maxAmountSat} sat`);
+    }
+    const mgr = await connectArk();
+
+    // 1. the bridge, when one is configured and can take it
+    try {
+      const q = await bridgeQuote(invoice);
+      if (q && mgr.vtxos().some((v) => v.state === 'spendable' && v.amountSat >= q.totalSat)) {
+        const res = await bridgePay(q, invoice);
+        return { preimage: res.preimage, feeSat: q.feeSat, amountSat: q.amountSat };
+      }
+    } catch (e) {
+      console.warn('nwc: bridge pay failed, falling back to the ASP:', e.message);
+    }
+
+    // 2. the ASP's native lightning-send
+    const id = await mgr.payLnInvoice(invoice);
+    for (let i = 0; i < 60; i++) {
+      const a = mgr.lnAction(id);
+      if (!a || a.step === 'done') break;
+      if (a.step === 'failed') throw new Error(a.error || 'payment failed');
+      await new Promise((r) => setTimeout(r, 2000));
+      await mgr.driveLn(id).catch(() => {});
+    }
+    const a = mgr.lnAction(id);
+    if (!a || a.step !== 'done') throw new Error(a?.error || a?.lastError || 'payment did not complete');
+    return { preimage: a.preimage, feeSat: a.feeSat, amountSat: a.amountSat };
+  }
+
   // A bolt11 lands in Send (via the swaps feature's delegation hook, or
   // directly when swaps is absent): take over when the ark balance can
   // plausibly cover it, else decline so the Boltz path handles it.
@@ -1614,6 +1651,16 @@ export function arkFeature(ctx) {
     // swaps feature's delegation (its matcher runs first) or directly in
     // builds without the swaps feature.
     startArkLnPay(invoice, meta) { return startArkLnPay(invoice, meta); },
+    // ---- headless seam for the NWC wallet service ----
+    arkPayInvoice(invoice, opts) { return payInvoiceHeadless(invoice, opts); },
+    arkSpendableSat() { const b = arkBalance(); return b ? b.spendableSat : 0; },
+    arkReady() { return arkAvailable(); },
+    async arkMakeInvoice(amountSat, description) {
+      const mgr = await connectArk();
+      const a = await mgr.createLnInvoice(amountSat, description);
+      return { invoice: a.invoice, paymentHash: a.paymentHash, amountSat };
+    },
+    arkMovements() { const s = arkStateNow(); return s ? (s.movements || []) : []; },
     // An npub pasted into Send becomes an ark zap (needs the nostr seam from
     // the sync feature and a connected-able ark). A bolt11 is handled here
     // only in builds without the swaps feature (whose matcher runs first and

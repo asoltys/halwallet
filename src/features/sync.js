@@ -49,6 +49,13 @@ export function installSyncWallet(wallet) {
       this.nostr.setRelays(sync.relays);
       return this.nostr.publishEvent(partial);
     },
+    // Publish an event signed by another key (the NWC wallet service keys).
+    async nostrPublishSigned(evt) {
+      const sync = getSyncConfig();
+      if (this.offline || !sync.enabled) return null;
+      this.nostr.setRelays(sync.relays);
+      return this.nostr.publishSigned(evt);
+    },
     async nostrFetch(filter, maxWait) {
       const sync = getSyncConfig();
       if (this.offline || !sync.enabled) return [];
