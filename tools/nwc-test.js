@@ -14,6 +14,11 @@ globalThis.localStorage = { getItem:k=>k in store?store[k]:null, setItem:(k,v)=>
 
 let subHandler = null;
 const published = [];
+// fake relay transport: capture the subscription handler and any replies
+const nwcTransport = {
+  subscribe: (relays, filter, on) => { subHandler = on; return () => { subHandler = null; }; },
+  publish: async (relays, evt) => { published.push(evt); return true; },
+};
 let paid = [];
 const wallet = {
   watchOnly: false,
@@ -31,7 +36,7 @@ const hooks = {
   arkMovements: () => ([{ type:'ln-send', status:'complete', amountSat: 25, ts: Date.now(), invoice:'lnbc250n1', preimage:'ef'.repeat(32) }]),
 };
 const ctx = { h:()=>null, ui:{}, render:()=>{}, wallet, hook:(n,...a)=>hooks[n]?hooks[n](...a):null,
-  fmtAmount:(n)=>String(n), unitLabel:()=>'sats', copyBtn:()=>null, toast:()=>{} };
+  fmtAmount:(n)=>String(n), unitLabel:()=>'sats', copyBtn:()=>null, toast:()=>{}, nwcTransport };
 
 const f = nwcFeature(ctx);
 f.init();

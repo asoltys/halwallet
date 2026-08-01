@@ -23,6 +23,20 @@ import { base64urlnopad } from '@scure/base';
 // CLOSE-after-EOSE handshake) cleanly, so we never send on a half-closed socket.
 const pool = new SimplePool();
 
+// Subscribe / publish on an explicit relay set, independent of the sync
+// feature's configuration. NWC needs this: the relays it advertises in a
+// connection URI must be exactly the ones it listens on, or a client's
+// request lands somewhere the wallet isn't and it waits forever.
+export function subscribeOn(relays, filter, onEvent) {
+  try {
+    const sub = pool.subscribeMany(relays, [filter], { onevent: onEvent });
+    return () => { try { sub.close(); } catch {} };
+  } catch { return () => {}; }
+}
+export async function publishOn(relays, evt) {
+  try { await Promise.allSettled(pool.publish(relays, evt)); return true; } catch { return false; }
+}
+
 // --- locking a gift to a recipient's Nostr key ---------------------------
 // An npub or 64-hex nostr pubkey → hex, or null if it isn't one.
 // NIP-47 wallet services sign with their own per-connection key and must

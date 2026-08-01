@@ -25,6 +25,7 @@ import { hex } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import {
   nip04, nip44, getPublicKey, finalizeEvent, generateSecretKey,
+  subscribeOn, publishOn,
 } from '../nostr.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
@@ -47,6 +48,9 @@ const errRes = (code, message) => ({ error: { code, message } });
 
 export function nwcFeature(ctx) {
   const { h, ui, render, wallet, hook, fmtAmount, unitLabel, copyBtn, toast } = ctx;
+  // Relay transport, injectable so the protocol can be driven in tests
+  // without a live relay.
+  const { subscribe = subscribeOn, publish = publishOn } = ctx.nwcTransport || {};
 
   // ---- persisted connections -------------------------------------------
   // { id, name, secret (client sk hex), clientPk, servicePk, serviceSk,
@@ -75,10 +79,11 @@ export function nwcFeature(ctx) {
     updateConn(c.id, { spentDate: today, spentToday: spent + sat, lastUsed: Date.now() });
   }
 
-  function relays() {
-    const r = wallet.nostrRelays ? wallet.nostrRelays() : [];
-    return r.length ? r.slice(0, 4) : ['wss://relay.coinos.io'];
-  }
+  // The relays advertised in the URI MUST be the ones we listen on, or a
+  // client will publish its request somewhere we aren't and wait forever.
+  // Deliberately independent of the device-sync relay setting.
+  const NWC_RELAYS = ['wss://relay.coinos.io', 'wss://relay.damus.io', 'wss://nos.lol'];
+  const relays = () => NWC_RELAYS;
 
   // The string the user pastes into another app.
   function uriFor(c) {
@@ -124,7 +129,7 @@ export function nwcFeature(ctx) {
       tags: [['p', c.clientPk], ['encryption', 'nip44_v2 nip04']],
       content: METHODS.join(' '),
     }, sk);
-    return wallet.nostrPublishSigned ? wallet.nostrPublishSigned(evt) : null;
+    return publish(NWC_RELAYS, evt);
   }
 
   const decrypt = (scheme, sk, pk, ct) => (scheme === 'nip44_v2'
@@ -146,7 +151,7 @@ export function nwcFeature(ctx) {
         tags: [['p', ev.pubkey], ['e', ev.id], ['encryption', scheme]],
         content,
       }, sk);
-      await wallet.nostrPublishSigned(evt);
+      await publish(NWC_RELAYS, evt);
     } catch (e) {
       console.warn('nwc: could not reply', e.message);
     }
@@ -262,15 +267,19 @@ export function nwcFeature(ctx) {
   }
   function listen() {
     stop();
-    if (!wallet.nostrSubscribe || wallet.watchOnly) return;
+    if (wallet.watchOnly) return;
     const list = conns();
     if (!list.length) return;
     for (const c of list) {
-      const un = wallet.nostrSubscribe(
+      unsubs.push(subscribe(
+        NWC_RELAYS,
         { kinds: [REQ_KIND], '#p': [c.servicePk], since: nowSec() - MAX_AGE_SEC },
         (ev) => { onRequest(c, ev).catch(() => {}); },
-      );
-      unsubs.push(un);
+      ));
+      // Republish the capability event on every start: a client that can't
+      // find kind 13194 just spins, and a single publish at creation time can
+      // easily have been missed by a relay.
+      publishInfo(c).catch(() => {});
     }
   }
 
