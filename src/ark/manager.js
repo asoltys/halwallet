@@ -103,6 +103,13 @@ export class ArkManager {
     this.psa = hs?.psa;
     this.serverPub = hex.decode(this.info.serverPubkey);
 
+    // Pre-namespacing state can now be proven to belong to this server (the
+    // vtxo wire format names its cosigner), so claim it before deciding.
+    if (!this.state.serverPubkey && this.storage.adopt) {
+      const adopted = this.storage.adopt(this.info.serverPubkey);
+      if (adopted) this.state = adopted;
+    }
+
     // A vtxo is only meaningful against the server that cosigned it. State
     // carried over from a different ASP (a provider switch, or a snapshot
     // adopted from the pre-namespacing key) would show phantom balance and

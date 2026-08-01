@@ -46,15 +46,35 @@ export function installArkWallet(wallet) {
     _arkKey(url) { return this._cacheKey() + ':ark:' + this._arkNs(url); },
     _arkLegacyKey() { return this._cacheKey() + ':ark'; },
     loadArkState(url) {
+      // NB deliberately no fallback to the legacy key: the UI renders from
+      // this before any server is contacted, so returning another ASP's state
+      // here is exactly how you get a phantom balance. Pre-namespacing state
+      // is claimed via adoptArkState() once we know who cosigned it.
       try {
         const cur = localStorage.getItem(this._arkKey(url));
-        if (cur) return JSON.parse(cur);
-        // One-time adoption of pre-namespacing state. The manager verifies the
-        // server pubkey on connect and discards it if it belongs elsewhere,
-        // so a wrong guess here is self-correcting; the legacy key is left in
-        // place so the rightful ASP can still claim it.
-        const legacy = localStorage.getItem(this._arkLegacyKey());
-        return legacy ? JSON.parse(legacy) : null;
+        return cur ? JSON.parse(cur) : null;
+      } catch { return null; }
+    },
+    // Offer up pre-namespacing state, but only to the ASP that actually
+    // cosigned it. Its owner is read from the state's own stamp, or failing
+    // that decoded straight out of a vtxo — the vtxo wire format carries the
+    // server pubkey, so this needs no network call and cannot guess wrong.
+    adoptArkState(serverPubkey, url) {
+      try {
+        const raw = localStorage.getItem(this._arkLegacyKey());
+        if (!raw) return null;
+        const st = JSON.parse(raw);
+        let owner = st.serverPubkey || null;
+        if (!owner) {
+          const v = (st.vtxos || []).find((x) => x.bytes);
+          if (v) { try { owner = decodeVtxo(hex.decode(v.bytes)).serverPubkey; } catch {} }
+        }
+        if (owner && owner !== serverPubkey) return null; // belongs to another ASP
+        if (!owner) return null;                          // can't prove ownership: leave it
+        st.serverPubkey = owner;
+        this.saveArkState(st, url);
+        localStorage.removeItem(this._arkLegacyKey()); // now safely namespaced
+        return st;
       } catch { return null; }
     },
     saveArkState(state, url) {
@@ -218,6 +238,7 @@ export function arkFeature(ctx) {
       account: wallet.account(),
       storage: {
         load: () => wallet.loadArkState(cfg.ark),
+        adopt: (serverPubkey) => wallet.adoptArkState(serverPubkey, cfg.ark),
         // merge-on-save: the MANAGER is authoritative for the state of the
         // vtxos it tracks (its reconcile/spends must persist), so its state
         // is the first arg and wins; storage only contributes vtxos the
