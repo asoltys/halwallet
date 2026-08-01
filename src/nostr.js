@@ -27,9 +27,9 @@ const pool = new SimplePool();
 // feature's configuration. NWC needs this: the relays it advertises in a
 // connection URI must be exactly the ones it listens on, or a client's
 // request lands somewhere the wallet isn't and it waits forever.
-export function subscribeOn(relays, filter, onEvent) {
+export function subscribeOn(relays, filter, onEvent, extra = {}) {
   try {
-    const sub = pool.subscribeMany(relays, [filter], { onevent: onEvent });
+    const sub = pool.subscribeMany(relays, [filter], { onevent: onEvent, ...extra });
     return () => { try { sub.close(); } catch {} };
   } catch { return () => {}; }
 }

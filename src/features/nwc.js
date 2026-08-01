@@ -212,13 +212,20 @@ export function nwcFeature(ctx) {
   let lastSeen = null;       // last request we accepted, ditto
 
   async function onRequest(c, ev) {
-    if (ev.kind !== REQ_KIND) return;
-    if (handled.has(ev.id)) return;
+    // TEMP instrumentation for the Amethyst-spinner bug: every event that
+    // reaches this handler logs, and every silent guard names itself.
+    console.log(`nwc: onRequest ev=${ev.id.slice(0, 8)} kind=${ev.kind} age=${nowSec() - ev.created_at}s from=${ev.pubkey.slice(0, 8)} conn=${c.id}`);
+    if (ev.kind !== REQ_KIND) return console.log('nwc: guard drop — wrong kind');
+    if (handled.has(ev.id)) return console.log('nwc: guard drop — already handled', ev.id.slice(0, 8));
     handled.add(ev.id);
     if (handled.size > 500) handled.clear();
-    if (ev.created_at && nowSec() - ev.created_at > MAX_AGE_SEC) return;
+    if (ev.created_at && nowSec() - ev.created_at > MAX_AGE_SEC) {
+      return console.log('nwc: guard drop — too old', nowSec() - ev.created_at, 's');
+    }
     // only the client this connection was issued to
-    if (ev.pubkey !== c.clientPk) return;
+    if (ev.pubkey !== c.clientPk) {
+      return console.log(`nwc: guard drop — pubkey mismatch got=${ev.pubkey.slice(0, 8)} want=${c.clientPk.slice(0, 8)}`);
+    }
 
     const scheme = ev.tags?.find((x) => x[0] === 'encryption')?.[1] === 'nip44_v2'
       ? 'nip44_v2' : 'nip04';
@@ -332,20 +339,30 @@ export function nwcFeature(ctx) {
   // ---- lifecycle --------------------------------------------------------
 
   let unsubs = [];
+  let listenGen = 0; // TEMP instrumentation: which listen() generation is live
   function stop() {
+    if (unsubs.length) console.log(`nwc: stop() closing ${unsubs.length} sub(s) from gen ${listenGen}`);
     for (const u of unsubs) { try { u(); } catch {} }
     unsubs = [];
   }
   function listen() {
     stop();
+    listenGen++;
+    const gen = listenGen;
     if (wallet.watchOnly) return;
     const list = conns();
+    console.log(`nwc: listen() gen ${gen} — ${list.length} connection(s)`);
     if (!list.length) return;
     for (const c of list) {
+      console.log(`nwc: gen ${gen} subscribing for conn=${c.id} service=${c.servicePk.slice(0, 8)}`);
       unsubs.push(subscribe(
         NWC_RELAYS,
         { kinds: [REQ_KIND], '#p': [c.servicePk], since: nowSec() - MAX_AGE_SEC },
-        (ev) => { onRequest(c, ev).catch(() => {}); },
+        (ev) => {
+          console.log(`nwc: gen ${gen} event arrived ev=${ev.id.slice(0, 8)} for conn=${c.id}`);
+          onRequest(c, ev).catch((e) => console.error('nwc: onRequest threw', e));
+        },
+        { onclose: (reasons) => console.log(`nwc: gen ${gen} sub CLOSED for conn=${c.id}:`, JSON.stringify(reasons)) },
       ));
       // Republish the capability event on every start: a client that can't
       // find kind 13194 just spins, and a single publish at creation time can
