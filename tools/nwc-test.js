@@ -92,6 +92,20 @@ r = await request('pay_invoice', { invoice: 'lnbc50u1p4xu8whsp5jjnp3jzhjrgp3992d
 check('over-limit payment refused', r?.error?.code === 'QUOTA_EXCEEDED', JSON.stringify(r?.error));
 check('nothing was paid', paid.length === 0);
 
+console.log('\n[cumulative spend]');
+// a real 21-sat invoice (long expired — the mock seam never pays anything);
+// two payments must ACCUMULATE: recordSpend once restarted from a stale
+// snapshot of the connection, so only the last payment ever counted
+const INV21 = 'lnbc210n1p4xuk2wpp506wkjr0xk3677nu7je9c55vq4lzlkyd0ztcq2mlvumap0zpe3alqhp5ppg7g8qwpdv34hgpymhw446y37duzwcn388yp3pw05n7tlulyn2scqzysxqrrssrzjqv3dpepm8kfdxrk3sl6wzqdf49s9c0h9ljtjrek6c08r6aejlwcnur0dwyqqvusqqqqqqqlgqqqq86qqjqsp5dc0jrq94ke2f4dzx8c2dwqsc6a65eu56dt2j599l7kxp7q2hs6zq9qxpqysgqdjeft8gkl0uga24e502pvcp5vgsfap3dxuutcpgfaj33fffuqs9psmnrklshp3fg3py7vlnzsea90vj9ahqq5t9xuy67u3pk0sfnheqpn95f2g';
+r = await request('pay_invoice', { invoice: INV21 });
+check('first payment succeeds', !!r?.result?.preimage, JSON.stringify(r?.error || r));
+r = await request('pay_invoice', { invoice: INV21 });
+check('second payment succeeds', !!r?.result?.preimage, JSON.stringify(r?.error || r));
+{
+  const spent = JSON.parse(store['fs:nwc']).conns.find((x) => x.id === 'test1').spentToday;
+  check('spend accumulates across payments', spent === 52, String(spent)); // 2 × (25 + 1 fee) from the mock seam
+}
+
 console.log('\n[nip04 fallback]');
 r = await request('get_balance', {}, 'nip04');
 check('nip04 request answered', r?.result?.balance === 42000*1000);

@@ -78,6 +78,10 @@ export function nwcFeature(ctx) {
   function recordSpend(c, sat) {
     const { today, spent } = spendRoom(c);
     updateConn(c.id, { spentDate: today, spentToday: spent + sat, lastUsed: Date.now() });
+    // Publish the snapshot: budgets only bind across devices if the spend
+    // travels — and the payment just changed the ark state (vtxos, movement)
+    // that the user's other devices display.
+    try { wallet.saveCache(); } catch {}
   }
 
   // The relays advertised in the URI MUST be the ones we listen on, or a
@@ -226,6 +230,13 @@ export function nwcFeature(ctx) {
     if (ev.pubkey !== c.clientPk) {
       return console.log(`nwc: guard drop — pubkey mismatch got=${ev.pubkey.slice(0, 8)} want=${c.clientPk.slice(0, 8)}`);
     }
+    // Re-resolve the connection from stored state: the closure's `c` is a
+    // snapshot from listen() time, so budget math computed from it restarts
+    // from a stale value on every request (spends never accumulate), and a
+    // connection revoked on another device would keep being served here.
+    const cur = (load().conns || []).find((x) => x.id === c.id);
+    if (!cur || cur.revoked) return console.log('nwc: guard drop — connection gone or revoked', c.id);
+    c = cur;
 
     const scheme = ev.tags?.find((x) => x[0] === 'encryption')?.[1] === 'nip44_v2'
       ? 'nip44_v2' : 'nip04';
