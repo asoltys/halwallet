@@ -295,7 +295,10 @@ const BRIDGE_PRESETS_BY_NET = {
     { id: 'custom', label: 'Custom…', url: '' },
   ],
 };
-const BRIDGE_DEFAULT = { mainnet: 'off', testnet: 'off', signet: 'off', mutinynet: 'off', regtest: 'off' };
+// Mainnet defaults to the coinos bridge: small bolt11 sends (zaps) are
+// unroutable through the ASP path, whose CLN fee budget is a fraction of the
+// ASP's own 3-sat minimum fee. The bridge runs open (no token) for this.
+const BRIDGE_DEFAULT = { mainnet: 'coinos', testnet: 'off', signet: 'off', mutinynet: 'off', regtest: 'off' };
 const BRIDGE_KEY = 'btc-wallet-ark-bridge';         // selected preset id, per network
 const BRIDGE_CUSTOM_KEY = 'btc-wallet-ark-bridge-custom'; // custom url, per network
 const BRIDGE_TOKEN_KEY = 'btc-wallet-ark-bridge-token';   // access token, per network
