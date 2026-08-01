@@ -114,10 +114,59 @@ export function nwcFeature(ctx) {
     };
     st.conns.push(c);
     save(st);
+    try { wallet.saveCache(); } catch {} // share it with the user's other devices
     publishInfo(c).catch(() => {});
     listen();
     return c;
   }
+
+  // Connections ride the encrypted device-sync snapshot, so a connection made
+  // on the phone can be answered by whichever device happens to be open. The
+  // snapshot is nip44-encrypted to a key derived from the seed — the same
+  // channel that already carries ark vtxo bytes and gift secrets — so the
+  // service keys travel no less safely than the coins do.
+  //
+  // Merge is a union by id and REVOCATION WINS: a connection revoked on one
+  // device must never be resurrected by an older snapshot from another.
+  function mergeConns(a = [], b = []) {
+    const by = new Map();
+    for (const c of [...a, ...b]) {
+      const prev = by.get(c.id);
+      if (!prev) { by.set(c.id, { ...c }); continue; }
+      by.set(c.id, {
+        ...prev, ...c,
+        revoked: !!(prev.revoked || c.revoked),
+        // keep the highest spend seen for the day so a stale device can't
+        // hand a connection back its budget
+        spentDate: (c.spentDate === prev.spentDate) ? c.spentDate : (c.spentDate || prev.spentDate),
+        spentToday: (c.spentDate === prev.spentDate)
+          ? Math.max(prev.spentToday || 0, c.spentToday || 0)
+          : (c.spentToday || prev.spentToday || 0),
+        lastUsed: Math.max(prev.lastUsed || 0, c.lastUsed || 0),
+      });
+    }
+    return [...by.values()];
+  }
+
+  // sync is an optional feature: a minimal build has no cache extensions
+  if (wallet.registerCacheExtension) wallet.registerCacheExtension({
+    mergeAlways: true, // the merge is commutative, so older snapshots are fine
+    save: () => {
+      const list = (load().conns || []);
+      return list.length ? { nwcConns: list } : {};
+    },
+    load: (d) => {
+      if (!Array.isArray(d.nwcConns)) return;
+      const st = load();
+      const merged = mergeConns(st.conns || [], d.nwcConns);
+      // only write (and re-listen) when something actually changed
+      if (JSON.stringify(merged) === JSON.stringify(st.conns || [])) return;
+      st.conns = merged;
+      save(st);
+      listen();
+      render();
+    },
+  });
 
   // ---- protocol ---------------------------------------------------------
 
@@ -299,7 +348,9 @@ export function nwcFeature(ctx) {
           h('div', { class: 'row between' },
             h('span', {}, c.name),
             h('span', { class: 'linklike small', onClick: () => {
-              updateConn(c.id, { revoked: true }); listen(); render();
+              updateConn(c.id, { revoked: true }); listen();
+              try { wallet.saveCache(); } catch {} // propagate the revocation
+              render();
               toast(t('nwcRevoked', { name: c.name }));
             } }, t('nwcRevoke'))),
           h('div', { class: 'small faint' },

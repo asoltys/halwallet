@@ -27,6 +27,8 @@ const wallet = {
   nostrRelays: () => ['wss://relay.example'],
   nostrSubscribe: (filter, on) => { subHandler = on; return () => { subHandler = null; }; },
   nostrPublishSigned: async (evt) => { published.push(evt); return true; },
+  saveCache: () => {},
+  registerCacheExtension: (ext) => { wallet.__ext = ext; },
 };
 const hooks = {
   arkReady: () => true,
@@ -113,5 +115,38 @@ await subHandler(ev);
 await new Promise(r=>setTimeout(r,300));
 check('request from an unauthorized key is ignored', published.length === before);
 
+
+// ---------------------------------------------------------------------------
+console.log('\n[device sync of connections]');
+{
+  const ext = wallet.__ext;
+  check('feature registered a cache extension', !!ext);
+  // a connection made on another device arrives in a snapshot
+  const remote = { id:'phone1', name:'Phone app', servicePk:'aa'.repeat(32), serviceSk:'bb'.repeat(32),
+    clientPk:'cc'.repeat(32), secret:'dd'.repeat(32), maxSat:500, dailySat:1000, revoked:false, created:1 };
+  ext.load({ nwcConns: [remote] });
+  const after = JSON.parse(store['fs:nwc']).conns;
+  check('remote connection adopted', after.some(c => c.id === 'phone1'));
+  check('local connection kept', after.some(c => c.id === 'test1'));
+
+  // revoke locally, then receive a STALE snapshot that still says active
+  const st = JSON.parse(store['fs:nwc']);
+  st.conns.find(c => c.id === 'phone1').revoked = true;
+  store['fs:nwc'] = JSON.stringify(st);
+  ext.load({ nwcConns: [remote] }); // stale: revoked:false
+  const post = JSON.parse(store['fs:nwc']).conns.find(c => c.id === 'phone1');
+  check('revocation survives a stale snapshot', post.revoked === true);
+
+  // spend accounting must not be handed back by a stale device
+  const today = new Date().toISOString().slice(0,10);
+  const st2 = JSON.parse(store['fs:nwc']);
+  Object.assign(st2.conns.find(c => c.id === 'test1'), { spentDate: today, spentToday: 900 });
+  store['fs:nwc'] = JSON.stringify(st2);
+  ext.load({ nwcConns: [{ ...st2.conns.find(c=>c.id==='test1'), spentToday: 100 }] });
+  const t1 = JSON.parse(store['fs:nwc']).conns.find(c => c.id === 'test1');
+  check('higher same-day spend wins', t1.spentToday === 900, String(t1.spentToday));
+
+  check('what we publish carries the connections', Array.isArray(ext.save().nwcConns));
+}
 console.log(ok ? '\n✅ NWC service behaves' : '\n❌ failed');
 process.exit(ok?0:1);
