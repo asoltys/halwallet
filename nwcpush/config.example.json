@@ -1,0 +1,8 @@
+{
+  "port": 8797,
+  "relays": ["wss://relay.coinos.io", "wss://relay.damus.io", "wss://nos.lol"],
+  "vapid": { "subject": "mailto:you@example.com", "publicKey": "REPLACE", "privateKey": "REPLACE" },
+  "stateFile": "./data/registrations.json",
+  "maxPubkeysPerDevice": 20,
+  "staleDays": 30
+}
