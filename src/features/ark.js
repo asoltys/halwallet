@@ -1661,6 +1661,12 @@ export function arkFeature(ctx) {
       return { invoice: a.invoice, paymentHash: a.paymentHash, amountSat };
     },
     arkMovements() { const s = arkStateNow(); return s ? (s.movements || []) : []; },
+    // endpoints + server identity for the NWC pouch record
+    arkPouchContext() {
+      const cfg = getArkConfig();
+      if (!cfg || !ark || !ark.info) return null;
+      return { arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(), serverPubkey: ark.info.serverPubkey };
+    },
     // An npub pasted into Send becomes an ark zap (needs the nostr seam from
     // the sync feature and a connected-able ark). A bolt11 is handled here
     // only in builds without the swaps feature (whose matcher runs first and

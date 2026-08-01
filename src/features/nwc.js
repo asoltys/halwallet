@@ -30,6 +30,7 @@ import {
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { getNetwork } from '../api.js';
+import { buildPouch, savePouch, clearPouch, pouchKey } from '../nwc-pouch.js';
 import { maybeBolt11 } from '../ark/lightning.js';
 
 const REQ_KIND = 23194;
@@ -332,6 +333,80 @@ export function nwcFeature(ctx) {
     }
   }
 
+  // ---- background wake-ups ----------------------------------------------
+  // The notifier can't decrypt anything; it only learns which service pubkeys
+  // to watch. When a request arrives it pushes, the service worker surfaces
+  // it (or nudges an open window), and hal answers from the relay.
+  const NOTIFIER = 'https://nwcpush.coinos.io';
+
+  const b64ToBytes = (b64) => {
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  };
+
+  async function enableBackground() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      throw new Error('this browser cannot receive push');
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('notifications were not allowed');
+    const reg = await navigator.serviceWorker.ready;
+    const { publicKey } = await (await fetch(`${NOTIFIER}/vapid`)).json();
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: b64ToBytes(publicKey),
+    });
+    const list = conns();
+    const r = await fetch(`${NOTIFIER}/register`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ subscription: sub.toJSON(), servicePubkeys: list.map((c) => c.servicePk) }),
+    });
+    if (!r.ok) throw new Error(`notifier refused: ${r.status}`);
+    const st = load(); st.background = true; save(st);
+    await writePouch();
+    return true;
+  }
+
+  async function disableBackground() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await fetch(`${NOTIFIER}/register`, {
+          method: 'DELETE', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ endpoint: sub.endpoint }),
+        }).catch(() => {});
+        await sub.unsubscribe().catch(() => {});
+      }
+    } catch {}
+    const st = load(); st.background = false; save(st);
+    // no background answering means no reason to keep spendable keys where a
+    // worker can read them
+    try { await clearPouch(wallet._cacheKey()); } catch {}
+  }
+
+  // Mirror just enough for a future worker-side responder: the connections'
+  // service keys and the ASP endpoints. No pouch coins are moved here — the
+  // funding UI comes with the spend path.
+  async function writePouch() {
+    if (!load().background) return;
+    const cfg = hook('arkPouchContext');
+    if (!cfg) return;
+    try {
+      await savePouch(wallet._cacheKey(), buildPouch({
+        ...cfg, vtxos: [], account: wallet.account(), connections: conns(),
+      }));
+    } catch (e) { console.warn('nwc: could not write pouch', e.message); }
+  }
+
+  // An open window handles the request itself; the worker just nudges it.
+  if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener('message', (ev) => {
+      if (ev.data?.type === 'nwc-wake') listen();
+    });
+  }
+
   // ---- UI ---------------------------------------------------------------
 
   function nwcCard() {
@@ -362,6 +437,17 @@ export function nwcFeature(ctx) {
                 copyBtn(uriFor(c), t('nwcCopy')))
             : h('button', { class: 'btn-sm', onClick: () => { ui.nwcShow = c.id; render(); } }, t('nwcShow')));
       }),
+      list.length
+        ? h('div', { class: 'row between', style: 'border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:8px' },
+            h('span', { class: 'small' }, t('nwcBackground')),
+            h('button', { class: 'btn-sm', onClick: async () => {
+              try {
+                if (load().background) { await disableBackground(); toast(t('nwcBackgroundOff')); }
+                else { await enableBackground(); toast(t('nwcBackgroundOn')); }
+              } catch (e) { toast(e.message); }
+              render();
+            } }, load().background ? t('nwcOn') : t('nwcOff')))
+        : null,
       st
         ? h('div', { class: 'col', style: 'gap:6px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:8px' },
             h('input', { type: 'text', placeholder: t('nwcAppName'), value: st.name,

@@ -60,6 +60,41 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// NWC push: the notifier wakes us when a wallet-connect request arrives.
+// This handler deliberately does NOT spend. It surfaces the request so the
+// user can open Hal, which then answers it from the relay. Auto-answering
+// from the worker needs the pouch spend path and is a separate step.
+self.addEventListener('push', (e) => {
+  let data = {};
+  try { data = e.data ? e.data.json() : {}; } catch (_) {}
+  if (data.type !== 'nwc') return;
+  e.waitUntil((async () => {
+    // If a window is already open it can handle this itself — tell it, and
+    // stay quiet rather than nagging the user.
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (clients.length) {
+      for (const c of clients) c.postMessage({ type: 'nwc-wake', servicePubkey: data.servicePubkey });
+      return;
+    }
+    await self.registration.showNotification('Payment request', {
+      body: 'An app is asking your wallet to pay. Open Hal to approve.',
+      icon: 'icon-192.png', badge: 'icon-192.png',
+      tag: 'nwc-' + (data.servicePubkey || 'req'), renotify: false,
+      data: { url: './' },
+    });
+  })());
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const open = all.find((c) => 'focus' in c);
+    if (open) return open.focus();
+    if (self.clients.openWindow) return self.clients.openWindow('./');
+  })());
+});
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
