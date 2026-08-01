@@ -554,6 +554,11 @@ export function arkFeature(ctx) {
       throw new Error(`amount ${dec.amountSat} exceeds the limit of ${maxAmountSat} sat`);
     }
     const mgr = await connectArk();
+    // The sync merge is additive, so a vtxo spent on another device can sit
+    // in local state looking spendable until someone checks. The interactive
+    // send path reconciles on intent; this headless path must too, or an NWC
+    // payment picks the stale coin and the ASP rejects it ("state: spent").
+    await mgr.reconcile().catch(() => {});
 
     // 1. the bridge, when one is configured and can take it
     try {
