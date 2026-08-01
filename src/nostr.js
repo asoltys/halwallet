@@ -29,7 +29,10 @@ const pool = new SimplePool();
 // request lands somewhere the wallet isn't and it waits forever.
 export function subscribeOn(relays, filter, onEvent, extra = {}) {
   try {
-    const sub = pool.subscribeMany(relays, [filter], { onevent: onEvent, ...extra });
+    // nostr-tools ≥2.23 takes a single filter object here; wrapping it in an
+    // array serializes as ["REQ",id,[{...}]] which every relay rejects with
+    // "provided filter is not an object" — and the subscription dies silently.
+    const sub = pool.subscribeMany(relays, filter, { onevent: onEvent, ...extra });
     return () => { try { sub.close(); } catch {} };
   } catch { return () => {}; }
 }
@@ -247,7 +250,8 @@ export class NostrSync {
   // Live subscription; returns an unsubscribe function.
   subscribeEvents(filter, onEvent) {
     try {
-      const sub = pool.subscribeMany(this.relays, [filter], { onevent: onEvent });
+      // single filter object — see subscribeOn for the array-wrapping trap
+      const sub = pool.subscribeMany(this.relays, filter, { onevent: onEvent });
       return () => { try { sub.close(); } catch {} };
     } catch { return () => {}; }
   }

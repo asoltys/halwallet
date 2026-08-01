@@ -79,8 +79,10 @@ function resubscribe() {
   lastResub = Date.now();
   sub = pool.subscribeMany(
     RELAYS,
-    // only live traffic: a replayed old request must not wake devices
-    [{ kinds: [REQ_KIND], '#p': pks, since: Math.floor(Date.now() / 1000) }],
+    // only live traffic: a replayed old request must not wake devices.
+    // NOTE: nostr-tools ≥2.23 wants a single filter object, NOT an array —
+    // an array serializes as an invalid REQ that relays reject with CLOSED.
+    { kinds: [REQ_KIND], '#p': pks, since: Math.floor(Date.now() / 1000) },
     {
       onevent: (ev) => {
         const target = ev.tags?.find((t) => t[0] === 'p')?.[1];
