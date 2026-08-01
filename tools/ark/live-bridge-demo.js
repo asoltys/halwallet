@@ -6,6 +6,10 @@
 //                     bridge claims with the preimage
 //
 // Usage: BRIDGE_TOKEN=... bun tools/ark/live-bridge-demo.js
+//
+// Runs entirely over public HTTPS. NB the ASP hostname needs a Cloudflare
+// managed-WAF skip for POSTs under /bark_server. and /mailbox_server. —
+// binary protobuf trips signature rules above ~1.5KB.
 
 import { execSync } from 'node:child_process';
 import { generateMnemonic, mnemonicToSeedSync } from '@scure/bip39';
