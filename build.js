@@ -144,11 +144,13 @@ export async function buildSpWorker({ minify = true } = {}) {
 }
 
 // Optional-feature selection: HAL_FEATURES is a comma list of enabled
-// features (gifts,swaps,ark,zaps,sp). Unset means all; "none"/"" means a minimal
+// features (gifts,swaps,ark,zaps,sp,nwc). Unset means all; "none"/"" means a minimal
 // on-chain-only wallet. A build plugin swaps src/features/index.js for a
 // generated module that only imports the enabled features, so a disabled
 // feature's code (and its network endpoints) never enters the bundle.
-const ALL_FEATURES = { gifts: 'giftsFeature', swaps: 'swapsFeature', ark: 'arkFeature', zaps: 'zapsFeature', sp: 'spFeature', sync: 'syncFeature' };
+// NB order matters and must match src/features/index.js — nwc sits after ark
+// because it drives ark's headless pay/balance seam.
+const ALL_FEATURES = { gifts: 'giftsFeature', swaps: 'swapsFeature', ark: 'arkFeature', zaps: 'zapsFeature', sp: 'spFeature', nwc: 'nwcFeature', sync: 'syncFeature' };
 
 export function enabledFeatures(spec = process.env.HAL_FEATURES) {
   if (spec == null) return Object.keys(ALL_FEATURES);
