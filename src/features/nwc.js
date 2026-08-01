@@ -339,6 +339,7 @@ export function nwcFeature(ctx) {
   // ---- lifecycle --------------------------------------------------------
 
   let unsubs = [];
+  const infoPublished = new Set(); // connection ids whose 13194 went out this session
   let listenGen = 0; // TEMP instrumentation: which listen() generation is live
   function stop() {
     if (unsubs.length) console.log(`nwc: stop() closing ${unsubs.length} sub(s) from gen ${listenGen}`);
@@ -364,10 +365,16 @@ export function nwcFeature(ctx) {
         },
         { onclose: (reasons) => console.log(`nwc: gen ${gen} sub CLOSED for conn=${c.id}:`, JSON.stringify(reasons)) },
       ));
-      // Republish the capability event on every start: a client that can't
-      // find kind 13194 just spins, and a single publish at creation time can
-      // easily have been missed by a relay.
-      publishInfo(c).catch(() => {});
+      // Republish the capability event once per session per connection: a
+      // client that can't find kind 13194 just spins, and a single publish at
+      // creation time can easily have been missed by a relay. But listen()
+      // re-runs on every sync snapshot and wake, and relays rate-limit
+      // accepted events per IP — repeated republishing eats the budget the
+      // replies need (and once got this IP temp-banned).
+      if (!infoPublished.has(c.id)) {
+        infoPublished.add(c.id);
+        publishInfo(c).catch(() => {});
+      }
     }
   }
 

@@ -37,7 +37,18 @@ export function subscribeOn(relays, filter, onEvent, extra = {}) {
   } catch { return () => {}; }
 }
 export async function publishOn(relays, evt) {
-  try { await Promise.allSettled(pool.publish(relays, evt)); return true; } catch { return false; }
+  try {
+    const results = await Promise.allSettled(pool.publish(relays, evt));
+    // A rejected publish is a relay refusing the event (policy, rate limit,
+    // ban). Swallowing that silently once hid a relay-side rejection behind
+    // what looked like a client bug — always say which relay refused and why.
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn(`nostr: publish kind ${evt.kind} refused by ${relays[i]}:`, r.reason?.message || r.reason);
+      }
+    });
+    return results.some((r) => r.status === 'fulfilled');
+  } catch { return false; }
 }
 
 // --- locking a gift to a recipient's Nostr key ---------------------------
