@@ -45,6 +45,17 @@ export function installArkWallet(wallet) {
     },
     _arkKey(url) { return this._cacheKey() + ':ark:' + this._arkNs(url); },
     _arkLegacyKey() { return this._cacheKey() + ':ark'; },
+    // Who really cosigned this state's coins? A vtxo names its server in its
+    // own bytes, which is cryptographic fact — unlike the stamp, which is
+    // just something we wrote and could have written wrongly.
+    _arkVtxoOwner(st) {
+      const v = (st?.vtxos || []).find((x) => x.bytes);
+      if (!v) return null;
+      try { return decodeVtxo(hex.decode(v.bytes)).serverPubkey; } catch { return null; }
+    },
+    // Park state under the server that actually owns it, until the URL for
+    // that server is selected and can adopt it.
+    _arkHoldKey(pubkey) { return this._cacheKey() + ':ark:pk:' + String(pubkey).slice(0, 16); },
     loadArkState(url) {
       // NB deliberately no fallback to the legacy key: the UI renders from
       // this before any server is contacted, so returning another ASP's state
@@ -52,7 +63,23 @@ export function installArkWallet(wallet) {
       // is claimed via adoptArkState() once we know who cosigned it.
       try {
         const cur = localStorage.getItem(this._arkKey(url));
-        return cur ? JSON.parse(cur) : null;
+        if (!cur) return null;
+        const st = JSON.parse(cur);
+        // Self-repair: an earlier build could stamp state with whichever
+        // server happened to be connected, filing one ASP's coins under
+        // another. The vtxos themselves settle it — if they disagree with the
+        // stamp, this state is misfiled. Move it to its real owner and show
+        // nothing here.
+        const owner = this._arkVtxoOwner(st);
+        if (owner && st.serverPubkey && owner !== st.serverPubkey) {
+          st.serverPubkey = owner;
+          try {
+            localStorage.setItem(this._arkHoldKey(owner), JSON.stringify(st));
+            localStorage.removeItem(this._arkKey(url));
+          } catch {}
+          return null;
+        }
+        return st;
       } catch { return null; }
     },
     // Offer up pre-namespacing state, but only to the ASP that actually
@@ -61,6 +88,14 @@ export function installArkWallet(wallet) {
     // server pubkey, so this needs no network call and cannot guess wrong.
     adoptArkState(serverPubkey, url) {
       try {
+        // state parked by the self-repair above belongs to exactly one server
+        const held = localStorage.getItem(this._arkHoldKey(serverPubkey));
+        if (held) {
+          const st = JSON.parse(held);
+          this.saveArkState(st, url);
+          localStorage.removeItem(this._arkHoldKey(serverPubkey));
+          return st;
+        }
         const raw = localStorage.getItem(this._arkLegacyKey());
         if (!raw) return null;
         const st = JSON.parse(raw);
