@@ -115,7 +115,15 @@ export class ArkManager {
     // adopted from the pre-namespacing key) would show phantom balance and
     // try to resume actions this server has never heard of — so drop it.
     // Nothing is lost: the other ASP's state lives under its own key.
-    if (this.state.serverPubkey && this.state.serverPubkey !== this.info.serverPubkey) {
+    // Decisive check: whatever any stamp claims, a vtxo names its own
+    // cosigner. If these coins were signed by a different server they are not
+    // spendable here and must not be shown.
+    const coinOwner = (() => {
+      const v = (this.state.vtxos || []).find((x) => x.bytes);
+      try { return v ? decodeVtxo(hex.decode(v.bytes)).serverPubkey : null; } catch { return null; }
+    })();
+    if ((this.state.serverPubkey && this.state.serverPubkey !== this.info.serverPubkey)
+        || (coinOwner && coinOwner !== this.info.serverPubkey)) {
       this.state = EMPTY_STATE();
     }
     if (!this.state.serverPubkey) {

@@ -207,9 +207,22 @@ export function arkFeature(ctx) {
       if (!d.arkState) return;
       const cfg = getArkConfig();
       if (!cfg) return;
-      // only merge a snapshot from the same ASP — another server's vtxos are
-      // not ours to show (older snapshots carry no tag; accept those)
       if (d.arkServer && d.arkServer !== wallet._arkNs(cfg.ark)) return;
+      // A snapshot from an older build carries no tag, so the tag alone can't
+      // be trusted — ask the vtxos who cosigned them. If they belong to a
+      // different ASP (or we can't yet prove they belong to this one), park
+      // the snapshot under its real owner instead of merging it in. Merging
+      // blind is exactly how another server's balance appears here.
+      const owner = d.arkState.serverPubkey || wallet._arkVtxoOwner(d.arkState);
+      const mine = (ark && ark.info && ark.info.serverPubkey)
+        || (wallet.loadArkState(cfg.ark) || {}).serverPubkey || null;
+      if (owner && owner !== mine) {
+        try {
+          localStorage.setItem(wallet._arkHoldKey(owner),
+            JSON.stringify({ ...d.arkState, serverPubkey: owner }));
+        } catch {}
+        return;
+      }
       const local = wallet.loadArkState(cfg.ark);
       const merged = mergeArkStates(local, d.arkState);
       wallet.saveArkState(merged, cfg.ark);
