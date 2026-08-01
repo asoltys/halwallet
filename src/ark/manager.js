@@ -54,6 +54,7 @@ import { validateVtxo, VtxoValidationError } from './validate.js';
 
 const EMPTY_STATE = () => ({
   v: 1,
+  serverPubkey: null, // which ASP this state belongs to (guarded in init)
   mailboxCheckpoint: 0,
   nextKeyIndex: 1, // 0 is the receive-address key
   vtxos: [],       // { id, bytes, keyIndex, amountSat, expiryHeight, state }
@@ -101,6 +102,19 @@ export class ArkManager {
     const hs = await handshake(this.arkUrl).catch(() => null);
     this.psa = hs?.psa;
     this.serverPub = hex.decode(this.info.serverPubkey);
+
+    // A vtxo is only meaningful against the server that cosigned it. State
+    // carried over from a different ASP (a provider switch, or a snapshot
+    // adopted from the pre-namespacing key) would show phantom balance and
+    // try to resume actions this server has never heard of — so drop it.
+    // Nothing is lost: the other ASP's state lives under its own key.
+    if (this.state.serverPubkey && this.state.serverPubkey !== this.info.serverPubkey) {
+      this.state = EMPTY_STATE();
+    }
+    if (!this.state.serverPubkey) {
+      this.state.serverPubkey = this.info.serverPubkey;
+      this._save();
+    }
     return this;
   }
 

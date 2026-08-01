@@ -33,12 +33,32 @@ export function installArkWallet(wallet) {
     // ---- Ark support -------------------------------------------------------
     // Persisted ArkManager state (vtxos, in-flight action checkpoints, movement
     // history — no secrets: vtxo keys are re-derived from the seed).
-    _arkKey() { return this._cacheKey() + ':ark'; },
-    loadArkState() {
-      try { return JSON.parse(localStorage.getItem(this._arkKey()) || 'null'); } catch { return null; }
+    // Ark state is per WALLET *and* per ASP: vtxos are cosigned by one
+    // specific server, so showing another server's coins (or resuming its
+    // in-flight board) is meaningless and alarming. Switching providers must
+    // therefore switch state, and switching back must restore it.
+    _arkNs(url) {
+      // short, stable id for an ASP endpoint
+      let h = 5381;
+      for (const c of String(url || '')) h = ((h * 33) ^ c.charCodeAt(0)) >>> 0;
+      return h.toString(36);
     },
-    saveArkState(state) {
-      try { localStorage.setItem(this._arkKey(), JSON.stringify(state)); } catch {}
+    _arkKey(url) { return this._cacheKey() + ':ark:' + this._arkNs(url); },
+    _arkLegacyKey() { return this._cacheKey() + ':ark'; },
+    loadArkState(url) {
+      try {
+        const cur = localStorage.getItem(this._arkKey(url));
+        if (cur) return JSON.parse(cur);
+        // One-time adoption of pre-namespacing state. The manager verifies the
+        // server pubkey on connect and discards it if it belongs elsewhere,
+        // so a wrong guess here is self-correcting; the legacy key is left in
+        // place so the rightful ASP can still claim it.
+        const legacy = localStorage.getItem(this._arkLegacyKey());
+        return legacy ? JSON.parse(legacy) : null;
+      } catch { return null; }
+    },
+    saveArkState(state, url) {
+      try { localStorage.setItem(this._arkKey(url), JSON.stringify(state)); } catch {}
     },
   });
 }
@@ -54,7 +74,7 @@ export function slimArkForSync(s) {
   if (!s) return null;
   const HEAVY = ['bytes', 'destBytes', 'changeBytes', 'vtxoBytes', 'txHex', 'fundingTxHex', 'outputVtxos'];
   return {
-    v: s.v, mailboxCheckpoint: s.mailboxCheckpoint, nextKeyIndex: s.nextKeyIndex, receiveAckTs: s.receiveAckTs,
+    v: s.v, serverPubkey: s.serverPubkey, mailboxCheckpoint: s.mailboxCheckpoint, nextKeyIndex: s.nextKeyIndex, receiveAckTs: s.receiveAckTs,
     vtxos: (s.vtxos || []).map((v) => v.state === 'spent'
       ? { id: v.id, amountSat: v.amountSat, state: 'spent', keyIndex: v.keyIndex, expiryHeight: v.expiryHeight }
       : v),
@@ -73,6 +93,8 @@ export function slimArkForSync(s) {
 export function mergeArkStates(a, b) {
   if (!a) return b;
   if (!b) return a;
+  // never fuse state from two different ASPs
+  if (a.serverPubkey && b.serverPubkey && a.serverPubkey !== b.serverPubkey) return a;
   const out = { ...a };
   // ADDITIVE union only: bring in vtxos this device is missing (the whole
   // point — board/change coins that live only where they were created), but
@@ -102,6 +124,7 @@ export function mergeArkStates(a, b) {
   out.nextKeyIndex = Math.max(a.nextKeyIndex || 1, b.nextKeyIndex || 1);
   out.nextLnRecvIndex = Math.max(a.nextLnRecvIndex || 0, b.nextLnRecvIndex || 0);
   out.receiveAckTs = Math.max(a.receiveAckTs || 0, b.receiveAckTs || 0);
+  out.serverPubkey = a.serverPubkey || b.serverPubkey || null;
   return out;
 }
 
@@ -120,14 +143,21 @@ export function arkFeature(ctx) {
   wallet.registerCacheExtension({
     mergeAlways: true, // load() is a commutative merge — apply older snapshots too
     save: () => {
-      const s = wallet.loadArkState();
-      return s ? { arkState: slimArkForSync(s) } : {};
+      const cfg = getArkConfig();
+      const s = cfg && wallet.loadArkState(cfg.ark);
+      // tag the snapshot with the ASP it belongs to (see load())
+      return s ? { arkState: slimArkForSync(s), arkServer: wallet._arkNs(cfg.ark) } : {};
     },
     load: (d) => {
       if (!d.arkState) return;
-      const local = wallet.loadArkState();
+      const cfg = getArkConfig();
+      if (!cfg) return;
+      // only merge a snapshot from the same ASP — another server's vtxos are
+      // not ours to show (older snapshots carry no tag; accept those)
+      if (d.arkServer && d.arkServer !== wallet._arkNs(cfg.ark)) return;
+      const local = wallet.loadArkState(cfg.ark);
       const merged = mergeArkStates(local, d.arkState);
-      wallet.saveArkState(merged);
+      wallet.saveArkState(merged, cfg.ark);
       const mergedN = (merged.vtxos || []).length;
       const remoteN = (d.arkState.vtxos || []).length;
       const localN = (local && local.vtxos || []).length;
@@ -166,7 +196,8 @@ export function arkFeature(ctx) {
   }
 
   function arkWanted() {
-    const st = wallet.loadArkState();
+    const cfg = getArkConfig();
+    const st = cfg && wallet.loadArkState(cfg.ark);
     return !!(st && ((st.vtxos || []).length || (st.movements || []).length
       || (st.actions || []).some((a) => !['done', 'failed'].includes(a.step))));
   }
@@ -186,7 +217,7 @@ export function arkFeature(ctx) {
     const mgr = new ArkManager({
       account: wallet.account(),
       storage: {
-        load: () => wallet.loadArkState(),
+        load: () => wallet.loadArkState(cfg.ark),
         // merge-on-save: the MANAGER is authoritative for the state of the
         // vtxos it tracks (its reconcile/spends must persist), so its state
         // is the first arg and wins; storage only contributes vtxos the
@@ -194,7 +225,7 @@ export function arkFeature(ctx) {
         // between init and the next reinit). saveCache() then carries ark
         // state into the snapshot -> debounced nostr publish.
         save: (s) => {
-          wallet.saveArkState(mergeArkStates(s, wallet.loadArkState()));
+          wallet.saveArkState(mergeArkStates(s, wallet.loadArkState(cfg.ark)), cfg.ark);
           try { wallet.saveCache(); } catch {}
         },
       },
@@ -247,8 +278,9 @@ export function arkFeature(ctx) {
     // watch-only (seed not loaded this session): the balance/history should
     // show read-only, just like the on-chain balance does. Acting on it
     // (send/exit) still requires the seed and is gated separately.
-    if (!getArkConfig()) return null;
-    return wallet.loadArkState();
+    const cfg = getArkConfig();
+    if (!cfg) return null;
+    return wallet.loadArkState(cfg.ark);
   }
 
   function arkBalance() {
