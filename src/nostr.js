@@ -21,7 +21,11 @@ import { base64urlnopad } from '@scure/base';
 
 // One shared pool for all relay I/O — it manages connection lifecycles (and the
 // CLOSE-after-EOSE handshake) cleanly, so we never send on a half-closed socket.
-const pool = new SimplePool();
+// Ping + reconnect matter: without them a quietly dropped socket (proxy idle
+// timeout, network blip) takes every live subscription with it and nothing
+// re-subscribes — sync stops merging and NWC stops answering until a reload.
+// On reconnect the pool re-fires open subs with since = last event seen.
+const pool = new SimplePool({ enablePing: true, enableReconnect: true });
 
 // Subscribe / publish on an explicit relay set, independent of the sync
 // feature's configuration. NWC needs this: the relays it advertises in a
