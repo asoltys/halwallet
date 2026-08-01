@@ -208,6 +208,8 @@ export function nwcFeature(ctx) {
   }
 
   const handled = new Set(); // request ids seen this session (replay guard)
+  let lastError = null;      // surfaced in the Settings card
+  let lastSeen = null;       // last request we accepted, ditto
 
   async function onRequest(c, ev) {
     if (ev.kind !== REQ_KIND) return;
@@ -223,12 +225,31 @@ export function nwcFeature(ctx) {
     let req;
     try {
       req = JSON.parse(await decrypt(scheme, hex.decode(c.serviceSk), ev.pubkey, ev.content));
-    } catch { return; } // undecryptable: not for us
+    } catch (e) {
+      // This used to return silently, on the theory that undecryptable traffic
+      // simply wasn't for us. But the event is addressed to this connection's
+      // service key and signed by its client key — it IS for us, so a failure
+      // here is a bug in our own handling and must be loud. Silently dropping
+      // it looks identical to the wallet being offline.
+      const why = `${scheme} decrypt failed: ${e && e.message ? e.message : e}`;
+      console.error('nwc:', why, { ev: ev.id, scheme, from: ev.pubkey.slice(0, 12) });
+      lastError = { at: Date.now(), why, scheme, evId: ev.id };
+      // Reply so the client fails fast instead of spinning forever. Try the
+      // other scheme for the reply in case our scheme detection was wrong.
+      await reply(c, ev, scheme, { result_type: 'error', ...errRes('INTERNAL', why) })
+        .catch(() => {});
+      if (scheme === 'nip04') {
+        await reply(c, ev, 'nip44_v2', { result_type: 'error', ...errRes('INTERNAL', why) })
+          .catch(() => {});
+      }
+      return;
+    }
     const { method, params = {} } = req || {};
     if (!METHODS.includes(method)) {
       return reply(c, ev, scheme, { result_type: method, ...errRes('NOT_IMPLEMENTED', 'method not supported') });
     }
     updateConn(c.id, { lastUsed: Date.now() });
+    lastSeen = { at: Date.now(), method, scheme };
 
     try {
       const out = await handle(c, method, params);
@@ -417,6 +438,14 @@ export function nwcFeature(ctx) {
       h('h3', { class: 'row gap6', style: 'align-items:center' }, '🔌', t('nwcTitle')),
       h('p', { class: 'small muted', style: 'margin:0' }, t('nwcDesc')),
       h('div', { class: 'small faint' }, t('nwcTabWarning')),
+      lastError
+        ? h('div', { class: 'notice err', style: 'font-size:11px' },
+            `${new Date(lastError.at).toLocaleTimeString()} — ${lastError.why}`)
+        : null,
+      lastSeen
+        ? h('div', { class: 'small faint' },
+            `last request: ${lastSeen.method} (${lastSeen.scheme}) at ${new Date(lastSeen.at).toLocaleTimeString()}`)
+        : null,
       ...list.map((c) => {
         const { spent } = spendRoom(c);
         return h('div', { class: 'col', style: 'gap:4px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:8px' },
