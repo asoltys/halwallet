@@ -382,3 +382,6 @@ hr.divider { margin: 16px 0; }
 
 /* Settings: section heading between card groups. */
 .settings-section { margin: 8px 0 -6px 4px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* Inline move-money panel on the balance card. */
+.balance-move { gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); text-align: left; }

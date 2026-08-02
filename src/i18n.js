@@ -140,7 +140,6 @@ const STR = {
     hiwGiftsTitle: 'Gifts',
     hiwGifts1: 'You can gift bitcoin with a link: whoever opens it claims the coins into their own wallet — no app, no signup. On-chain gifts lock the coins until claimed and can be cancelled or reclaimed; Ark gifts claim instantly and free, even into a brand-new empty wallet. A gift can also be locked to a specific nostr account so only they can claim it.',
     moveMoney: 'Move money',
-    moveTitle: 'Move money',
     moveToSpending: 'Into Spending',
     moveToSpendingDesc: 'Make money instantly spendable, with no fees to send it.',
     moveToSaving: 'Into Savings',

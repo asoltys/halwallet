@@ -1960,7 +1960,9 @@ function balanceCard() {
       : null,
     // "Move money" and friends: the only door between the two balances.
     ...featureAll('balanceActions').map((a2) =>
-      h('button', { class: 'btn-sm', style: 'margin-top:10px', onClick: a2.onClick }, a2.label))
+      h('button', { class: 'btn-sm', style: 'margin-top:10px', onClick: a2.onClick }, a2.label)),
+    // A feature can unfold UI right on the card (ark's inline move panel).
+    featureHook('balanceExtra')
   );
 }
 

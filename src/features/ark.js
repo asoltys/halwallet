@@ -342,7 +342,9 @@ export function arkFeature(ctx) {
       // them. Publishing on connect guarantees every device's ark balance
       // reaches the relay (and gets merged) without needing a transaction first.
       if (mgr.state && (mgr.state.vtxos || []).length) { try { wallet.saveCache(); } catch {} }
-      const tick = () => mgr.sync().catch(() => {}).then(() => driveExits(mgr)).catch(() => {});
+      const tick = () => mgr.sync().catch(() => {})
+        .then(() => driveExits(mgr)).catch(() => {})
+        .then(() => { if (ark === mgr) return maybeAutoRefresh(mgr); }).catch(() => {});
       tick();
       // Reconcile once on connect: a vtxo synced in from another device (or
       // one this device held while a spend happened elsewhere) is checked
@@ -870,10 +872,7 @@ export function arkFeature(ctx) {
         const parts = Object.entries(counts).map(([type, n]) => t(LABEL[type] || 'arkPendingActions', { n }));
         return parts.length ? h('div', { class: 'small muted' }, parts.join(' · ')) : null;
       })(),
-      spendables.length >= 1
-        ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkRefresh },
-            ui.arkBusy === 'refresh' ? h('span', { class: 'spinner sm' }) : t('arkRefreshBtn', { n: spendables.length }))
-        : null,
+      // Refresh/consolidation is automatic (maybeAutoRefresh) — no button.
       // Moving funds out (cooperative offboard / unilateral exit) lives on its
       // own page, reached from the "Exit" link on the Ark balance line.
       spendables.length >= 1
@@ -1301,15 +1300,29 @@ export function arkFeature(ctx) {
     ui.arkBusy = null; render();
   }
 
-  async function doArkRefresh() {
-    ui.arkBusy = 'refresh'; ui.arkError = ''; render();
+  // VTXO upkeep, invisibly: a send needs a single vtxo covering the amount
+  // (fragmentation breaks coin selection) and every vtxo expires at
+  // expiryHeight (unrenewed, the ASP can eventually sweep it). Rather than
+  // exposing a refresh button, consolidate-and-renew automatically when a
+  // vtxo is inside the renewal window or fragmentation builds up. The round
+  // fee this spends is the cost of keeping the money spendable at all.
+  let arkAutoRefreshAt = 0;
+  async function maybeAutoRefresh(mgr) {
+    if (wallet.watchOnly || !mgr || !mgr.state) return;
+    if (Date.now() - arkAutoRefreshAt < 30 * 60_000) return;
+    const spendables = (mgr.state.vtxos || []).filter((v) => v.state === 'spendable');
+    if (!spendables.length) return;
+    // never start a round while any other action is still in flight
+    if ((mgr.state.actions || []).some((a) => !['done', 'failed'].includes(a.step))) return;
+    arkAutoRefreshAt = Date.now();
     try {
-      await ark.refresh();
-      toast(t('arkRefreshStarted'), 5000);
-    } catch (e) {
-      ui.arkError = e.message;
-    }
-    ui.arkBusy = null; render();
+      const tip = await mgr.chain.tipHeight();
+      const RENEW_BLOCKS = getNetwork() === 'regtest' ? 24 : 1008; // ~1 week of margin on mainnet
+      const expiring = spendables.some((v) => v.expiryHeight && v.expiryHeight - tip < RENEW_BLOCKS);
+      const fragmented = spendables.length >= 6;
+      if (!expiring && !fragmented) return;
+      await mgr.refresh();
+    } catch {} // transient — the next throttled attempt retries
   }
 
   // Moving money between the two balances, in plain terms. This is the only
@@ -1342,28 +1355,29 @@ export function arkFeature(ctx) {
             t('arkBoardNoFunds', { n: minBoard.toLocaleString() })));
   }
 
-  function movePage() {
-    const b = arkBalance();
-    const back = () => { ui.arkMovePage = false; ui.arkError = ''; render(); };
+  // Moving money between the two balances, inline on the balance card — the
+  // one door between the rails opens right where the balances live.
+  function movePanel() {
     if (!ark) connectArk().catch(() => {});
-    return h('div', { class: 'col', style: 'gap:16px;padding:16px;max-width:460px;margin:0 auto;width:100%' },
-      h('div', { class: 'row between' },
-        h('h3', { style: 'margin:0' }, t('moveTitle')),
-        h('span', { class: 'linklike small', onClick: back }, t('back'))),
-      ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null,
-      h('div', { class: 'card col', style: 'gap:10px' },
-        h('h4', { style: 'margin:0' }, t('moveToSpending')),
-        h('p', { class: 'small muted', style: 'margin:0' }, t('moveToSpendingDesc')),
-        ark ? boardForm() : h('div', { class: 'row gap6', style: 'align-items:center' },
-          h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting')))),
-      h('div', { class: 'card col', style: 'gap:10px' },
-        h('h4', { style: 'margin:0' }, t('moveToSaving')),
-        h('p', { class: 'small muted', style: 'margin:0' }, t('moveToSavingDesc')),
-        h('div', { class: 'small faint' }, t('moveAvailable', { n: fmtAmount(b ? b.spendableSat : 0) + ' ' + unitLabel() })),
-        h('button', {
-          class: 'btn-block', disabled: !b || !b.spendableSat,
-          onClick: () => { ui.arkMovePage = false; ui.arkExitPage = true; ui.arkError = ''; render(); },
-        }, t('moveToSavingBtn'))));
+    const dir = ui.arkMoveDir || 'toSpending';
+    const b = arkBalance();
+    return h('div', { class: 'col balance-move' },
+      h('div', { class: 'seg' },
+        h('button', { class: dir === 'toSpending' ? 'active' : '', onClick: () => { ui.arkMoveDir = 'toSpending'; ui.arkError = ''; render(); } }, t('moveToSpending')),
+        h('button', { class: dir === 'toSaving' ? 'active' : '', onClick: () => { ui.arkMoveDir = 'toSaving'; ui.arkError = ''; render(); } }, t('moveToSaving'))),
+      dir === 'toSpending'
+        ? h('div', { class: 'col', style: 'gap:8px' },
+            h('p', { class: 'small muted', style: 'margin:0' }, t('moveToSpendingDesc')),
+            ark ? boardForm() : h('div', { class: 'row gap6', style: 'align-items:center' },
+              h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting'))))
+        : h('div', { class: 'col', style: 'gap:8px' },
+            h('p', { class: 'small muted', style: 'margin:0' }, t('moveToSavingDesc')),
+            h('div', { class: 'small faint' }, t('moveAvailable', { n: fmtAmount(b ? b.spendableSat : 0) + ' ' + unitLabel() })),
+            h('button', {
+              class: 'btn-block', disabled: !b || !b.spendableSat,
+              onClick: () => { ui.arkMoveOpen = false; ui.arkExitPage = true; ui.arkError = ''; render(); },
+            }, t('moveToSavingBtn'))),
+      ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null);
   }
 
   // The Ark receive pane: connect-on-demand, then address + board form.
@@ -1535,7 +1549,7 @@ export function arkFeature(ctx) {
     id: 'ark',
     init() { initArk(); },
     stop() { stopArk(); },
-    screenView() { return ui.arkMovePage ? movePage() : ui.arkExitPage ? arkExitPage() : null; },
+    screenView() { return ui.arkExitPage ? arkExitPage() : null; },
     receiveModes() {
       if (!arkAvailable()) return [];
       return [{ id: 'ark', label: t('receiveArkTab'), icon: ARK_MARK(18), render: (seg) => arkReceivePane(seg) }];
@@ -1652,7 +1666,14 @@ export function arkFeature(ctx) {
     // "Move money" under the balance — the one door between the two balances.
     balanceActions() {
       if (wallet.watchOnly || !arkAvailable()) return [];
-      return [{ label: t('moveMoney'), onClick: () => { ui.arkMovePage = true; ui.arkError = ''; render(); } }];
+      return [{
+        label: ui.arkMoveOpen ? t('hide') : t('moveMoney'),
+        onClick: () => { ui.arkMoveOpen = !ui.arkMoveOpen; ui.arkError = ''; render(); },
+      }];
+    },
+    balanceExtra() {
+      if (!ui.arkMoveOpen || wallet.watchOnly || !arkAvailable()) return null;
+      return movePanel();
     },
     spendingSat() {
       const b = arkBalance();
