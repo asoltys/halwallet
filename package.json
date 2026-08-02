@@ -1,9 +1,9 @@
 {
-  "name": "hal-wallet",
+  "name": "coinosv3",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Hal Wallet \u2014 offline-capable, single-file self-custody Bitcoin wallet for the browser, in memory of Hal Finney",
+  "description": "coinos v3 — offline-capable, single-file self-custody Bitcoin wallet for the browser, built in memory of Hal Finney",
   "scripts": {
     "dev": "bun run dev.js",
     "build": "bun run build.js",

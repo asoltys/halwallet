@@ -1560,7 +1560,7 @@ export class Wallet {
       this._wsBackoff = 0; // healthy again — reset the reconnect backoff
       this._lastMsg = Date.now();
       // Electrum handshake, then subscribe our watched scripthashes.
-      this._rpcSend('server.version', ['halwallet', '1.4']);
+      this._rpcSend('server.version', ['coinosv3', '1.4']);
       // Flush any data calls queued while the socket was down.
       if (this._callQueue && this._callQueue.length) {
         for (const payload of this._callQueue) { try { ws.send(payload); } catch {} }

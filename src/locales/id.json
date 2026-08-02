@@ -8,7 +8,6 @@
   "hiwBasics3": "Tidak ada server dan tidak ada akun. Seluruh aplikasi adalah satu halaman yang berjalan di browser Anda, jadi tidak ada yang menyimpan koin Anda dan tidak ada server yang pernah melihat kunci Anda. Untuk menampilkan saldo dan riwayat, aplikasi membaca dari penjelajah blok publik (mempool.space secara default, atau node Anda sendiri jika Anda mengaturnya di Pengaturan).",
   "hiwBasics4": "Anda bahkan bisa menyimpan halaman ini dan membukanya langsung dari komputer tanpa internet sama sekali. Aplikasi ini tetap berfungsi secara offline.",
   "hiwBasics5": "Aplikasi ini mengikuti standar Bitcoin yang umum (frasa BIP39 12 kata dan kunci BIP84 native SegWit), jadi jika situs ini suatu saat hilang, Anda bisa memulihkan frasa yang sama di Sparrow, Electrum, atau dompet standar lainnya dan koin Anda akan tetap ada di sana.",
-  "hiwTribute": "Nama Hal Wallet adalah penghormatan kepada cypherpunk legendaris dan pelopor Bitcoin, Hal Finney (1956–2014).",
   "signExport": "Tanda tangani & (siarkan di tempat lain)",
   "scanQr": "Pindai QR",
   "scanHint": "Arahkan kamera ke kode QR",

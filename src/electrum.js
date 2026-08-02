@@ -1,7 +1,7 @@
 // Electrum-over-WebSocket backend — an alternative to the Esplora REST `Api`.
 //
 // A single Electrum connection answers the wallet's data queries AND pushes
-// `scripthash.subscribe` notifications, so pointing Hal at your own Fulcrum /
+// `scripthash.subscribe` notifications, so pointing coinos at your own Fulcrum /
 // electrs gives a fully self-hosted setup: no coinos, no public REST, nothing
 // shared with anyone but your own server.
 //

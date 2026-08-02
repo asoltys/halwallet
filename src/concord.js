@@ -189,7 +189,7 @@ export const foldControl = (entries, { ownerHex, cid }) => {
   let parse = (e) => { try { return JSON.parse(e.rumor.content); } catch { return null; } };
 
   // Roles and grants first so later authority checks could use them; for now
-  // hal only honors owner-signed authority (the coinos community's owner is
+  // coinos only honors owner-signed authority (the coinos community's owner is
   // its sole admin) plus grants the owner signed.
   for (let e of byEntity.values()) {
     if (e.author !== ownerHex) continue; // non-owner authority: future work (vac/roster walk)

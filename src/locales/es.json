@@ -24,7 +24,6 @@
   "hiwBasics3": "No hay servidor ni cuenta. Toda la app es una única página que se ejecuta en tu navegador, así que nadie custodia tus monedas y ningún servidor ve jamás tus claves. Para mostrar tu saldo e historial, lee desde un explorador de bloques público (mempool.space por defecto, o tu propio nodo si configuras uno en Ajustes).",
   "hiwBasics4": "Incluso puedes guardar esta página y abrirla directamente desde tu computadora sin conexión a internet. Sigue funcionando sin conexión.",
   "hiwBasics5": "Sigue los estándares habituales de Bitcoin (una frase BIP39 de 12 palabras y claves SegWit nativas BIP84), así que si este sitio desapareciera algún día, puedes restaurar la misma frase en Sparrow, Electrum o cualquier otra billetera estándar y tus monedas estarán justo ahí.",
-  "hiwTribute": "El nombre Hal Wallet es un homenaje al legendario cypherpunk y pionero de Bitcoin, Hal Finney (1956–2014).",
   "signExport": "Firmar y (transmitir en otro lugar)",
   "scanQr": "Escanear QR",
   "scanHint": "Apunta la cámara a un código QR",

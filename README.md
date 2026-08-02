@@ -1,4 +1,4 @@
-# Hal Wallet
+# coinos v3
 
 A self-contained, **single-file** Bitcoin wallet that runs entirely in the
 browser — think bitaddress.org, but a modern BIP84 HD wallet from a seed phrase
@@ -6,10 +6,11 @@ that scans history, watches for payments, spends on-chain, pays Lightning
 invoices, and holds an off-chain balance on **Ark**. The whole wallet is one
 static `index.html` you can save and run offline, forever.
 
-Live at **https://halwallet.app** (the built `index.html` also runs straight
+Live at **https://v3.coinos.io** (the built `index.html` also runs straight
 from the filesystem with no server).
 
-The name is a nod to [Hal Finney](https://en.wikipedia.org/wiki/Hal_Finney_(computer_scientist)).
+Built on the shoulders of [Hal Finney](https://en.wikipedia.org/wiki/Hal_Finney_(computer_scientist)) —
+this project began life as "Hal Wallet" in his memory.
 
 ## Features
 

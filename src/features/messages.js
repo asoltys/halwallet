@@ -1,7 +1,7 @@
 // Messages — encrypted community chat over the Concord protocol (CORD-01..04),
 // the successor to Marmot/White Noise for Discord-shaped rooms on nostr.
 //
-// hal ships with one built-in community: "coinos". Its join material (below)
+// coinos ships with one built-in community: "coinos". Its join material (below)
 // includes the community_root, so holding the app is holding membership —
 // relays only ever see kind-1059 wraps signed by derived stream keys. The
 // community was founded by Adam's npub, which makes him owner (position 0)
@@ -10,7 +10,7 @@
 // Messages are signed by the session's nostr login identity when a signer is
 // live (extension, or a pasted key before reload), else by the wallet's
 // NIP-06 key — both only ever *sign* the seal; all encryption happens under
-// stream keys hal already holds, so remote signers need no nip44 round-trips.
+// stream keys the app already holds, so remote signers need no nip44 round-trips.
 
 import { subscribeOn, publishOn, fetchNostrProfile, npubOf } from '../nostr.js';
 import {
@@ -22,7 +22,7 @@ import { t } from '../i18n.js';
 
 // Genesis output of tools/concord-genesis.js — the coinos community's join
 // material (CORD-02 §8). The community_root here is deliberately public-ish:
-// every hal user is meant to be a member of the default community.
+// every coinos user is meant to be a member of the default community.
 const COMMUNITY = {
   community_id: 'b517fb4ba04c4c4eac2bd486ee800d1a8644fcdca5c5643098062e7733ee4986',
   owner: '98ae4da926c471c23fd12d1ebdd5839ba82917baa618e184e0c9916d93dcf4f7',

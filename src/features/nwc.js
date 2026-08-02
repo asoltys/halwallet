@@ -1,12 +1,12 @@
-// Nostr Wallet Connect (NIP-47) — hal as a *wallet service*.
+// Nostr Wallet Connect (NIP-47) — coinos as a *wallet service*.
 //
-// Other apps (Damus, Amethyst, Alby, a website) connect to your hal wallet
+// Other apps (Damus, Amethyst, Alby, a website) connect to your coinos wallet
 // over nostr and can ask it to pay invoices or report a balance, without ever
-// touching your keys. You hand out a connection string; hal answers requests
+// touching your keys. You hand out a connection string; coinos answers requests
 // signed by that connection, inside the budget you set, and you can revoke it
 // at any time.
 //
-// hal holds no native Lightning balance, so every Lightning operation here
+// coinos holds no native Lightning balance, so every Lightning operation here
 // runs over Ark: the ASP pays and mints invoices. That means NWC
 // availability tracks Ark availability — no Ark server, no wallet service.
 //
@@ -545,7 +545,7 @@ export function nwcFeature(ctx) {
   // ---- background wake-ups ----------------------------------------------
   // The notifier can't decrypt anything; it only learns which service pubkeys
   // to watch. When a request arrives it pushes, the service worker surfaces
-  // it (or nudges an open window), and hal answers from the relay.
+  // it (or nudges an open window), and coinos answers from the relay.
   const NOTIFIER = 'https://nwcpush.coinos.io';
 
   const b64ToBytes = (b64) => {

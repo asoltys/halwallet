@@ -2,7 +2,7 @@
 
 Working note, not project docs. Delete when it's stale.
 Persistent memory for all of this lives in
-`~/.claude/projects/-home-adam-halwallet/memory/` — start by reading
+`~/.claude/projects/-home-adam-coinosv3/memory/` — start by reading
 `MEMORY.md`, then `hal-nwc`, `coinos-ark-mainnet`, `ark-swap-bridge`,
 `coinos-ark-asp`, `ark-third-party-htlc`.
 
@@ -105,7 +105,7 @@ below.
 ### The probe (copy-paste, needs Chrome with `--remote-debugging-port=9222` and a hal tab open)
 
 ```js
-// bun run this from ~/halwallet
+// bun run this from ~/coinosv3
 import puppeteer from 'puppeteer-core';
 import { SimplePool } from 'nostr-tools/pool';
 import { nip04, finalizeEvent } from './src/nostr.js';

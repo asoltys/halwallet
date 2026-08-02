@@ -8,7 +8,6 @@
   "hiwBasics3": "Sunucu yok, hesap yok. Tüm uygulama tarayıcınızda çalışan tek bir sayfadır, yani paralarınızı kimse tutmaz ve hiçbir sunucu anahtarlarınızı görmez. Bakiyenizi ve geçmişinizi göstermek için herkese açık bir blok gezgininden okur (varsayılan olarak mempool.space, ya da Ayarlar'da belirlerseniz kendi düğümünüz).",
   "hiwBasics4": "Bu sayfayı kaydedip bilgisayarınızdan hiç internet olmadan bile açabilirsiniz. Çevrimdışı çalışmaya devam eder.",
   "hiwBasics5": "Olağan Bitcoin standartlarını izler (12 kelimelik bir BIP39 ifadesi ve BIP84 yerel SegWit anahtarları), bu yüzden bu site bir gün kaybolursa aynı ifadeyi Sparrow, Electrum veya başka herhangi bir standart cüzdanda geri yükleyebilirsiniz ve paralarınız tam orada olur.",
-  "hiwTribute": "Hal Wallet adı, efsanevi cypherpunk ve Bitcoin öncüsü Hal Finney (1956–2014) anısına bir saygı duruşudur.",
   "signExport": "İmzala ve (başka yerde yayınla)",
   "scanQr": "QR tara",
   "scanHint": "Kamerayı bir QR koduna doğrultun",

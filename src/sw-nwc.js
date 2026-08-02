@@ -30,7 +30,7 @@ self.addEventListener('push', (e) => {
       console.warn('[sw-nwc] auto-answer failed:', err && err.message);
     }
     // handled-with-a-heads-up: e.g. an invoice was minted while closed and
-    // the user should open Hal to complete the receive
+    // the user should open coinos to complete the receive
     if (handled && handled.notify) {
       await self.registration.showNotification(handled.notify.title, {
         body: handled.notify.body,

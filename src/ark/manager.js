@@ -1,5 +1,5 @@
 // ArkManager — persistent, crash-safe Ark wallet state on top of the
-// src/ark protocol modules. Follows hal's SwapManager shape: a class over a
+// src/ark protocol modules. Follows the wallet's SwapManager shape: a class over a
 // wallet-scoped storage adapter, driving multi-step actions that are
 // checkpointed to storage before and after every server-effectful RPC.
 //
@@ -10,7 +10,7 @@
 //
 // Keys: vtxo keys on account chain 3 (index 0 = the receive address key,
 // 1.. = change/refresh outputs), mailbox key on chain 4. Chains 0-2 are used
-// by hal for receive/change/swaps.
+// by the wallet for receive/change/swaps.
 
 import { hex } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
@@ -151,7 +151,7 @@ export class ArkManager {
   }
   _decoded(v) { return decodeVtxo(hex.decode(v.bytes)); }
 
-  // ---- chain adapter (esplora REST, same API hal already speaks) ----
+  // ---- chain adapter (esplora REST, same API the wallet already speaks) ----
   get chain() {
     const base = this.esploraUrl;
     return {
@@ -1148,7 +1148,7 @@ export class ArkManager {
   }
 
   // ---- board ----
-  // Returns the onchain funding address; hal's onchain wallet pays it (the
+  // Returns the onchain funding address; the onchain wallet pays it (the
   // board output MUST be vout 0), then completeBoard(actionId, txid).
   async startBoard(amountSat) {
     if (amountSat < this.info.minBoardAmountSat) {

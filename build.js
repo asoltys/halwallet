@@ -194,7 +194,7 @@ function featureIndexSource(enabled) {
 }
 
 const featurePlugin = (enabled) => ({
-  name: 'hal-features',
+  name: 'coinos-features',
   setup(b) {
     b.onLoad({ filter: /src[\/\\]features[\/\\]index\.js$/ }, () => ({
       contents: featureIndexSource(enabled),
