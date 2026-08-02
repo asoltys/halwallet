@@ -40,6 +40,9 @@ export function subscribeOn(relays, filter, onEvent, extra = {}) {
     return () => { try { sub.close(); } catch {} };
   } catch { return () => {}; }
 }
+export async function queryOn(relays, filter, maxWait = 1500) {
+  try { return await pool.querySync(relays, filter, { maxWait }); } catch { return []; }
+}
 export async function publishOn(relays, evt) {
   try {
     const results = await Promise.allSettled(pool.publish(relays, evt));

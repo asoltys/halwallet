@@ -18,6 +18,7 @@ const published = [];
 const nwcTransport = {
   subscribe: (relays, filter, on) => { subHandler = on; return () => { subHandler = null; }; },
   publish: async (relays, evt) => { published.push(evt); return true; },
+  query: async () => [], // no other device has answered anything in tests
 };
 let paid = [];
 const wallet = {

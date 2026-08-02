@@ -25,7 +25,7 @@ import { hex } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import {
   nip04, nip44, getPublicKey, finalizeEvent, generateSecretKey,
-  subscribeOn, publishOn,
+  subscribeOn, publishOn, queryOn,
 } from '../nostr.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
@@ -51,7 +51,7 @@ export function nwcFeature(ctx) {
   const { h, ui, render, wallet, hook, fmtAmount, unitLabel, copyBtn, toast } = ctx;
   // Relay transport, injectable so the protocol can be driven in tests
   // without a live relay.
-  const { subscribe = subscribeOn, publish = publishOn } = ctx.nwcTransport || {};
+  const { subscribe = subscribeOn, publish = publishOn, query = queryOn } = ctx.nwcTransport || {};
 
   // ---- persisted connections -------------------------------------------
   // { id, name, secret (client sk hex), clientPk, servicePk, serviceSk,
@@ -266,14 +266,40 @@ export function nwcFeature(ctx) {
     if (!METHODS.includes(method)) {
       return reply(c, ev, scheme, { result_type: method, ...errRes('NOT_IMPLEMENTED', 'method not supported') });
     }
+    if (method === 'pay_invoice') {
+      // Loose leader election across the user's open devices: every tab sees
+      // every request, and a late tab (woken with the request still inside
+      // the replay window) once re-answered zaps another device had already
+      // paid — its error replies made successful zaps look failed. Defer a
+      // beat, then stay SILENT if any reply for this request already exists.
+      const age = nowSec() - (ev.created_at || 0);
+      await new Promise((r) => setTimeout(r, age > 5 ? 0 : 300 + Math.random() * 900));
+      const prior = await query(NWC_RELAYS, { kinds: [RES_KIND], '#e': [ev.id] }, 1500);
+      if (prior && prior.length) {
+        return console.log('nwc: skip — request already answered elsewhere', ev.id.slice(0, 8));
+      }
+    }
     updateConn(c.id, { lastUsed: Date.now() });
     lastSeen = { at: Date.now(), method, scheme };
 
+    // A failed pay_invoice on THIS device must not shout over another
+    // device's success: two tabs can pass the pre-check together, and the
+    // one that loses (stale state, mid-init, refused vtxo) would otherwise
+    // reply an error AFTER the winner's preimage, which some clients trust.
+    const sendChecked = async (payload) => {
+      if (method === 'pay_invoice' && payload.error) {
+        const prior = await query(NWC_RELAYS, { kinds: [RES_KIND], '#e': [ev.id] }, 1500).catch(() => []);
+        if (prior && prior.length) {
+          return console.log('nwc: suppressing error — request answered elsewhere', ev.id.slice(0, 8));
+        }
+      }
+      await reply(c, ev, scheme, payload);
+    };
     try {
       const out = await handle(c, method, params);
-      await reply(c, ev, scheme, { result_type: method, ...out });
+      await sendChecked({ result_type: method, ...out });
     } catch (e) {
-      await reply(c, ev, scheme, { result_type: method, ...errRes('INTERNAL', e.message || 'failed') });
+      await sendChecked({ result_type: method, ...errRes('INTERNAL', e.message || 'failed') });
     }
     render();
   }
