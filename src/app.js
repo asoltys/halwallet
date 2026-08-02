@@ -1909,27 +1909,39 @@ function balanceCard() {
   const firstLoad = !wallet.loaded && !wallet.offline;
   const pending = wallet.pendingIncoming;
   const featLines = featureAll('balanceLines');
+  // Money lives in two places and we name them for what they're FOR, not for
+  // the rails underneath: Spending is the instant off-chain balance, Saving
+  // is the on-chain one. The headline is simply everything you have.
+  const spending = featureHook('spendingSat') || 0;
+  const saving = wallet.spendable;
+  const split = spending > 0 || saving > 0;
   return h(
     'div',
     { class: 'card balance' },
     h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' }, t('balance')),
-    // Headline is the spendable balance: confirmed coins plus our own pending
-    // change, minus gift locks — so a pending spend debits immediately, while a
-    // pending incoming receive stays out of it until it confirms.
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
       firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,
-      fmtAmount(wallet.spendable), ' ', unitTag('unit')),
-    pending > 0 || featLines.length
+      fmtAmount(spending + saving), ' ', unitTag('unit')),
+    split || pending > 0 || featLines.length
       ? h(
           'div',
           { class: 'split' },
+          split
+            ? h('div', {}, h('div', { class: 'k' }, t('spendingLabel')), h('div', { class: 'v' }, fmtAmount(spending), ' ', unitTag()))
+            : null,
+          split
+            ? h('div', {}, h('div', { class: 'k' }, t('savingLabel')), h('div', { class: 'v' }, fmtAmount(saving), ' ', unitTag()))
+            : null,
           pending > 0
             ? h('div', {}, h('div', { class: 'k' }, t('pending')), h('div', { class: 'v pending' }, fmtAmount(pending), ' ', unitTag()))
             : null,
           ...featLines.map((l) =>
             h('div', {}, h('div', { class: 'k' }, l.label), h('div', { class: 'v' }, fmtAmount(l.sat), ' ', unitTag())))
         )
-      : null
+      : null,
+    // "Move money" and friends: the only door between the two balances.
+    ...featureAll('balanceActions').map((a2) =>
+      h('button', { class: 'btn-sm', style: 'margin-top:10px', onClick: a2.onClick }, a2.label))
   );
 }
 

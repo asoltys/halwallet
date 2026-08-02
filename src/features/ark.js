@@ -843,7 +843,7 @@ export function arkFeature(ctx) {
       render();
     };
     const head = [
-      h('h3', { class: 'row gap6', style: 'align-items:center' }, h('span', { html: ARK_MARK(18) }), 'Ark'),
+      h('h3', { class: 'row gap6', style: 'align-items:center' }, t('arkTitle')),
       h('p', { class: 'small muted', style: 'margin:0' }, t('arkDesc')),
       h('select', { onChange: (e) => applyProvider(e.target.value) },
         presets.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
@@ -1338,6 +1338,60 @@ export function arkFeature(ctx) {
     ui.arkBusy = null; render();
   }
 
+  // Moving money between the two balances, in plain terms. This is the only
+  // place the two rails meet, and it never names them: Saving is on-chain,
+  // Spending is instant, and the wallet handles the rest.
+  function boardForm() {
+    const minBoard = (ark && ark.info && ark.info.minBoardAmountSat) || 0;
+    const canBoard = wallet.spendable >= minBoard;
+    return h('div', { class: 'col', style: 'width:100%;gap:8px' },
+      h('div', { class: 'input-group' },
+        h('input', {
+          type: 'number', inputmode: 'numeric', min: '0',
+          placeholder: t('arkBoardPlaceholder', { n: minBoard.toLocaleString() }),
+          value: ui.arkBoardAmt || '',
+          onInput: (e) => { ui.arkBoardAmt = e.target.value; render(); },
+        }),
+        h('button', { class: 'btn-primary', disabled: !!ui.arkBusy || !canBoard, onClick: doArkBoard },
+          ui.arkBusy === 'board' ? h('span', { class: 'spinner sm' }) : t('arkBoardBtn'))),
+      (() => {
+        const sats = parseInt((ui.arkBoardAmt || '').trim(), 10);
+        if (!sats || sats < minBoard || !ark) return null;
+        const fee = boardFee(sats, ark.info.boardFees);
+        return h('div', { class: 'small muted', style: 'text-align:center' },
+          t('arkBoardFeeNote', { fee: fmtAmount(fee), net: fmtAmount(sats - fee) }));
+      })(),
+      canBoard
+        ? h('div', { class: 'small faint', style: 'text-align:center' },
+            t('arkBoardAvailable', { n: fmtAmount(wallet.spendable) + ' ' + unitLabel() }))
+        : h('div', { class: 'small faint', style: 'text-align:center' },
+            t('arkBoardNoFunds', { n: minBoard.toLocaleString() })));
+  }
+
+  function movePage() {
+    const b = arkBalance();
+    const back = () => { ui.arkMovePage = false; ui.arkError = ''; render(); };
+    if (!ark) connectArk().catch(() => {});
+    return h('div', { class: 'col', style: 'gap:16px;padding:16px;max-width:460px;margin:0 auto;width:100%' },
+      h('div', { class: 'row between' },
+        h('h3', { style: 'margin:0' }, t('moveTitle')),
+        h('span', { class: 'linklike small', onClick: back }, t('back'))),
+      ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null,
+      h('div', { class: 'card col', style: 'gap:10px' },
+        h('h4', { style: 'margin:0' }, t('moveToSpending')),
+        h('p', { class: 'small muted', style: 'margin:0' }, t('moveToSpendingDesc')),
+        ark ? boardForm() : h('div', { class: 'row gap6', style: 'align-items:center' },
+          h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting')))),
+      h('div', { class: 'card col', style: 'gap:10px' },
+        h('h4', { style: 'margin:0' }, t('moveToSaving')),
+        h('p', { class: 'small muted', style: 'margin:0' }, t('moveToSavingDesc')),
+        h('div', { class: 'small faint' }, t('moveAvailable', { n: fmtAmount(b ? b.spendableSat : 0) + ' ' + unitLabel() })),
+        h('button', {
+          class: 'btn-block', disabled: !b || !b.spendableSat,
+          onClick: () => { ui.arkMovePage = false; ui.arkExitPage = true; ui.arkError = ''; render(); },
+        }, t('moveToSavingBtn'))));
+  }
+
   // The Ark receive pane: connect-on-demand, then address + board form.
   function arkReceivePane(seg) {
   if (true) {
@@ -1354,8 +1408,6 @@ export function arkFeature(ctx) {
         );
       }
       const arkAddr = ark.address();
-      const minBoard = ark.info.minBoardAmountSat || 0;
-      const canBoard = wallet.spendable >= minBoard;
       return h(
         'div',
         { class: 'card col', style: 'align-items:center;gap:14px' },
@@ -1364,30 +1416,6 @@ export function arkFeature(ctx) {
         h('div', { html: qrSvg(arkAddr) }),
         h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, arkAddr),
         copyBtn(arkAddr, t('copyAddress')),
-        // Board: fund your Ark balance from this wallet's on-chain coins.
-        h('div', { class: 'col', style: 'width:100%;gap:8px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:14px' },
-          h('div', { class: 'small muted', style: 'text-align:center' }, t('arkBoardIntro')),
-          h('div', { class: 'input-group' },
-            h('input', {
-              type: 'number', inputmode: 'numeric', min: '0',
-              placeholder: t('arkBoardPlaceholder', { n: minBoard.toLocaleString() }),
-              value: ui.arkBoardAmt || '',
-              onInput: (e) => { ui.arkBoardAmt = e.target.value; render(); },
-            }),
-            h('button', { class: 'btn-sm', disabled: !!ui.arkBusy || !canBoard, onClick: doArkBoard },
-              ui.arkBusy === 'board' ? h('span', { class: 'spinner sm' }) : t('arkBoardBtn'))),
-          // show the server's board fee BEFORE the money moves, not after
-          (() => {
-            const sats = parseInt((ui.arkBoardAmt || '').trim(), 10);
-            if (!sats || sats < minBoard) return null;
-            const fee = boardFee(sats, ark.info.boardFees);
-            return h('div', { class: 'small muted', style: 'text-align:center' },
-              t('arkBoardFeeNote', { fee: fmtAmount(fee), net: fmtAmount(sats - fee) }));
-          })(),
-          canBoard
-            ? h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardAvailable', { n: fmtAmount(wallet.spendable) + ' ' + unitLabel() }))
-            : h('div', { class: 'small faint', style: 'text-align:center' }, t('arkBoardNoFunds', { n: minBoard.toLocaleString() })),
-          ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null),
         // Lightning receive straight into the ark balance (ASP-native swap)
         arkLnReceiveSection()
       );
@@ -1533,7 +1561,7 @@ export function arkFeature(ctx) {
     id: 'ark',
     init() { initArk(); },
     stop() { stopArk(); },
-    screenView() { return ui.arkExitPage ? arkExitPage() : null; },
+    screenView() { return ui.arkMovePage ? movePage() : ui.arkExitPage ? arkExitPage() : null; },
     receiveModes() {
       if (!arkAvailable()) return [];
       return [{ id: 'ark', label: t('receiveArkTab'), icon: ARK_MARK(18), render: (seg) => arkReceivePane(seg) }];
@@ -1645,24 +1673,23 @@ export function arkFeature(ctx) {
       ui.arkMoveDetail = null;
       return null;
     },
+    // The spendable off-chain balance IS the wallet's "Spending" — the balance
+    // card shows it by name, so this feature only reports the number.
+    // "Move money" under the balance — the one door between the two balances.
+    balanceActions() {
+      if (wallet.watchOnly || !arkAvailable()) return [];
+      return [{ label: t('moveMoney'), onClick: () => { ui.arkMovePage = true; ui.arkError = ''; render(); } }];
+    },
+    spendingSat() {
+      const b = arkBalance();
+      return b ? b.spendableSat + b.pendingSat : 0;
+    },
     balanceLines() {
       const b = arkBalance();
       if (!b) return [];
-      const lines = [];
-      if (b.spendableSat + b.pendingSat > 0) {
-        // "Ark balance … Exit" — the exit link opens the offboard/exit page.
-        // Watch-only wallets can't move funds, so they just show the balance.
-        const label = wallet.watchOnly
-          ? t('arkBalance')
-          : h('span', { class: 'row gap6', style: 'align-items:center' },
-              t('arkBalance'),
-              h('span', { class: 'linklike', style: 'font-size:12px', onClick: () => { ui.arkExitPage = true; ui.arkError = ''; render(); } }, t('arkExitLink')));
-        lines.push({ label, sat: b.spendableSat + b.pendingSat });
-      }
-      // A board in flight: the sats already left the on-chain balance, so show
-      // where they went instead of having them silently disappear.
-      if (b.boardingSat > 0) lines.push({ label: t('arkBoarding'), sat: b.boardingSat });
-      return lines;
+      // Money mid-move: it has left Saving but hasn't landed in Spending, so
+      // say where it went rather than letting it vanish for a confirmation.
+      return b.boardingSat > 0 ? [{ label: t('movingLabel'), sat: b.boardingSat }] : [];
     },
     decorateTxRow(tx) {
       const s = arkStateNow();
