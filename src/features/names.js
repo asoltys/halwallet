@@ -99,14 +99,29 @@ export function namesFeature(ctx) {
       if (!st.name) {
         // The address people see should be the identity they know the user
         // by: their real npub when a nostr account is linked, else the
-        // wallet's own. Both are claimed the same way; the registrar checks
-        // that an npub-shaped name really belongs to its claimant.
+        // wallet's own. Claiming the real one has to be SIGNED by that
+        // identity (the registrar won't let anyone else take an npub-shaped
+        // name), so it needs a live signer — after a reload an extension can
+        // usually be re-attached silently; anything else falls back to the
+        // wallet's own identity rather than retrying a claim that can only
+        // ever fail.
         const linked = hook('nostrLoginIdentity');
-        const npub = (linked && linked.npub) || (wallet.nostrNpub && wallet.nostrNpub());
+        let signer = linked && linked.signer;
+        if (linked && !signer) { try { signer = await hook('nostrLoginResume'); } catch {} }
+        const useReal = !!(linked && signer);
+        const npub = useReal ? linked.npub : (wallet.nostrNpub && wallet.nostrNpub());
         if (npub) {
-          await claim(npub.slice(0, 20), linked
-            ? { signer: linked.signer, manager: wallet.nostrPubkey() }
-            : {});
+          const opts = useReal ? { signer, manager: wallet.nostrPubkey() } : {};
+          try {
+            await claim(npub.slice(0, 20), opts);
+          } catch (e) {
+            // A refusal is permanent — never spin on it. Fall back to the
+            // wallet's own name so the user always ends up with an address.
+            const permanent = /belongs to another|is taken|reserved|invalid/i.test(e.message);
+            const own = wallet.nostrNpub && wallet.nostrNpub();
+            if (permanent && useReal && own) await claim(own.slice(0, 20), {});
+            else if (!permanent) throw e;
+          }
           st = load();
         }
       }

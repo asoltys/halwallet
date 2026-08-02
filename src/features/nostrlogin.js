@@ -176,6 +176,21 @@ export function nostrLoginFeature(ctx) {
       if (!st.pubkey) return null;
       return { pubkey: st.pubkey, npub: npubOf(st.pubkey), signer: live };
     },
+    // A page reload loses the signer. An installed extension can usually be
+    // re-attached without prompting, which is what lets the payment address
+    // stay tied to the user's real identity across reloads. Returns null for
+    // signers we cannot silently reattach (pasted keys, bunkers).
+    async nostrLoginResume() {
+      if (live) return live;
+      const st = load();
+      if (!st.pubkey || typeof window === 'undefined' || !window.nostr) return null;
+      try {
+        const s = await extensionSigner();
+        if (s.pubkey !== st.pubkey) return null;
+        live = s;
+        return s;
+      } catch { return null; }
+    },
     unlockExtra() { return unlockExtra(); },
     settingsCards() { return [settingsCard()]; },
   };
