@@ -83,7 +83,7 @@ console.log('[balance + info]');
   const { deps, published, decryptReply } = harness();
   await respondFromBg({ type: 'nwc', event: ev(makeReq('get_info', {}, 'nip04')) }, deps);
   const r = decryptReply(published[0]);
-  check('nip04 get_info answered in nip04', r.result?.alias === 'Hal' && published[0].tags.find((t) => t[0] === 'encryption')[1] === 'nip04');
+  check('nip04 get_info answered in nip04', r.result?.alias === 'Coinos' && published[0].tags.find((t) => t[0] === 'encryption')[1] === 'nip04');
 }
 
 console.log('\n[guards]');
