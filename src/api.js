@@ -209,8 +209,8 @@ export function getBoltzWs() { const p = getBoltzProvider(); return p.ws || deri
 const ARK_PRESETS_BY_NET = {
   mainnet: [
     { id: 'off', label: 'Off', ark: '', esplora: '' },
-    { id: 'second', label: 'Second (ark.second.tech)', ark: 'https://ark.second.tech', esplora: 'https://mempool.second.tech/api' },
     { id: 'coinos', label: 'coinos (ark.coinos.io)', ark: 'https://ark.coinos.io', esplora: 'https://mempool.space/api' },
+    { id: 'second', label: 'Second (ark.second.tech)', ark: 'https://ark.second.tech', esplora: 'https://mempool.second.tech/api' },
     { id: 'custom', label: 'Custom…', ark: '', esplora: '' },
   ],
   // No public ASP on these networks (Second runs signet + mainnet only) —
@@ -236,8 +236,11 @@ const ARK_PRESETS_BY_NET = {
   ],
 };
 // On by default where a known-good server exists; the Settings card can
-// always turn it off.
-const ARK_DEFAULT = { mainnet: 'second', testnet: 'off', signet: 'second', mutinynet: 'off', regtest: 'local' };
+// always turn it off. NOTE for anyone flipping the mainnet default: ark
+// state is namespaced per server, so a user who never explicitly picked a
+// provider follows the default — their coins on the old ASP stay safe under
+// its namespace but disappear from view until they reselect it in Settings.
+const ARK_DEFAULT = { mainnet: 'coinos', testnet: 'off', signet: 'second', mutinynet: 'off', regtest: 'local' };
 const ARK_PROVIDER_KEY = 'btc-wallet-ark-provider'; // selected preset id, per network
 const ARK_CUSTOM_KEY = 'btc-wallet-ark-custom';     // { ark, esplora } for custom, per network
 
