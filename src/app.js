@@ -1914,22 +1914,23 @@ function balanceCard() {
   // is the on-chain one. The headline is simply everything you have.
   const spending = featureHook('spendingSat') || 0;
   const saving = wallet.spendable;
-  const split = spending > 0 || saving > 0;
+  const hasArk = !!featureHook('arkReady');
   return h(
     'div',
     { class: 'card balance' },
-    h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' }, t('balance')),
+    // Spending is the balance people use, so it IS the balance: headline,
+    // with Saving as a quieter line underneath. No total — the two are
+    // different kinds of money, and adding them up says nothing useful.
+    h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' },
+      hasArk ? t('spendingLabel') : t('balance')),
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
       firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,
-      fmtAmount(spending + saving), ' ', unitTag('unit')),
-    split || pending > 0 || featLines.length
+      fmtAmount(hasArk ? spending : saving), ' ', unitTag('unit')),
+    hasArk || pending > 0 || featLines.length
       ? h(
           'div',
           { class: 'split' },
-          split
-            ? h('div', {}, h('div', { class: 'k' }, t('spendingLabel')), h('div', { class: 'v' }, fmtAmount(spending), ' ', unitTag()))
-            : null,
-          split
+          hasArk
             ? h('div', {}, h('div', { class: 'k' }, t('savingLabel')), h('div', { class: 'v' }, fmtAmount(saving), ' ', unitTag()))
             : null,
           pending > 0
