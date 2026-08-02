@@ -209,6 +209,6 @@ export function nostrLoginFeature(ctx) {
       } catch { return null; }
     },
     unlockExtra() { return unlockExtra(); },
-    settingsCards() { return [settingsCard()]; },
+    nostrSettingsCards() { return [settingsCard()]; },
   };
 }

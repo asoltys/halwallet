@@ -766,6 +766,6 @@ export function nwcFeature(ctx) {
     nwcOfferString() { return hook('arkReady') && !wallet.watchOnly ? offerString() : null; },
     init() { listen(); startWatchdog(); refreshRegistration(); reconcileBg(); },
     stop() { stop(); if (watchdog) { clearInterval(watchdog); watchdog = null; } },
-    settingsCards() { return [nwcCard()]; },
+    nostrSettingsCards() { return [nwcCard()]; },
   };
 }

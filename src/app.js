@@ -333,7 +333,7 @@ wallet.subscribe(scheduleRender);
 // buttons (and Android/system back) move between screens we've actually viewed.
 // We snapshot only the navigation-relevant `ui` fields, so incidental re-renders
 // (typing, polling, balance updates) don't create history entries.
-const NAV_FIELDS = ['screen', 'tab', 'txDetail', 'bump', 'giftMode', 'claimStep', 'msgView', 'msgCommunity', 'msgPeer'];
+const NAV_FIELDS = ['screen', 'tab', 'txDetail', 'bump', 'giftMode', 'claimStep', 'msgView', 'msgCommunity', 'msgPeer', 'settingsPage'];
 function navSnapshot() {
   const s = {};
   for (const f of NAV_FIELDS) s[f] = ui[f] ?? null;
@@ -1425,30 +1425,33 @@ function addressScanView() {
 
 function settingsTab() {
   if (ui.addrScan && !wallet.offline) return addressScanView();
+  if (ui.settingsPage === 'advanced') return advancedSettingsView();
+  const a = activeAccount();
+  const nostrCards = featureAll('nostrSettingsCards');
   return h(
     'div',
     { class: 'col', style: 'gap:16px' },
-    // Quick link to the active wallet's own settings (name, seed, pubkey, auto-logout).
-    activeAccount()
-      ? h('div', { class: 'card col' },
-          h('h3', {}, activeAccount().label),
-          h('p', { class: 'small muted', style: 'margin:0' }, t('walletSettingsDesc')),
-          h('button', { class: 'btn-primary btn-block', onClick: () => openAccountSettings(activeId) }, '⚙ ' + t('walletSettings'))
-        )
+    // The active wallet's own settings, inlined (auto-logout lives in Advanced).
+    ...(a ? [recoveryCard(a), walletNameCard(a), pubkeyCard(a)] : []),
+    ...featureAll('settingsCards'),
+    networkCard(),
+    explorerCard(),
+    // Everything nostr — identity, sync, wallet connect — under one heading.
+    nostrCards.length || (a && nostrNpubCard(a))
+      ? h('h3', { class: 'settings-section' }, t('nostrSection'))
       : null,
-    // Recovery phrase + public key live on each wallet's own settings page now
-    // (Accounts → ⚙). Watch-only wallets can still add their seed here.
-    wallet.watchOnly
-      ? (ui.loadSeed
-          ? loadSeedCard()
-          : h('div', { class: 'card col' },
-              h('h3', {}, t('watchOnly')),
-              h('p', { class: 'small muted', style: 'margin:0' }, t('watchOnlyNote')),
-              activeAccount() && activeAccount().xpub
-                ? h('button', { class: 'btn-primary btn-block', style: 'margin-top:4px', onClick: () => startLoadSeed() }, t('loadSeedBtn'))
-                : null
-            ))
-      : null,
+    a ? nostrNpubCard(a) : null,
+    ...nostrCards,
+    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = 'advanced'; render(); } }, t('advancedSettings'))
+  );
+}
+
+// Rarely used, easy to fat-finger: offline transfer, address rescan, auto-logout.
+function advancedSettingsView() {
+  const a = activeAccount();
+  return h(
+    'div',
+    { class: 'col', style: 'gap:16px' },
     wallet.watchOnly
       ? null
       : h(
@@ -1466,10 +1469,8 @@ function settingsTab() {
         ? null
         : h('button', { onClick: () => { ui.addrScan = true; ui.addrScanPage = 0; render(); } }, t('rescanAddresses'))
     ),
-    networkCard(),
-    ...featureAll('settingsCards'),
-    explorerCard(),
-    null
+    a ? autolockCard(a) : null,
+    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = null; render(); } }, t('back'))
   );
 }
 
@@ -1738,91 +1739,110 @@ function openAccountSettings(id) {
   render();
 }
 
-// Per-wallet settings: name, auto-logout, recovery phrase, and public key — for
-// any account (not just the active one; full accounts keep their seed in memory).
-function accountSettingsScreen() {
-  const a = accounts.find((x) => x.id === ui.settingsId) || activeAccount();
-  if (!a) { ui.screen = 'accounts'; return accountsScreen(); }
+// Per-wallet settings cards, shared by the per-account screen (Accounts → ⚙)
+// and the main Settings tab (which inlines them for the active wallet).
+
+function recoveryCard(a) {
   const isWatch = a.type === 'watch' || (!a.mnemonic && !a.xprv);
   const shown = ui.revealShown;
   const words = a.mnemonic ? a.mnemonic.split(' ') : [];
-  let zpub = '';
-  try { if (a.xpub) zpub = xpubToZpub(a.xpub); } catch {}
+  if (isWatch) {
+    return ui.loadSeed && ui.loadSeed.accId === a.id
+      ? loadSeedCard()
+      : h('div', { class: 'card col' },
+          h('h3', {}, t('recoveryPhrase')),
+          h('p', { class: 'small muted', style: 'margin:0' }, t('watchOnlyNote')),
+          a.xpub
+            ? h('button', { class: 'btn-primary btn-block', style: 'margin-top:4px', onClick: () => startLoadSeed({ accId: a.id }) }, t('loadSeedBtn'))
+            : null
+        );
+  }
+  if (!a.mnemonic)
+    return h('div', { class: 'card col' }, h('h3', {}, t('importedKey')), h('p', { class: 'small muted', style: 'margin:0' }, t('importedKeyNote')));
+  return h('div', { class: 'card col' },
+    h('h3', {}, t('recoveryPhrase')),
+    h('div', { class: 'warn-box' }, t('recoveryWarn')),
+    h('div', { class: 'words' }, words.map((w, i) =>
+      h('div', { class: 'w' + (shown ? '' : ' masked') }, h('span', { class: 'n' }, i + 1), h('span', { class: 't' }, shown ? w : '••••••')))),
+    shown && a.passphrase
+      ? h('div', { class: 'col gap6' }, h('span', { class: 'lab' }, t('bip39Passphrase')), h('div', { class: 'addr-box' }, a.passphrase))
+      : null,
+    shown
+      ? h('div', { class: 'row gap6 wrap' },
+          copyBtn(a.mnemonic, t('copyPhrase')),
+          a.passphrase ? copyBtn(a.passphrase, t('copyPassphrase')) : null,
+          h('button', { class: 'btn-sm grow', onClick: () => { ui.revealShown = false; render(); } }, t('hide')))
+      : h('button', { class: 'btn-primary btn-block', onClick: () => { ui.revealShown = true; render(); } }, t('revealRecovery'))
+  );
+}
+
+function walletNameCard(a) {
   const saveName = () => {
     const v = (ui.editLabel || '').trim();
     if (v && v !== a.label) { a.label = v; persistAccounts(); if (a.persisted) writeVault(); }
     ui.editLabel = null;
     render();
   };
+  return h('div', { class: 'card col' },
+    h('h3', {}, t('walletName')),
+    h('div', { class: 'row gap6' },
+      h('input', { type: 'text', style: 'flex:1', value: ui.editLabel != null ? ui.editLabel : a.label,
+        onInput: (e) => { ui.editLabel = e.target.value; },
+        onKeyDown: (e) => { if (e.key === 'Enter') saveName(); } }),
+      h('button', { class: 'btn-sm', onClick: saveName }, t('save'))
+    )
+  );
+}
+
+function pubkeyCard(a) {
+  let zpub = '';
+  try { if (a.xpub) zpub = xpubToZpub(a.xpub); } catch {}
+  return h('div', { class: 'card col' },
+    h('h3', {}, t('publicKey')),
+    h('p', { class: 'small muted', style: 'margin:0' }, t('publicKeyDesc')),
+    ui.pubkeyShown
+      ? h('div', { class: 'col gap6' },
+          h('div', { class: 'addr-box break', style: 'font-size:12px' }, zpub),
+          h('div', { class: 'row gap6 wrap' },
+            copyBtn(zpub, t('copyKey')),
+            h('button', { class: 'btn-sm grow', onClick: () => { ui.pubkeyShown = false; render(); } }, t('hide'))))
+      : h('button', { class: 'btn-block', onClick: () => { ui.pubkeyShown = true; render(); } }, t('showPublicKey'))
+  );
+}
+
+// Nostr address — share it so others can send you locked gifts.
+function nostrNpubCard(a) {
+  if (a.id !== activeId || !wallet.nostrNpub || !wallet.nostrNpub()) return null;
+  return h('div', { class: 'card col' },
+    h('h3', {}, t('nostrKeyTitle')),
+    h('p', { class: 'small muted', style: 'margin:0' }, t('nostrKeyDesc')),
+    h('div', { class: 'addr-box break', style: 'font-size:12px' }, wallet.nostrNpub()),
+    copyBtn(wallet.nostrNpub(), t('copyKey')));
+}
+
+function autolockCard(a) {
+  return h('div', { class: 'card col' },
+    h('h3', {}, t('autolockTitle')),
+    h('p', { class: 'small muted', style: 'margin:0' }, t('autolockDesc')),
+    h('select', { onChange: (e) => { a.autoLock = Number(e.target.value) || 0; persistAccounts(); if (a.persisted) writeVault(); render(); } },
+      AUTOLOCK_OPTIONS.map((o) => h('option', { value: String(o.ms), selected: o.ms === accAutoLock(a) }, t(o.label))))
+  );
+}
+
+// Per-wallet settings screen — reached from Accounts → ⚙ for any account
+// (not just the active one; full accounts keep their seed in memory).
+function accountSettingsScreen() {
+  const a = accounts.find((x) => x.id === ui.settingsId) || activeAccount();
+  if (!a) { ui.screen = 'accounts'; return accountsScreen(); }
   return h(
     'div',
     { class: 'col', style: 'gap:16px' },
     brandHeader(false),
-    // Recovery phrase (top)
-    isWatch
-      ? (ui.loadSeed && ui.loadSeed.accId === a.id
-          ? loadSeedCard()
-          : h('div', { class: 'card col' },
-              h('h3', {}, t('recoveryPhrase')),
-              h('p', { class: 'small muted', style: 'margin:0' }, t('watchOnlyNote')),
-              a.xpub
-                ? h('button', { class: 'btn-primary btn-block', style: 'margin-top:4px', onClick: () => startLoadSeed({ accId: a.id }) }, t('loadSeedBtn'))
-                : null
-            ))
-      : !a.mnemonic
-        ? h('div', { class: 'card col' }, h('h3', {}, t('importedKey')), h('p', { class: 'small muted', style: 'margin:0' }, t('importedKeyNote')))
-        : h('div', { class: 'card col' },
-            h('h3', {}, t('recoveryPhrase')),
-            h('div', { class: 'warn-box' }, t('recoveryWarn')),
-            h('div', { class: 'words' }, words.map((w, i) =>
-              h('div', { class: 'w' + (shown ? '' : ' masked') }, h('span', { class: 'n' }, i + 1), h('span', { class: 't' }, shown ? w : '••••••')))),
-            shown && a.passphrase
-              ? h('div', { class: 'col gap6' }, h('span', { class: 'lab' }, t('bip39Passphrase')), h('div', { class: 'addr-box' }, a.passphrase))
-              : null,
-            shown
-              ? h('div', { class: 'row gap6 wrap' },
-                  copyBtn(a.mnemonic, t('copyPhrase')),
-                  a.passphrase ? copyBtn(a.passphrase, t('copyPassphrase')) : null,
-                  h('button', { class: 'btn-sm grow', onClick: () => { ui.revealShown = false; render(); } }, t('hide')))
-              : h('button', { class: 'btn-primary btn-block', onClick: () => { ui.revealShown = true; render(); } }, t('revealRecovery'))
-          ),
-    // Name
-    h('div', { class: 'card col' },
-      h('h3', {}, t('walletName')),
-      h('div', { class: 'row gap6' },
-        h('input', { type: 'text', style: 'flex:1', value: ui.editLabel != null ? ui.editLabel : a.label,
-          onInput: (e) => { ui.editLabel = e.target.value; },
-          onKeyDown: (e) => { if (e.key === 'Enter') saveName(); } }),
-        h('button', { class: 'btn-sm', onClick: saveName }, t('save'))
-      )
-    ),
-    // Public key (zpub)
-    h('div', { class: 'card col' },
-      h('h3', {}, t('publicKey')),
-      h('p', { class: 'small muted', style: 'margin:0' }, t('publicKeyDesc')),
-      ui.pubkeyShown
-        ? h('div', { class: 'col gap6' },
-            h('div', { class: 'addr-box break', style: 'font-size:12px' }, zpub),
-            h('div', { class: 'row gap6 wrap' },
-              copyBtn(zpub, t('copyKey')),
-              h('button', { class: 'btn-sm grow', onClick: () => { ui.pubkeyShown = false; render(); } }, t('hide'))))
-        : h('button', { class: 'btn-block', onClick: () => { ui.pubkeyShown = true; render(); } }, t('showPublicKey'))
-    ),
-    // Nostr address — share it so others can send you locked gifts.
-    (a.id === activeId && wallet.nostrNpub && wallet.nostrNpub())
-      ? h('div', { class: 'card col' },
-          h('h3', {}, t('nostrKeyTitle')),
-          h('p', { class: 'small muted', style: 'margin:0' }, t('nostrKeyDesc')),
-          h('div', { class: 'addr-box break', style: 'font-size:12px' }, wallet.nostrNpub()),
-          copyBtn(wallet.nostrNpub(), t('copyKey')))
-      : null,
-    // Auto-logout (bottom)
-    h('div', { class: 'card col' },
-      h('h3', {}, t('autolockTitle')),
-      h('p', { class: 'small muted', style: 'margin:0' }, t('autolockDesc')),
-      h('select', { onChange: (e) => { a.autoLock = Number(e.target.value) || 0; persistAccounts(); if (a.persisted) writeVault(); render(); } },
-        AUTOLOCK_OPTIONS.map((o) => h('option', { value: String(o.ms), selected: o.ms === accAutoLock(a) }, t(o.label))))
-    ),
+    recoveryCard(a),
+    walletNameCard(a),
+    pubkeyCard(a),
+    nostrNpubCard(a),
+    autolockCard(a),
     h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.editLabel = null; ui.revealShown = false; ui.pubkeyShown = false; ui.loadSeed = null; goBack(() => { ui.screen = 'accounts'; }); } }, t('back'))
   );
 }
@@ -1967,6 +1987,7 @@ function tabsBar() {
         ui.arkMoveDetail = null;
         ui.giftDetail = null;
         ui.addrScan = false; // and back to the main Settings, not the address list
+        ui.settingsPage = null;
         ui.bump = null;
         ui.giftMode = false;
         render();

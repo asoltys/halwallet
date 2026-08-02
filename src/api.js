@@ -248,6 +248,10 @@ export function arkPresets(net = getNetwork()) {
   return ARK_PRESETS_BY_NET[net] || ARK_PRESETS_BY_NET.mainnet;
 }
 export function getArkProviderId(net = getNetwork()) {
+  // Mainnet always rides coinos — the provider picker was removed from
+  // Settings, so a stale stored choice must not silently win. Dev networks
+  // still honor a stored id (regtest/mutinynet testing needs it).
+  if (net === 'mainnet') return 'coinos';
   try {
     const id = localStorage.getItem(nk(ARK_PROVIDER_KEY, net));
     if (id && arkPresets(net).some((p) => p.id === id)) return id;

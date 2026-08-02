@@ -252,7 +252,7 @@ export function syncFeature(ctx) {
 
   return {
     id: 'sync',
-    settingsCards() {
+    nostrSettingsCards() {
       return wallet.watchOnly || !wallet.mnemonic ? [] : [syncCard()];
     },
   };

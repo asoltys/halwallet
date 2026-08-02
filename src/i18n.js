@@ -198,6 +198,8 @@ const STR = {
     msgInviteSent: 'Invite sent',
     msgLeave: 'Leave community',
     msgLeaveConfirm: 'Really leave? Rejoining needs a new invite',
+    nostrSection: 'Nostr',
+    advancedSettings: 'Advanced settings',
     copyAddress: 'Copy address',
     paymentReceived: 'Payment received!',
     tapToProceed: 'Tap anywhere to proceed',

@@ -14,8 +14,7 @@ import { decodeVtxo, getVtxoStatus, VTXO_STATE_SPENT, concatBytes } from '../ark
 import { signedExitTxs, buildBumpChild, buildExitClaim, submitPackage } from '../ark/exit.js';
 import { utxoId } from '../wallet.js';
 import {
-  getNetwork, setNetwork, arkPresets, getArkProviderId, setArkProviderId,
-  getArkCustom, setArkCustom, getArkConfig,
+  getNetwork, setNetwork, getArkProviderId, getArkConfig,
 } from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
@@ -833,37 +832,12 @@ export function arkFeature(ctx) {
 
   function arkCard() {
     const net = getNetwork();
+    // No provider picker: coinos is the provider (per-network defaults cover
+    // dev networks). The card is status only.
     const id = getArkProviderId(net);
-    const custom = getArkCustom(net);
-    const presets = arkPresets(net);
-    const applyProvider = (v) => {
-      setArkProviderId(v, net);
-      ui.receiveType = null;
-      initArk();
-      render();
-    };
     const head = [
       h('h3', { class: 'row gap6', style: 'align-items:center' }, t('arkTitle')),
       h('p', { class: 'small muted', style: 'margin:0' }, t('arkDesc')),
-      h('select', { onChange: (e) => applyProvider(e.target.value) },
-        presets.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
-      id === 'custom'
-        ? h('div', { class: 'col', style: 'gap:8px' },
-            h('label', { class: 'field' },
-              h('span', { class: 'lab' }, t('arkServerUrl')),
-              h('input', {
-                type: 'text', class: 'mono-input', placeholder: 'https://ark.example.com',
-                autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: custom.ark,
-                onChange: (e) => { setArkCustom({ ark: e.target.value.trim(), esplora: custom.esplora }, net); initArk(); render(); },
-              })),
-            h('label', { class: 'field' },
-              h('span', { class: 'lab' }, t('arkEsploraUrl')),
-              h('input', {
-                type: 'text', class: 'mono-input', placeholder: 'https://mempool.example.com/api',
-                autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: custom.esplora,
-                onChange: (e) => { setArkCustom({ ark: custom.ark, esplora: e.target.value.trim() }, net); initArk(); render(); },
-              })))
-        : null,
       ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null,
     ];
     if (id === 'off' || wallet.watchOnly) {
