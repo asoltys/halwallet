@@ -122,6 +122,7 @@ export function nwcFeature(ctx) {
     try { wallet.saveCache(); } catch {} // share it with the user's other devices
     publishInfo(c).catch(() => {});
     listen();
+    refreshRegistration(); // the notifier must learn the new service pubkey
     return c;
   }
 
@@ -170,6 +171,7 @@ export function nwcFeature(ctx) {
       st.conns = merged;
       save(st);
       listen();
+      refreshRegistration(); // connection set changed under us via sync
       render();
     },
   });
@@ -451,6 +453,31 @@ export function nwcFeature(ctx) {
     return true;
   }
 
+  // Keep the notifier's view of our service pubkeys current. It can only
+  // wake this device for connections it was told about, and a registration
+  // made before a connection existed (or after one was revoked) watches the
+  // wrong keys — background wake-ups silently die the first time a
+  // connection is recreated. Debounced; the server replaces by endpoint.
+  let regTimer = null;
+  function refreshRegistration() {
+    if (!load().background) return;
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    clearTimeout(regTimer);
+    regTimer = setTimeout(async () => {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (!sub) return;
+        const list = conns();
+        if (!list.length) return;
+        await fetch(`${NOTIFIER}/register`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ subscription: sub.toJSON(), servicePubkeys: list.map((c) => c.servicePk) }),
+        });
+      } catch (e) { console.warn('nwc: notifier re-register failed', e.message); }
+    }, 1500);
+  }
+
   async function disableBackground() {
     try {
       const reg = await navigator.serviceWorker.ready;
@@ -533,6 +560,7 @@ export function nwcFeature(ctx) {
             h('span', {}, c.name),
             h('span', { class: 'linklike small', onClick: () => {
               updateConn(c.id, { revoked: true }); listen();
+              refreshRegistration(); // stop waking this device for a dead key
               try { wallet.saveCache(); } catch {} // propagate the revocation
               render();
               toast(t('nwcRevoked', { name: c.name }));
@@ -583,7 +611,7 @@ export function nwcFeature(ctx) {
 
   return {
     id: 'nwc',
-    init() { listen(); startWatchdog(); },
+    init() { listen(); startWatchdog(); refreshRegistration(); },
     stop() { stop(); if (watchdog) { clearInterval(watchdog); watchdog = null; } },
     settingsCards() { return [nwcCard()]; },
   };
