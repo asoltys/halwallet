@@ -85,10 +85,24 @@ export function namesFeature(ctx) {
     save({});
   }
 
+  // An imported seed (or a new browser) doesn't know its username — the
+  // registrar does. Ask by the wallet's nostr pubkey and adopt the answer
+  // before deciding whether anything needs claiming.
+  async function lookupMine() {
+    try {
+      const pk = wallet.nostrPubkey && wallet.nostrPubkey();
+      if (!pk) return;
+      const r = await withTimeout(
+        fetch(`${REGISTRAR}/pubkey/${pk}`).then((x) => x.json()), 12000, 'registrar');
+      if (r && r.name) save({ ...load(), name: r.name, domain: r.domain || DOMAIN, uri: r.uri });
+    } catch (e) { console.warn('names: lookup failed —', e.message); }
+  }
+
   // Everyone gets an address without being asked: the default username is a
   // prefix of the wallet's npub — unique, boring, and free. Custom names are
   // an optional change (and may cost something one day, to keep squatters
   // out), so nothing here ever blocks the wallet.
+  let checked = false;   // setup finished (the pane waits on this)
   let retryTimer = null;
   let deadline = null;
   let lastError = null;
