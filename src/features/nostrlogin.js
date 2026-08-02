@@ -52,6 +52,8 @@ export function nostrLoginFeature(ctx) {
       live = signer;
       await ctx.openMnemonic(res.mnemonic, res.passphrase || '', { nostrPubkey: signer.pubkey });
       save({ ...load(), pubkey: signer.pubkey, linked: Date.now() });
+      // claim the real npub as the payment address while this signer is live
+      ctx.hook('namesAdoptIdentity', signer, npubOf(signer.pubkey))?.catch?.(() => {});
       toast(res.mode === 'derived' ? t('nlOpenedDerived') : t('nlOpenedRestored'));
       busy(false);
     } catch (e) { fail(e); }
@@ -68,6 +70,7 @@ export function nostrLoginFeature(ctx) {
       live = st.signer;
       await ctx.openMnemonic(mnemonic, '', { nostrPubkey: st.signer.pubkey });
       save({ ...load(), pubkey: st.signer.pubkey, linked: Date.now() });
+      ctx.hook('namesAdoptIdentity', st.signer, npubOf(st.signer.pubkey))?.catch?.(() => {});
       toast(t('nlCreated'));
       busy(false);
     } catch (e) { fail(e); }
@@ -89,6 +92,7 @@ export function nostrLoginFeature(ctx) {
       await publishWalletBackup(signer, { mnemonic: wallet.mnemonic, passphrase: wallet.passphrase || '' });
       live = signer;
       save({ ...load(), pubkey: signer.pubkey, linked: Date.now() });
+      ctx.hook('namesAdoptIdentity', signer, npubOf(signer.pubkey))?.catch?.(() => {});
       toast(t('nlLinked'));
       busy(false);
     } catch (e) { fail(e); }

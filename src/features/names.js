@@ -41,10 +41,10 @@ export function namesFeature(ctx) {
   async function post(path, method, payload, signer) {
     const url = `${REGISTRAR}${path}`;
     const body = JSON.stringify(payload);
-    const auth = await withTimeout(nip98Header(signer || walletSigner(), url, method, body), 20000, 'signing');
+    const auth = await withTimeout(nip98Header(signer || walletSigner(), url, method, body), 12000, 'signing');
     const r = await withTimeout(fetch(url, {
       method, headers: { 'content-type': 'application/json', authorization: auth }, body,
-    }), 20000, 'registrar');
+    }), 12000, 'registrar');
     const j = await r.json().catch(() => ({}));
     if (!r.ok || j.error) throw new Error(j.error || `registrar refused (${r.status})`);
     return j;
@@ -57,7 +57,7 @@ export function namesFeature(ctx) {
     && !!wallet.nostrSign && !!hook('arkReady');
 
   async function currentUri() {
-    const addr = await withTimeout(hook('arkStaticAddress'), 20000, 'ark');
+    const addr = await withTimeout(hook('arkStaticAddress'), 12000, 'ark');
     return addr ? `bitcoin:?ark=${encodeURIComponent(addr)}` : null;
   }
 
@@ -91,12 +91,13 @@ export function namesFeature(ctx) {
   // out), so nothing here ever blocks the wallet.
   let retryTimer = null;
   let deadline = null;
+  let lastError = null;
   async function refresh(attempt = 0) {
     clearTimeout(retryTimer);
     // Whatever goes wrong, stop claiming to be "setting up" after a minute
     // and show the user the manual form instead.
     if (!deadline) {
-      deadline = setTimeout(() => { checked = true; clearTimeout(retryTimer); render(); }, 60000);
+      deadline = setTimeout(() => { checked = true; clearTimeout(retryTimer); render(); }, 12000);
     }
     try {
       if (!available()) {
@@ -117,25 +118,12 @@ export function namesFeature(ctx) {
         // usually be re-attached silently; anything else falls back to the
         // wallet's own identity rather than retrying a claim that can only
         // ever fail.
-        const linked = hook('nostrLoginIdentity');
-        let signer = linked && linked.signer;
-        if (linked && !signer) { try { signer = await withTimeout(hook('nostrLoginResume'), 10000, 'signer'); } catch {} }
-        const useReal = !!(linked && signer);
-        const npub = useReal ? linked.npub : (wallet.nostrNpub && wallet.nostrNpub());
-        if (npub) {
-          const opts = useReal ? { signer, manager: wallet.nostrPubkey() } : {};
-          try {
-            await claim(npub.slice(0, 20), opts);
-          } catch (e) {
-            // A refusal is permanent — never spin on it. Fall back to the
-            // wallet's own name so the user always ends up with an address.
-            const permanent = /belongs to another|is taken|reserved|invalid/i.test(e.message);
-            const own = wallet.nostrNpub && wallet.nostrNpub();
-            if (permanent && useReal && own) await claim(own.slice(0, 20), {});
-            else if (!permanent) throw e;
-          }
-          st = load();
-        }
+        // Claim with the WALLET's own key: it needs no signer, prompts
+        // nobody, and always works. Tying the address to the user's real
+        // npub happens at login instead (adoptIdentity below), where a
+        // signer is already live — an address must never wait on a popup.
+        const own = wallet.nostrNpub && wallet.nostrNpub();
+        if (own) { await claim(own.slice(0, 20), {}); st = load(); }
       }
       checked = true;
       clearTimeout(deadline); deadline = null;
@@ -145,10 +133,23 @@ export function namesFeature(ctx) {
       if (uri && uri !== st.uri) await claim(st.name);
     } catch (e) {
       console.warn('names: refresh failed —', e.message);
-      if (attempt < 6) { retryTimer = setTimeout(() => refresh(attempt + 1), 5000); return; }
+      lastError = e.message;
+      if (attempt < 3) { retryTimer = setTimeout(() => refresh(attempt + 1), 4000); return; }
       checked = true;
       render();
     }
+  }
+
+  // Called right after a nostr login, while that signer is definitely live:
+  // move the payment address onto the user's real npub and nominate the
+  // wallet key to keep the record updated afterwards.
+  async function adoptIdentity(signer, npub) {
+    if (!signer || !npub || !available()) return null;
+    const name = npub.slice(0, 20);
+    if (load().name === name) return name;
+    await claim(name, { signer, manager: wallet.nostrPubkey() });
+    render();
+    return name;
   }
 
   // ---- sending to a name -------------------------------------------------
@@ -269,6 +270,7 @@ export function namesFeature(ctx) {
     if (!st.name) {
       return h('div', { class: 'card col', style: 'gap:10px' },
         seg,
+        lastError ? h('div', { class: 'notice err small' }, t('namesAutoFailed', { why: lastError })) : null,
         h('p', { class: 'small muted', style: 'margin:0' }, t('namesDesc')),
         claimForm(false));
     }
@@ -282,7 +284,8 @@ export function namesFeature(ctx) {
 
   return {
     id: 'names',
-    init() { checked = false; refresh(); },
+    init() { checked = false; lastError = null; refresh(); },
+    namesAdoptIdentity(signer, npub) { return adoptIdentity(signer, npub); },
     stop() { clearTimeout(retryTimer); clearTimeout(deadline); deadline = null; },
     receiveModes() {
       if (!available()) return [];

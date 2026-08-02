@@ -242,7 +242,9 @@ function rateOk(ip, limit = 10) {
 // HTTP
 // ---------------------------------------------------------------------------
 
-const json = (body, status = 200) => new Response(JSON.stringify(body), {
+const json = (body, status = 200) => {
+  if (status >= 400) log(`→ ${status} ${JSON.stringify(body).slice(0, 120)}`);
+  return new Response(JSON.stringify(body), {
   status,
   headers: {
     'content-type': 'application/json',
@@ -250,7 +252,8 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
     'access-control-allow-headers': 'content-type,authorization',
     'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
   },
-});
+  });
+};
 
 Bun.serve({
   port: CFG.port || 8798,
