@@ -40,6 +40,7 @@ const COMMUNITY = {
 };
 
 const EPOCH = 0;
+const CHAT_ICON = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 8.5 8.5z"/></svg>';
 const DM_RELAYS = ['wss://relay.coinos.io', 'wss://nos.lol'];
 const APP_BASE = 'https://v3.coinos.io';
 const CACHE_MAX = 50; // messages kept per channel / per DM thread in feature state
@@ -104,7 +105,7 @@ export function messagesFeature(ctx) {
     if (repaintTimer) return;
     repaintTimer = setTimeout(() => {
       repaintTimer = null;
-      if (ui.screen === 'wallet' && ui.tab === 'messages') render();
+      if (ui.screen === 'wallet' && ui.chatOpen) render();
     }, 80);
   };
 
@@ -785,6 +786,11 @@ export function messagesFeature(ctx) {
 
     const kids = [];
 
+    // Chat takes the whole screen, so home carries the way back to the wallet.
+    kids.push(h('div', { class: 'row gap6', style: 'align-items:center' },
+      backBtn(() => { ui.chatOpen = false; render(); }),
+      h('h3', { style: 'margin:0' }, t('tabMessages'))));
+
     if (pendingLink) kids.push(linkInviteCard());
     for (const [rid, inv] of pendingDirect) kids.push(directInviteCard(rid, inv));
 
@@ -1052,15 +1058,24 @@ export function messagesFeature(ctx) {
 
   return {
     id: 'messages',
-    tabs: () => [['messages', t('tabMessages')]],
-    tabContent(tab) {
-      if (tab !== 'messages') return null;
-      return messagesTab();
+    // Chat lives behind a header button and takes over the whole screen —
+    // no balance card, no tabs; each view carries its own way back.
+    headerButtons() {
+      return [h('button', {
+        class: 'btn-sm', title: t('tabMessages'),
+        onClick: () => { ui.chatOpen = true; render(); },
+      }, h('span', { html: CHAT_ICON }))];
+    },
+    screenView() {
+      if (!ui.chatOpen || ui.screen !== 'wallet') return null;
+      return h('div', { class: 'col', style: 'gap:16px' },
+        ctx.brandHeader(false),
+        messagesTab());
     },
     init() {
       if (urlInvite && !pendingLink) {
         loadLinkInvite(urlInvite);
-        setTimeout(() => { ui.tab = 'messages'; ui.msgView = 'home'; render(); }, 0);
+        setTimeout(() => { ui.chatOpen = true; ui.msgView = 'home'; render(); }, 0);
       }
       startDMs();
       syncLists().catch(() => {});

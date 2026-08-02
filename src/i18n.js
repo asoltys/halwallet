@@ -145,7 +145,6 @@ const STR = {
     moveToSaving: 'Into Savings',
     moveToSavingDesc: 'Park money in ordinary on-chain Bitcoin.',
     moveToSavingBtn: 'Move to Savings',
-    moveAvailable: '{n} in Spending',
     spendingLabel: 'Spending',
     savingLabel: 'Savings',
     movingLabel: 'Moving…',

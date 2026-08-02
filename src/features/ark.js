@@ -1372,7 +1372,7 @@ export function arkFeature(ctx) {
               h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting'))))
         : h('div', { class: 'col', style: 'gap:8px' },
             h('p', { class: 'small muted', style: 'margin:0' }, t('moveToSavingDesc')),
-            h('div', { class: 'small faint' }, t('moveAvailable', { n: fmtAmount(b ? b.spendableSat : 0) + ' ' + unitLabel() })),
+            // no "X sats in Spending" line — the balance sits right above on this card
             h('button', {
               class: 'btn-block', disabled: !b || !b.spendableSat,
               onClick: () => { ui.arkMoveOpen = false; ui.arkExitPage = true; ui.arkError = ''; render(); },
