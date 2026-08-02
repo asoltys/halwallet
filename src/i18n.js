@@ -449,6 +449,7 @@ const STR = {
     nlLinked: 'Wallet linked to your Nostr account',
     nlNeedSeed: 'This wallet has no recovery phrase loaded.',
     nlAlreadyLinked: 'That Nostr account already has a different wallet.',
+    namesSettingUp: 'Setting up your payment address…',
     namesTitle: 'Payment address',
     receiveNameTab: 'Payment address',
     namesCustom: 'Choose a custom name',

@@ -83,9 +83,17 @@ export function namesFeature(ctx) {
   // prefix of the wallet's npub — unique, boring, and free. Custom names are
   // an optional change (and may cost something one day, to keep squatters
   // out), so nothing here ever blocks the wallet.
-  async function refresh() {
+  let retryTimer = null;
+  async function refresh(attempt = 0) {
+    clearTimeout(retryTimer);
     try {
-      if (!available()) { checked = true; render(); return; }
+      if (!available()) {
+        // Ark connects lazily AFTER the wallet opens, so the first pass
+        // usually lands too early. Keep looking for a while rather than
+        // giving up and leaving the user staring at a claim box.
+        if (attempt < 40) { retryTimer = setTimeout(() => refresh(attempt + 1), 3000); return; }
+        checked = true; render(); return;
+      }
       let st = load();
       if (!st.name) { await lookupMine(); st = load(); }
       if (!st.name) {
@@ -107,7 +115,12 @@ export function namesFeature(ctx) {
       if (!st.name) return;
       const uri = await currentUri();
       if (uri && uri !== st.uri) await claim(st.name);
-    } catch (e) { checked = true; console.warn('names: refresh failed', e.message); }
+    } catch (e) {
+      console.warn('names: refresh failed', e.message);
+      if (attempt < 10) { retryTimer = setTimeout(() => refresh(attempt + 1), 5000); return; }
+      checked = true;
+      render();
+    }
   }
 
   // ---- sending to a name -------------------------------------------------
@@ -220,6 +233,11 @@ export function namesFeature(ctx) {
   // The Receive tab's default pane: your name, big and scannable.
   function namePane(seg) {
     const st = load();
+    if (!st.name && !checked) {
+      return h('div', { class: 'card col', style: 'align-items:center;gap:10px' },
+        seg, h('span', { class: 'spinner' }),
+        h('div', { class: 'small muted' }, t('namesSettingUp')));
+    }
     if (!st.name) {
       return h('div', { class: 'card col', style: 'gap:10px' },
         seg,
@@ -237,6 +255,7 @@ export function namesFeature(ctx) {
   return {
     id: 'names',
     init() { checked = false; refresh(); },
+    stop() { clearTimeout(retryTimer); },
     receiveModes() {
       if (!available()) return [];
       return [{
