@@ -463,6 +463,37 @@ Bun.serve({
       }
     }
 
+    // Top up the float over Lightning: it mints an invoice against its own
+    // ark balance, which anyone (in practice, the operator's node) can pay.
+    // Guarded by a token from the config file — this endpoint is public.
+    if (url.pathname === '/admin/topup' && req.method === 'POST') {
+      if (!CFG.adminToken || req.headers.get('x-admin-token') !== CFG.adminToken) {
+        return json({ error: 'unauthorized' }, 401);
+      }
+      if (!fwd) return json({ error: 'no forwarder wallet' }, 503);
+      const body = await req.json().catch(() => ({}));
+      const sat = Math.floor(body.sat || 0);
+      if (!sat || sat < 1000) return json({ error: 'amount too small' }, 400);
+      try {
+        const a = await fwd.createLnInvoice(sat, 'names float top-up');
+        log(`float top-up invoice for ${sat} sat`);
+        return json({ invoice: a.invoice, paymentHash: a.paymentHash });
+      } catch (e) {
+        return json({ error: e.message }, 500);
+      }
+    }
+
+    // Drive an in-flight lightning receive forward (top-ups settle async).
+    if (url.pathname === '/admin/drive' && req.method === 'POST') {
+      if (!CFG.adminToken || req.headers.get('x-admin-token') !== CFG.adminToken) {
+        return json({ error: 'unauthorized' }, 401);
+      }
+      if (!fwd) return json({ error: 'no forwarder wallet' }, 503);
+      for (const a of fwd.pendingActions()) { await fwd.driveLn(a.id).catch(() => {}); }
+      await fwd.sync().catch(() => {});
+      return json({ ok: true, floatSat: fwd.balance().spendableSat });
+    }
+
     if (url.pathname === '/register' && req.method === 'POST') {
       if (!rateOk(ip)) return json({ error: 'rate limited' }, 429);
       const bodyText = await req.text();
