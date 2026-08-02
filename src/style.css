@@ -311,3 +311,59 @@ hr.divider { margin: 16px 0; }
 .icon-select-item.active { background: var(--accent-soft, rgba(247,147,26,.14)); }
 .sel-ico { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; font-size: 16px; line-height: 1; }
 .sel-ico svg { display: block; }
+
+/* Messages — Concord community chat. */
+.chat-card { padding: 0; overflow: hidden; }
+.chat-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+.chat-title { font-weight: 650; }
+.chat-log {
+  height: min(52vh, 460px); overflow-y: auto; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 10px; background: var(--surface2);
+}
+.chat-row { display: flex; gap: 9px; align-items: flex-start; }
+.chat-row.grouped { margin-top: -6px; }
+.chat-avatar {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; object-fit: cover;
+  background: var(--accent-soft);
+}
+.chat-avatar.fallback {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 650; color: var(--muted); text-transform: uppercase;
+}
+.chat-avatar.spacer { background: transparent; height: 0; }
+.chat-body { min-width: 0; flex: 1; }
+.chat-meta { display: flex; align-items: baseline; gap: 7px; margin-bottom: 2px; }
+.chat-name { font-size: 13px; font-weight: 650; }
+.chat-badge {
+  font-size: 10px; font-weight: 650; color: var(--accent-fg); background: var(--accent);
+  border-radius: 5px; padding: 1px 5px; margin-left: 5px; vertical-align: 1px;
+}
+.chat-time { font-size: 11px; color: var(--faint); }
+.chat-bubble {
+  position: relative; display: inline-block; max-width: 100%;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+  padding: 7px 11px; font-size: 14px; line-height: 1.45;
+  overflow-wrap: break-word; white-space: pre-wrap;
+}
+.chat-edited { font-size: 11px; color: var(--faint); }
+.chat-del {
+  position: absolute; top: -7px; right: -7px; width: 18px; height: 18px;
+  display: none; align-items: center; justify-content: center;
+  border: 1px solid var(--line-strong); border-radius: 50%;
+  background: var(--paper); color: var(--muted); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.chat-row:hover .chat-del { display: flex; }
+.chat-reacts { display: flex; gap: 5px; margin-top: 3px; }
+.chat-react {
+  font-size: 12px; background: var(--paper); border: 1px solid var(--line);
+  border-radius: 9px; padding: 1px 7px;
+}
+.chat-compose {
+  display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line);
+  align-items: center;
+}
+.chat-compose input {
+  flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line-strong); border-radius: 11px; padding: 10px 13px;
+}
+.chat-compose input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }

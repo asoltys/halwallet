@@ -1954,6 +1954,7 @@ function tabsBar() {
     // Watch-only wallets show Send too — it prompts to load the seed to spend.
     ['send', t('tabSend')],
     ['history', t('tabHistory')],
+    ...featureAll('tabs'), // feature-provided tabs (e.g. messages) sit before Settings
     ['settings', t('tabSettings')],
   ];
   return h(
@@ -1982,6 +1983,7 @@ function tabContent() {
     case 'send': return sendTab();
     case 'history': return historyTab();
     case 'settings': return settingsTab();
+    default: return featureHook('tabContent', ui.tab);
   }
 }
 
