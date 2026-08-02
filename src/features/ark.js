@@ -230,6 +230,12 @@ export function arkFeature(ctx) {
           localStorage.setItem(wallet._arkHoldKey(owner),
             JSON.stringify({ ...d.arkState, serverPubkey: owner }));
         } catch {}
+        // `mine` is null on a FRESH restore (no local state, not yet
+        // connected), so even our own snapshot lands in the hold. Connecting
+        // is what resolves it: the manager learns the server's pubkey and
+        // adopts the held state if it matches — a seed imported on a new
+        // device would otherwise show no ark balance until some manual poke.
+        if (!mine) setTimeout(() => initArk(), 0);
         return;
       }
       const local = wallet.loadArkState(cfg.ark);
