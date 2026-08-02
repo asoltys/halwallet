@@ -247,7 +247,7 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
   headers: {
     'content-type': 'application/json',
     'access-control-allow-origin': '*',
-    'access-control-allow-headers': 'content-type',
+    'access-control-allow-headers': 'content-type,authorization',
     'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
   },
 });

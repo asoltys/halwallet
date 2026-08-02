@@ -32,13 +32,19 @@ export function namesFeature(ctx) {
     signEvent: async (e) => wallet.nostrSign(e),
   });
 
+  // Nothing here may hang: a stuck signer prompt or a dead endpoint must
+  // surface as an error, not as a spinner that never stops.
+  const withTimeout = (p, ms, what) => Promise.race([
+    p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} timed out`)), ms)),
+  ]);
+
   async function post(path, method, payload, signer) {
     const url = `${REGISTRAR}${path}`;
     const body = JSON.stringify(payload);
-    const auth = await nip98Header(signer || walletSigner(), url, method, body);
-    const r = await fetch(url, {
+    const auth = await withTimeout(nip98Header(signer || walletSigner(), url, method, body), 20000, 'signing');
+    const r = await withTimeout(fetch(url, {
       method, headers: { 'content-type': 'application/json', authorization: auth }, body,
-    });
+    }), 20000, 'registrar');
     const j = await r.json().catch(() => ({}));
     if (!r.ok || j.error) throw new Error(j.error || `registrar refused (${r.status})`);
     return j;
@@ -51,7 +57,7 @@ export function namesFeature(ctx) {
     && !!wallet.nostrSign && !!hook('arkReady');
 
   async function currentUri() {
-    const addr = await hook('arkStaticAddress');
+    const addr = await withTimeout(hook('arkStaticAddress'), 20000, 'ark');
     return addr ? `bitcoin:?ark=${encodeURIComponent(addr)}` : null;
   }
 
@@ -84,8 +90,14 @@ export function namesFeature(ctx) {
   // an optional change (and may cost something one day, to keep squatters
   // out), so nothing here ever blocks the wallet.
   let retryTimer = null;
+  let deadline = null;
   async function refresh(attempt = 0) {
     clearTimeout(retryTimer);
+    // Whatever goes wrong, stop claiming to be "setting up" after a minute
+    // and show the user the manual form instead.
+    if (!deadline) {
+      deadline = setTimeout(() => { checked = true; clearTimeout(retryTimer); render(); }, 60000);
+    }
     try {
       if (!available()) {
         // Ark connects lazily AFTER the wallet opens, so the first pass
@@ -107,7 +119,7 @@ export function namesFeature(ctx) {
         // ever fail.
         const linked = hook('nostrLoginIdentity');
         let signer = linked && linked.signer;
-        if (linked && !signer) { try { signer = await hook('nostrLoginResume'); } catch {} }
+        if (linked && !signer) { try { signer = await withTimeout(hook('nostrLoginResume'), 10000, 'signer'); } catch {} }
         const useReal = !!(linked && signer);
         const npub = useReal ? linked.npub : (wallet.nostrNpub && wallet.nostrNpub());
         if (npub) {
@@ -126,13 +138,14 @@ export function namesFeature(ctx) {
         }
       }
       checked = true;
+      clearTimeout(deadline); deadline = null;
       render();
       if (!st.name) return;
       const uri = await currentUri();
       if (uri && uri !== st.uri) await claim(st.name);
     } catch (e) {
-      console.warn('names: refresh failed', e.message);
-      if (attempt < 10) { retryTimer = setTimeout(() => refresh(attempt + 1), 5000); return; }
+      console.warn('names: refresh failed —', e.message);
+      if (attempt < 6) { retryTimer = setTimeout(() => refresh(attempt + 1), 5000); return; }
       checked = true;
       render();
     }
@@ -270,7 +283,7 @@ export function namesFeature(ctx) {
   return {
     id: 'names',
     init() { checked = false; refresh(); },
-    stop() { clearTimeout(retryTimer); },
+    stop() { clearTimeout(retryTimer); clearTimeout(deadline); deadline = null; },
     receiveModes() {
       if (!available()) return [];
       return [{
