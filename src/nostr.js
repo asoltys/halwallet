@@ -213,7 +213,14 @@ export class NostrSync {
       const content = nip44.encrypt(JSON.stringify(stateObj), this.ck);
       evt = finalizeEvent({ kind: 30078, created_at: Math.floor(Date.now() / 1000), tags: [['d', dtag]], content }, this.sk);
     } catch { return; }
-    await Promise.allSettled(pool.publish(this.relays, evt));
+    const results = await Promise.allSettled(pool.publish(this.relays, evt));
+    // A refused snapshot means devices silently stop syncing — the failure
+    // that once hid behind "my other device shows no history". Say so.
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn(`nostr: state snapshot (${evt.content.length}b) refused by ${this.relays[i]}:`, r.reason?.message || r.reason);
+      }
+    });
   }
 
   // Deliver an encrypted DM (a locked gift's claim code) as a NIP-17 gift wrap

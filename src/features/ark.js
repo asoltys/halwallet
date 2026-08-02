@@ -136,7 +136,10 @@ export function slimArkForSync(s) {
     actions: (s.actions || [])
       .filter((a) => a.step === 'done' && ['board', 'offboard', 'exit'].includes(a.type))
       .map((a) => { const c = { ...a }; for (const k of HEAVY) delete c[k]; return c; }),
-    movements: (s.movements || []).slice(-300),
+    movements: (s.movements || []).slice(-200).map((m, i, arr) =>
+      // Older rows only need to render a history line; the bolt11 (~400 chars
+      // each) and preimage are what pushed snapshots past relay size limits.
+      (arr.length - i <= 50 ? m : (({ invoice, preimage, ...rest }) => rest)(m))),
     gifts: s.gifts,
   };
 }
