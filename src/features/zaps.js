@@ -156,6 +156,15 @@ export function zapsFeature(ctx) {
         onClick: () => begin(target, display),
       }, '⚡ ' + t('lnZapOffer', { addr: display }));
     },
+    // The names feature resolves user@domain over DNS first (BIP-353) and
+    // lands here when the name has no DNS record — the classic LNURL path.
+    lnAddressFallback(text) {
+      if (!canPay() || !ui.send || ui.send.recipients.length !== 1) return false;
+      const target = parseZapTarget(text);
+      if (!target || target.kind === 'npub') return false;
+      begin(target, target.address || String(text).trim());
+      return true;
+    },
     // True when an npub can be zapped over Lightning from this build/wallet —
     // ark's "no Ark address" screen checks this before offering the fallback.
     canLnZap() { return canPay() && !!wallet.nostrProfile; },

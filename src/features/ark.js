@@ -1567,6 +1567,11 @@ export function arkFeature(ctx) {
       return { invoice: a.invoice, paymentHash: a.paymentHash, amountSat };
     },
     arkMovements() { const s = arkStateNow(); return s ? (s.movements || []) : []; },
+    // The wallet's reusable ark receive address (BIP-353 names publish it).
+    async arkStaticAddress() {
+      const mgr = await connectArk();
+      return mgr.address();
+    },
     // Whether background answering can mirror right now.
     arkBgReady() { return !!(ark && ark.info && ark.state); },
     // nwc.js calls this (with its connections) whenever the mirror should
