@@ -189,14 +189,32 @@ const arkParamOf = (uri) => {
   return m ? decodeURIComponent(m[1]) : null;
 };
 
-// Forward one settled offer payment; queue it on failure (empty float, etc).
+// Deliver a settled payment to the name's owner. Two ways, and we try the
+// one that works while they're asleep first:
+//   1. an arkoor send from the float — instant, free, needs no cooperation
+//   2. ask their wallet for an invoice and pay it over Lightning — needs no
+//      float at all, but only works while something of theirs is listening
+// Failing both, it queues and retries; nothing is ever dropped silently.
 async function forward(name, sat) {
   const rec = state.names[name];
   const dest = rec && arkParamOf(rec.uri);
-  if (!dest) { log(`forward: no ark destination for ${name}, dropping ${sat} sat`); return; }
-  if (!fwd) throw new Error('no forwarder wallet');
-  await fwd.send(dest, sat);
-  log(`forwarded ${sat} sat to ${name}`);
+  if (!dest && !rec?.offerPk) { log(`forward: nowhere to send ${sat} sat for ${name}`); return; }
+
+  if (dest && fwd && fwd.balance().spendableSat >= sat) {
+    await fwd.send(dest, sat);
+    log(`forwarded ${sat} sat to ${name}`);
+    return;
+  }
+
+  if (rec?.offerPk && ln) {
+    const pr = await requestInvoiceFromWallet(rec.offerPk, { amountSat: sat, description: `${name} payment` });
+    if (pr) {
+      await ln.pay(pr, { maxfeeSat: Math.max(2, Math.ceil(sat * 0.005)) });
+      log(`delivered ${sat} sat to ${name} over lightning (no float needed)`);
+      return;
+    }
+  }
+  throw new Error(fwd && dest ? 'insufficient float and the wallet is not listening' : 'no delivery route');
 }
 
 // NIP-57: a zap we invoiced is only "a zap" once we publish the receipt,

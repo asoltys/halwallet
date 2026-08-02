@@ -74,7 +74,7 @@ export function namesFeature(ctx) {
       ...(manager ? { manager } : {}),
     }, signer);
     const prev = load().name;
-    save({ name, domain: DOMAIN, uri, updated: Date.now() });
+    save({ name, domain: DOMAIN, uri, offerPk: hook('nwcOfferPubkey') || null, updated: Date.now() });
     if (prev && prev !== name) {
       post('/register', 'DELETE', { name: prev, domain: DOMAIN }).catch(() => {});
     }
@@ -147,7 +147,12 @@ export function namesFeature(ctx) {
       render();
       if (!st.name) return;
       const uri = await currentUri();
-      if (uri && uri !== st.uri) await claim(st.name);
+      // Re-publish when the address changed OR when the registrar doesn't yet
+      // know this wallet's offer key — that key is what lets an incoming
+      // Lightning payment be delivered straight to us instead of waiting on
+      // the operator's float.
+      const offerPk = hook('nwcOfferPubkey') || null;
+      if (uri && (uri !== st.uri || (offerPk && st.offerPk !== offerPk))) await claim(st.name);
     } catch (e) {
       console.warn('names: refresh failed —', e.message);
       lastError = e.message;
