@@ -1878,6 +1878,12 @@ function vaultScreen() {
 }
 
 function walletScreen() {
+  // A feature can hold the wallet behind a required onboarding step (picking
+  // a username). Imported wallets skip it once their name is recovered.
+  const ob = featureHook('onboardingView');
+  if (ob) {
+    return h('div', { class: 'col', style: 'gap:0' }, brandHeader(false), h('div', { class: 'mt16' }, ob));
+  }
   return h(
     'div',
     { class: 'col', style: 'gap:0' },
@@ -2048,11 +2054,14 @@ function receiveTab() {
   // the enabled features contribute (Lightning, silent payment, Ark, ...).
   const fresh = wallet.freshReceive();
   const featModes = featureAll('receiveModes');
-  let mode = ui.receiveType || 'address';
-  if (mode !== 'address' && !featModes.some((m) => m.id === mode)) mode = 'address';
+  // The payment name leads: it's the address most people should hand out.
+  const nameMode = featModes.find((m) => m.id === 'name');
+  let mode = ui.receiveType || (nameMode ? 'name' : 'address');
+  if (mode !== 'address' && !featModes.some((m) => m.id === mode)) mode = nameMode ? 'name' : 'address';
   const opts = [
+    ...(nameMode ? [{ id: 'name', label: nameMode.label, icon: nameMode.icon }] : []),
     { id: 'address', label: t('receiveAddressTab'), icon: BITCOIN_ICON(20) },
-    ...featModes.map((m) => ({ id: m.id, label: m.label, icon: m.icon })),
+    ...featModes.filter((m) => m.id !== 'name').map((m) => ({ id: m.id, label: m.label, icon: m.icon })),
   ];
   const seg = opts.length > 1
     ? iconSelect(opts, mode, (id) => { ui.receiveType = id; render(); })

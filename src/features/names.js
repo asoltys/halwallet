@@ -12,6 +12,7 @@
 // record falls back to the Lightning-address flow (zaps feature).
 
 import { resolveBip353, parsePaymentName, parseBip21 } from '../bip353.js';
+import { qrSvg } from '../qr.js';
 import { isArkAddress } from './ark.js';
 import { getNetwork } from '../api.js';
 import { t } from '../i18n.js';
@@ -66,14 +67,31 @@ export function namesFeature(ctx) {
     save({});
   }
 
+  // An imported seed doesn't know its username — the registrar does. Ask by
+  // the wallet's nostr pubkey and adopt what it says before deciding whether
+  // onboarding needs to prompt.
+  let checked = false; // lookup completed (gate stays closed until then)
+  async function lookupMine() {
+    try {
+      const pk = wallet.nostrPubkey && wallet.nostrPubkey();
+      if (!pk) return;
+      const r = await fetch(`${REGISTRAR}/pubkey/${pk}`).then((x) => x.json());
+      if (r && r.name) save({ ...load(), name: r.name, domain: r.domain || DOMAIN, uri: r.uri });
+    } catch {}
+  }
+
   // The record must track the wallet: re-register when the ark address moved.
   async function refresh() {
     try {
-      const st = load();
-      if (!st.name || !available()) return;
+      if (!available()) { checked = true; render(); return; }
+      let st = load();
+      if (!st.name) { await lookupMine(); st = load(); }
+      checked = true;
+      render();
+      if (!st.name) return;
       const uri = await currentUri();
       if (uri && uri !== st.uri) await claim(st.name);
-    } catch (e) { console.warn('names: refresh failed', e.message); }
+    } catch (e) { checked = true; console.warn('names: refresh failed', e.message); }
   }
 
   // ---- sending to a name -------------------------------------------------
@@ -122,6 +140,30 @@ export function namesFeature(ctx) {
 
   // ---- UI ---------------------------------------------------------------
 
+  function claimForm(big) {
+    return h('div', { class: 'col', style: 'gap:8px;width:100%' },
+      ui.nameClaimError ? h('div', { class: 'notice err' }, ui.nameClaimError) : null,
+      h('div', { class: 'row gap6' },
+        h('input', {
+          type: 'text', placeholder: t('namesPlaceholder'), style: 'flex:1' + (big ? ';font-size:18px' : ''),
+          autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
+          value: ui.nameClaim || '',
+          onInput: (e) => { ui.nameClaim = e.target.value.toLowerCase().trim(); },
+        }),
+        h('span', { class: 'muted', style: 'align-self:center' }, '@' + DOMAIN)),
+      h('button', { class: 'btn-primary btn-block', disabled: ui.busy, onClick: async () => {
+        const name = (ui.nameClaim || '').toLowerCase().trim();
+        if (!name) return;
+        ui.busy = true; ui.nameClaimError = null; render();
+        try {
+          await claim(name);
+          ui.nameClaim = '';
+          toast(t('namesClaimed', { name: `${name}@${DOMAIN}` }));
+        } catch (e) { ui.nameClaimError = e.message; }
+        ui.busy = false; render();
+      } }, ui.busy ? h('span', { class: 'spinner' }) : t('namesClaim')));
+  }
+
   function namesCard() {
     if (!available()) return null;
     const st = load();
@@ -152,30 +194,50 @@ export function namesFeature(ctx) {
     return h('div', { class: 'card col' },
       h('h3', {}, t('namesTitle')),
       h('p', { class: 'small muted', style: 'margin:0' }, t('namesDesc')),
-      ui.nameClaimError ? h('div', { class: 'notice err' }, ui.nameClaimError) : null,
-      h('div', { class: 'row gap6' },
-        h('input', {
-          type: 'text', placeholder: t('namesPlaceholder'), style: 'flex:1',
-          autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
-          value: ui.nameClaim || '',
-          onInput: (e) => { ui.nameClaim = e.target.value.toLowerCase().trim(); },
-        }),
-        h('button', { class: 'btn-primary', disabled: ui.busy, onClick: async () => {
-          const name = (ui.nameClaim || '').toLowerCase().trim();
-          if (!name) return;
-          ui.busy = true; ui.nameClaimError = null; render();
-          try {
-            await claim(name);
-            ui.nameClaim = '';
-            toast(t('namesClaimed', { name: `${name}@${DOMAIN}` }));
-          } catch (e) { ui.nameClaimError = e.message; }
-          ui.busy = false; render();
-        } }, t('namesClaim'))));
+      claimForm(false));
+  }
+
+  // The Receive tab's default pane: your name, big and scannable.
+  function namePane(seg) {
+    const st = load();
+    if (!st.name) {
+      return h('div', { class: 'card col', style: 'gap:10px' },
+        seg,
+        h('p', { class: 'small muted', style: 'margin:0' }, t('namesDesc')),
+        claimForm(false));
+    }
+    const addr = `${st.name}@${st.domain || DOMAIN}`;
+    return h('div', { class: 'card col', style: 'align-items:center;gap:14px' },
+      seg,
+      h('div', { html: qrSvg(addr) }),
+      h('div', { class: 'addr-box', style: 'width:100%;text-align:center;font-size:16px' }, addr),
+      copyBtn(addr, t('namesCopy')));
   }
 
   return {
     id: 'names',
-    init() { refresh(); },
+    init() { checked = false; refresh(); },
+    receiveModes() {
+      if (!available()) return [];
+      return [{
+        id: 'name', label: t('receiveNameTab'),
+        icon: '<svg viewBox="0 0 72 72" width="18" height="18" fill="currentColor"><path fill-rule="evenodd" d="M36 4.2C18.5 4.2 4.2 18.5 4.2 36S18.5 67.8 36 67.8 67.8 53.5 67.8 36 53.5 4.2 36 4.2ZM0 36C0 16.1 16.1 0 36 0s36 16.1 36 36-16.1 36-36 36S0 55.9 0 36Z"/><path fill-rule="evenodd" d="M36 58.6c12.5 0 22.6-10.1 22.6-22.6S48.5 13.4 36 13.4 13.4 23.5 13.4 36 23.5 58.6 36 58.6ZM36 54c9.9 0 18-8.1 18-18s-8.1-18-18-18-18 8.1-18 18 8.1 18 18 18Z"/><path d="M36 22.9c-7.2 0-13.1 5.9-13.1 13.1S28.8 49.1 36 49.1V22.9Z"/></svg>',
+        render: (seg) => namePane(seg),
+      }];
+    },
+    // New wallets must pick a username before using the wallet; imported
+    // seeds recover theirs from the registrar and skip straight through.
+    onboardingView() {
+      if (!available() || !checked) return null;
+      if (load().name || ui.namesLater) return null;
+      return h('div', { class: 'card col', style: 'gap:12px' },
+        h('h2', { style: 'margin:0' }, t('namesOnboardTitle')),
+        h('p', { class: 'muted', style: 'margin:0' }, t('namesOnboardDesc')),
+        claimForm(true),
+        ui.nameClaimError
+          ? h('button', { class: 'linklike small', onClick: () => { ui.namesLater = true; render(); } }, t('namesOnboardLater'))
+          : null);
+    },
     // BEFORE zaps in the registry: a pasted user@domain tries DNS first.
     matchSendText(text, typed) {
       if (typed) return false; // don't yank the form away mid-keystroke

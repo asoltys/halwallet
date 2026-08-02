@@ -256,6 +256,19 @@ Bun.serve({
       return json({ name: m[1], domain, taken: reserved, reserved });
     }
 
+    // Which name(s) does a wallet key own? Lets an imported seed find its
+    // username again without the user retyping it. Public data (DNS is public).
+    const pm = url.pathname.match(/^\/pubkey\/([0-9a-f]{64})$/);
+    if (pm && req.method === 'GET') {
+      const mine = Object.entries(state.names)
+        .filter(([, r]) => r.pubkey === pm[1])
+        .sort((a, b) => (b[1].updated || 0) - (a[1].updated || 0));
+      if (!mine.length) return json({});
+      const [key, r] = mine[0];
+      const [name, domain] = key.split('@');
+      return json({ name, domain, uri: r.uri });
+    }
+
     if (url.pathname === '/register' && req.method === 'POST') {
       if (!rateOk(ip)) return json({ error: 'rate limited' }, 429);
       const body = await req.json().catch(() => null);
