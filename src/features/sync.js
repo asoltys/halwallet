@@ -3,7 +3,11 @@
 // (used e.g. to DM locked-gift claim codes). Installed onto the core wallet;
 // a build without sync ships none of it and never talks to a relay.
 
-import { NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag, deviceDtag, isOurDtag, fetchNostrProfile, PROFILE_RELAYS } from '../nostr.js';
+import {
+  NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag, deviceDtag,
+  domainDtag, isOurDtag, isCoreDtag, isOwnDeviceDtag,
+  fetchNostrProfile, PROFILE_RELAYS,
+} from '../nostr.js';
 import { t } from '../i18n.js';
 
 // Keep a published snapshot under the relay's event-size cap. relay.coinos.io
@@ -22,6 +26,28 @@ function trimForRelay(snap) {
     s.txs = txs;
   }
   return s;
+}
+
+// Split a snapshot into per-domain pieces, each published as its own
+// replaceable event: an extension registered with a `domain` claims its keys,
+// everything left is the core wallet. Every piece carries netName + savedAt so
+// readers can apply the same guards as for full snapshots. Small events scale
+// on vanilla relays (no special size rules) and only changed domains
+// republish, so a payment burst no longer re-uploads the whole wallet.
+export function splitSnapshotDomains(snap, extensions = []) {
+  const core = { ...snap };
+  const out = {};
+  for (const e of extensions) {
+    if (!e.domain || !e.save) continue;
+    let obj;
+    try { obj = e.save(); } catch { continue; }
+    const keys = Object.keys(obj || {});
+    if (!keys.length) continue;
+    out[e.domain] = { netName: snap.netName, savedAt: snap.savedAt, ...obj };
+    for (const k of keys) delete core[k];
+  }
+  out.core = core;
+  return out;
 }
 
 export function installSyncWallet(wallet) {
@@ -106,11 +132,15 @@ export function installSyncWallet(wallet) {
       const mine = all.filter((s) => s.state.netName === this.netName && isOurDtag(s.dtag, this.netName));
       if (!mine.length) return false;
       // Merge every device's merge-safe extension state (ark vtxos union) — a
-      // device sees ALL devices' coins, not only the newest snapshot's.
+      // device sees ALL devices' coins, not only the newest snapshot's. Domain
+      // fragments route themselves: an extension's load() only reads its keys.
       for (const s of mine) this._mergeSnapshotExtensions(s.state);
-      // Apply the newest FULL snapshot for the rescannable on-chain state.
-      const newest = mine[0].state; // fetchAllStates returns newest-first
-      if ((newest.savedAt || 0) > (this._savedAt || 0)) {
+      // Apply the newest CORE-carrying snapshot for the rescannable on-chain
+      // state. Domain fragments (ark/nwc slices) must never be applied as a
+      // full snapshot — they'd blank the core fields they don't carry.
+      const fulls = mine.filter((s) => isCoreDtag(s.dtag, this.netName));
+      const newest = fulls[0] && fulls[0].state; // fetchAllStates returns newest-first
+      if (newest && (newest.savedAt || 0) > (this._savedAt || 0)) {
         this._applySnapshot(newest); // re-runs extension loads (idempotent merge)
         this.emit();
       }
@@ -123,6 +153,7 @@ export function installSyncWallet(wallet) {
   wallet.registerLoadHook(() => {
     if (wallet.mnemonic) wallet.nostr.load(wallet.mnemonic, wallet.passphrase);
     else wallet.nostr.unload();
+    wallet._syncPubSeen = {}; // a new identity has published nothing yet
   });
   // Live cross-device state: subscribe to ALL our devices' slots so a save on
   // another device merges here within seconds. Merge-safe extension state (ark
@@ -138,7 +169,7 @@ export function installSyncWallet(wallet) {
       stateUnsub = wallet.nostr.subscribeStates((v, dtag) => {
         if (!v.netName || v.netName !== wallet.netName) return;
         if (!isOurDtag(dtag, wallet.netName)) return;
-        if (dtag === deviceDtag(wallet.netName) && (v.savedAt || 0) === (wallet._savedAt || 0)) return; // our own echo
+        if (isOwnDeviceDtag(dtag, wallet.netName) && (v.savedAt || 0) === (wallet._savedAt || 0)) return; // our own echo
         wallet._mergeSnapshotExtensions(v);
       });
     },
@@ -146,16 +177,28 @@ export function installSyncWallet(wallet) {
   });
 
   // push every saved snapshot to the relays (debounced) unless sync is off —
-  // to THIS DEVICE's own slot, so it never clobbers another device's.
+  // split into per-domain slots on THIS DEVICE's tags, publishing only the
+  // domains whose content actually changed since the last publish.
+  wallet._syncPubSeen = {}; // domain -> last published JSON (per identity)
   wallet.registerCacheSavedHook((snap) => {
     const sync = getSyncConfig();
     if (wallet.offline || !sync.enabled) return;
     wallet.nostr.setRelays(sync.relays);
-    // bind the per-device d-tag now: the debounced publish must keep this
-    // snapshot's network even if the wallet switches networks before it fires
-    const dtag = deviceDtag(wallet.netName);
+    // bind the network now: the debounced publish must keep this snapshot's
+    // network even if the wallet switches networks before the timer fires
+    const net = wallet.netName;
     clearTimeout(wallet._nostrPubTimer);
-    wallet._nostrPubTimer = setTimeout(() => wallet.nostr.publish(trimForRelay(snap), dtag), 2500);
+    wallet._nostrPubTimer = setTimeout(async () => {
+      const domains = splitSnapshotDomains(snap, wallet._cacheExtensions || []);
+      domains.core = trimForRelay(domains.core);
+      for (const [name, obj] of Object.entries(domains)) {
+        const json = JSON.stringify(obj);
+        const slot = `${net}:${name}`;
+        if (wallet._syncPubSeen[slot] === json) continue; // unchanged
+        const ok = await wallet.nostr.publish(obj, domainDtag(net, name));
+        if (ok) wallet._syncPubSeen[slot] = json; // a refused publish retries next save
+      }
+    }, 2500);
   });
   wallet.registerRealtimeHook({ stop: () => clearTimeout(wallet._nostrPubTimer) });
 }

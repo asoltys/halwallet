@@ -155,6 +155,7 @@ export function nwcFeature(ctx) {
 
   // sync is an optional feature: a minimal build has no cache extensions
   if (wallet.registerCacheExtension) wallet.registerCacheExtension({
+    domain: 'nwc', // published as its own sync slot — see splitSnapshotDomains
     mergeAlways: true, // the merge is commutative, so older snapshots are fine
     save: () => {
       const list = (load().conns || []);

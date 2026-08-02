@@ -149,12 +149,29 @@ function deviceId() {
 }
 const bytesToHexLocal = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 export const deviceDtag = (netName) => `${syncDtag(netName)}:d:${deviceId()}`;
+// Per-DOMAIN slot (`<base>:x:<deviceId>:<domain>`): the snapshot is split
+// into independent pieces (core wallet, ark, nwc, …) so each event stays far
+// below common relay size limits and only changed domains republish. The
+// `:x:` marker is deliberately NOT `:d:` — clients from before the split
+// don't match it, so they never mistake a domain fragment for a full
+// snapshot and wipe their core state with it.
+export const domainDtag = (netName, domain) => `${syncDtag(netName)}:x:${deviceId()}:${domain}`;
 // True if `evtDtag` is one of OUR slots for `netName` (our device, another
-// device, or the legacy shared tag) — used to select events to merge.
+// device, a domain slot, or the legacy shared tag) — selects events to merge.
 export const isOurDtag = (evtDtag, netName) => {
   const base = syncDtag(netName);
-  return evtDtag === base || evtDtag.startsWith(base + ':d:');
+  return evtDtag === base || evtDtag.startsWith(base + ':d:') || evtDtag.startsWith(base + ':x:');
 };
+// True if the event carries CORE wallet fields (legacy full snapshots and the
+// split 'core' domain) — the only events safe to apply as a full snapshot.
+export const isCoreDtag = (evtDtag, netName) => {
+  const base = syncDtag(netName);
+  if (evtDtag === base || evtDtag.startsWith(base + ':d:')) return true;
+  return evtDtag.startsWith(base + ':x:') && evtDtag.endsWith(':core');
+};
+// True if the slot belongs to THIS device (legacy or domain form).
+export const isOwnDeviceDtag = (evtDtag, netName) =>
+  evtDtag === deviceDtag(netName) || evtDtag.startsWith(`${syncDtag(netName)}:x:${deviceId()}:`);
 const SYNC_KEY = 'btc-wallet-sync';
 export const DEFAULT_SYNC_RELAYS = ['wss://relay.coinos.io'];
 
@@ -212,7 +229,7 @@ export class NostrSync {
     try {
       const content = nip44.encrypt(JSON.stringify(stateObj), this.ck);
       evt = finalizeEvent({ kind: 30078, created_at: Math.floor(Date.now() / 1000), tags: [['d', dtag]], content }, this.sk);
-    } catch { return; }
+    } catch { return false; }
     const results = await Promise.allSettled(pool.publish(this.relays, evt));
     // A refused snapshot means devices silently stop syncing — the failure
     // that once hid behind "my other device shows no history". Say so.
@@ -221,6 +238,7 @@ export class NostrSync {
         console.warn(`nostr: state snapshot (${evt.content.length}b) refused by ${this.relays[i]}:`, r.reason?.message || r.reason);
       }
     });
+    return results.some((r) => r.status === 'fulfilled');
   }
 
   // Deliver an encrypted DM (a locked gift's claim code) as a NIP-17 gift wrap
@@ -301,7 +319,9 @@ export class NostrSync {
   // best snapshot). Prefers our own device's slot, else the newest of ours.
   async fetch() {
     const all = await this.fetchAllStates();
-    return all.length ? all[0].state : null;
+    // a domain fragment (ark/nwc slice) is not a usable "best snapshot"
+    const fulls = all.filter((s) => !s.dtag.includes(':x:') || s.dtag.endsWith(':core'));
+    return fulls.length ? fulls[0].state : null;
   }
 
   // All of this identity's decrypted state snapshots, newest first, each with

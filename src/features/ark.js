@@ -130,11 +130,17 @@ export function slimArkForSync(s) {
   const HEAVY = ['bytes', 'destBytes', 'changeBytes', 'vtxoBytes', 'txHex', 'fundingTxHex', 'outputVtxos'];
   return {
     v: s.v, serverPubkey: s.serverPubkey, mailboxCheckpoint: s.mailboxCheckpoint, nextKeyIndex: s.nextKeyIndex, receiveAckTs: s.receiveAckTs,
-    vtxos: (s.vtxos || []).map((v) => v.state === 'spent'
-      ? { id: v.id, amountSat: v.amountSat, state: 'spent', keyIndex: v.keyIndex, expiryHeight: v.expiryHeight }
-      : v),
+    // Spent stubs and done actions are pure history and grow forever — cap
+    // them (newest kept) so the sync event's size is bounded for life.
+    vtxos: (() => {
+      const live = (s.vtxos || []).filter((v) => v.state !== 'spent');
+      const stubs = (s.vtxos || []).filter((v) => v.state === 'spent').slice(-200)
+        .map((v) => ({ id: v.id, amountSat: v.amountSat, state: 'spent', keyIndex: v.keyIndex, expiryHeight: v.expiryHeight }));
+      return [...live, ...stubs];
+    })(),
     actions: (s.actions || [])
       .filter((a) => a.step === 'done' && ['board', 'offboard', 'exit'].includes(a.type))
+      .slice(-50)
       .map((a) => { const c = { ...a }; for (const k of HEAVY) delete c[k]; return c; }),
     movements: (s.movements || []).slice(-200).map((m, i, arr) =>
       // Older rows only need to render a history line; the bolt11 (~400 chars
@@ -199,6 +205,7 @@ export function arkFeature(ctx) {
   // didn't), re-publish the superset. The slot converges to the union no
   // matter who publishes when.
   wallet.registerCacheExtension({
+    domain: 'ark', // published as its own sync slot — see splitSnapshotDomains
     mergeAlways: true, // load() is a commutative merge — apply older snapshots too
     save: () => {
       const cfg = getArkConfig();
