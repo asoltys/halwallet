@@ -196,6 +196,8 @@ const STR = {
     msgCopyInvite: 'Copy invite link',
     msgLinkCopied: 'Invite link copied',
     msgInviteSent: 'Invite sent',
+    msgLeave: 'Leave community',
+    msgLeaveConfirm: 'Really leave? Rejoining needs a new invite',
     copyAddress: 'Copy address',
     paymentReceived: 'Payment received!',
     tapToProceed: 'Tap anywhere to proceed',

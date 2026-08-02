@@ -14,7 +14,7 @@
 
 import {
   subscribeOn, publishOn, queryOn, fetchNostrProfile, fetchInboxRelays,
-  npubOf, parseNostrPubkey, generateSecretKey, getPublicKey, finalizeEvent,
+  npubOf, parseNostrPubkey, generateSecretKey, getPublicKey, finalizeEvent, nip44,
 } from '../nostr.js';
 import {
   channelKey, controlKey, guestbookKey, openWrap, wrapRumor,
@@ -57,6 +57,8 @@ export function messagesFeature(ctx) {
     s.invites ||= {}; // { [cid]: { sk, token, url } } — minted links
     s.dms ||= {}; // { [peerPk]: [{ id, from, text, t }] }
     s.declined ||= {}; // direct-invite rumor ids dismissed
+    s.tombstones ||= {}; // { [cid]: removed_at ms } — left communities (CORD-02 §8)
+    for (const c of s.communities) c.added_at ||= Date.now();
     // pre-multi-community shape: joined was { [pubkey]: true } for coinos
     for (const k of Object.keys(s.joined))
       if (s.joined[k] === true) { (s.joined[COMMUNITY.community_id] ||= {})[k] = true; delete s.joined[k]; }
@@ -339,11 +341,13 @@ export function messagesFeature(ctx) {
       community_id: cid, owner: id.pubkey, owner_salt: ownerSalt,
       community_root: bytesToHex(rootBytes), root_epoch: 0,
       channels: [{ id: generalId, name: 'general' }], relays, name,
+      added_at: Date.now(),
     };
     const s = st();
     s.communities.push(jm);
     (s.joined[cid] ||= {})[id.pubkey] = true;
     save(s);
+    publishLists();
     ensureRoom(jm);
     ui.msgView = 'room';
     ui.msgCommunity = cid;
@@ -377,8 +381,9 @@ export function messagesFeature(ctx) {
     const ok = await publishOn(room.relays, evt);
     if (!ok) { toast(t('msgSendFailed')); return null; }
     const url = makeInviteLink(APP_BASE, getPublicKey(linkSk), room.relays, token);
-    s.invites[room.jm.community_id] = { sk: bytesToHex(linkSk), token: bytesToHex(token), url };
+    s.invites[room.jm.community_id] = { sk: bytesToHex(linkSk), token: bytesToHex(token), url, created_at: Math.floor(Date.now() / 1000) };
     save(s);
+    publishLists();
     return url;
   }
 
@@ -407,10 +412,11 @@ export function messagesFeature(ctx) {
         community_root: b.community_root, root_epoch: b.root_epoch || 0,
         channels: (b.channels || []).map((c) => ({ id: c.id, name: c.name })),
         relays: (b.relays || []).slice(0, 5), name: b.name || 'community',
-        invitedBy, inviteLabel,
+        invitedBy, inviteLabel, added_at: Date.now(),
       };
       s.communities.push(jm);
       save(s);
+      publishLists();
     }
     const room = ensureRoom(communityById(b.community_id));
     identity().then((id) => id && ensureJoined(room, id)).catch(() => {});
@@ -450,6 +456,165 @@ export function messagesFeature(ctx) {
   // An invite link opened in the browser lands here before the wallet exists.
   const urlInvite = typeof location !== 'undefined' ? parseInviteLink(location.href) : null;
   if (urlInvite) { try { history.replaceState(null, '', '/'); } catch {} }
+
+  // ---- device sync: Community List (13302) + Invite List (13303) ----------
+  // Self-encrypted replaceables (CORD-02 §8 / CORD-05 §4) so memberships and
+  // minted link keys follow the user to any device or client. Published under
+  // every identity we can encrypt for: the wallet key is the cross-device
+  // constant (same seed on every device), the login npub makes the list
+  // readable by other Concord clients serving the same identity.
+
+  async function selfCryptors() {
+    const out = [];
+    if (wallet.nostr && wallet.nostr.sk && wallet.nostr.ck) out.push({
+      pk: wallet.nostr.pk,
+      sign: async (e) => finalizeEvent(e, wallet.nostr.sk),
+      enc: async (txt) => nip44.encrypt(txt, wallet.nostr.ck),
+      dec: async (ct) => nip44.decrypt(ct, wallet.nostr.ck),
+    });
+    const login = hook('nostrLoginIdentity');
+    if (login && login.signer && login.signer.encryptSelf) out.push({
+      pk: login.pubkey,
+      sign: (e) => login.signer.signEvent(e),
+      enc: (txt) => login.signer.encryptSelf(txt),
+      dec: (ct) => login.signer.decryptSelf(ct),
+    });
+    return out;
+  }
+
+  // Join material subset (never the icon, never link fields). We only run
+  // epoch 0 today, so seed and current coincide.
+  const jmSubset = (jm) => ({
+    community_id: jm.community_id, owner: jm.owner, owner_salt: jm.owner_salt,
+    community_root: jm.community_root, root_epoch: jm.root_epoch || 0,
+    channels: (jm.channels || []).map((c) => ({ id: c.id, name: c.name })),
+    relays: jm.relays, name: jm.name,
+  });
+
+  const buildCommunityList = (s) => JSON.stringify({
+    entries: s.communities.slice(0, 50).map((jm) => ({
+      community_id: jm.community_id, seed: jmSubset(jm), current: jmSubset(jm), added_at: jm.added_at || 0,
+    })),
+    tombstones: Object.entries(s.tombstones).map(([community_id, removed_at]) => ({ community_id, removed_at })),
+  });
+
+  const buildInviteList = (s) => JSON.stringify({
+    entries: Object.entries(s.invites).map(([community_id, inv]) => ({
+      token: inv.token, signer_sk: inv.sk, community_id, url: inv.url, created_at: inv.created_at || 0,
+    })),
+    tombstones: [],
+  });
+
+  function mergeCommunityList(doc) {
+    const s = st();
+    let changed = false;
+    for (const tb of doc.tombstones || []) {
+      if ((tb.removed_at || 0) > (s.tombstones[tb.community_id] || 0)) {
+        s.tombstones[tb.community_id] = tb.removed_at;
+        changed = true;
+      }
+    }
+    for (const e of (doc.entries || []).slice(0, 50)) {
+      const jm = e.current || e.seed;
+      if (!jm || jm.community_id !== e.community_id) continue;
+      if (jm.community_id === COMMUNITY.community_id) continue; // built-in
+      if ((e.added_at || 0) <= (s.tombstones[e.community_id] || 0)) continue; // tombstone wins
+      if (s.communities.some((c) => c.community_id === e.community_id)) continue;
+      if (communityId(jm.owner, jm.owner_salt) !== jm.community_id) continue; // self-certify before adopting keys
+      if (!/^[0-9a-f]{64}$/.test(jm.community_root || '')) continue;
+      s.communities.push({ ...jmSubset(jm), added_at: e.added_at || Date.now() });
+      changed = true;
+    }
+    // a tombstone newer than an entry's added_at removes it locally too
+    const keep = s.communities.filter((c) => (s.tombstones[c.community_id] || 0) <= (c.added_at || 0));
+    if (keep.length !== s.communities.length) { s.communities = keep; changed = true; }
+    if (changed) save(s);
+    return changed;
+  }
+
+  function mergeInviteList(doc) {
+    const s = st();
+    let changed = false;
+    for (const e of doc.entries || []) {
+      if (!e.token || !e.community_id || !e.signer_sk) continue;
+      if (!s.invites[e.community_id]) {
+        s.invites[e.community_id] = { sk: e.signer_sk, token: e.token, url: e.url, created_at: e.created_at };
+        changed = true;
+      }
+    }
+    if (changed) save(s);
+    return changed;
+  }
+
+  async function publishLists() {
+    const ids = await selfCryptors();
+    const s = st();
+    const docs = [[13302, buildCommunityList(s)], [13303, buildInviteList(s)]];
+    for (const id of ids)
+      for (const [kind, doc] of docs) {
+        try {
+          const evt = await id.sign({
+            kind, content: await id.enc(doc), tags: [], created_at: Math.floor(Date.now() / 1000),
+          });
+          publishOn(DM_RELAYS, evt);
+        } catch {}
+      }
+  }
+
+  let listsSynced = false;
+  async function syncLists() {
+    if (listsSynced) return;
+    const ids = await selfCryptors();
+    if (!ids.length) return;
+    listsSynced = true;
+    const evs = await queryOn(DM_RELAYS, { kinds: [13302, 13303], authors: ids.map((i) => i.pk) }, 3500);
+    let changed = false;
+    const remoteDocs = new Set();
+    for (const kind of [13302, 13303])
+      for (const id of ids) {
+        const newest = evs.filter((e) => e.kind === kind && e.pubkey === id.pk).sort((a, b) => b.created_at - a.created_at)[0];
+        if (!newest) continue;
+        try {
+          const raw = await id.dec(newest.content);
+          remoteDocs.add(kind + ':' + raw);
+          const doc = JSON.parse(raw);
+          if (kind === 13302) changed = mergeCommunityList(doc) || changed;
+          else changed = mergeInviteList(doc) || changed;
+        } catch {}
+      }
+    if (changed) {
+      for (const jm of communities()) ensureRoom(jm);
+      scheduleRepaint();
+    }
+    // republish when any identity's copy is missing or stale
+    const s = st();
+    const current = [[13302, buildCommunityList(s)], [13303, buildInviteList(s)]];
+    const anyMissing = ids.length * 2 > remoteDocs.size
+      || current.some(([kind, doc]) => !remoteDocs.has(kind + ':' + doc));
+    if (anyMissing && (s.communities.length || Object.keys(s.invites).length || Object.keys(s.tombstones).length))
+      publishLists();
+  }
+
+  async function leaveCommunity(room) {
+    const cid = room.jm.community_id;
+    const id = await identity();
+    const s = st();
+    s.tombstones[cid] = Date.now();
+    s.communities = s.communities.filter((c) => c.community_id !== cid);
+    delete s.joined[cid];
+    save(s);
+    if (id) {
+      const { created_at, ms } = msTags(Date.now());
+      wrapRumor({ kind: 3306, pubkey: id.pubkey, content: 'leave', tags: [ms], created_at }, id.signer, room.guestbook)
+        .then((w) => publishOn(room.relays, w)).catch(() => {});
+    }
+    rooms.delete(cid);
+    publishLists();
+    ui.msgView = 'home';
+    ui.msgLeaveArm = false;
+    ui.msgInvitePanel = false;
+    render();
+  }
 
   // ---- DMs ----------------------------------------------------------------
 
@@ -813,6 +978,7 @@ export function messagesFeature(ctx) {
   }
 
   function invitePanel(room) {
+    const builtin = room.jm.community_id === COMMUNITY.community_id;
     return h('div', { class: 'col chat-invite', style: 'gap:8px' },
       h('div', { class: 'row gap6' },
         h('button', {
@@ -832,7 +998,16 @@ export function messagesFeature(ctx) {
         h('button', {
           class: 'btn-sm',
           onClick: () => { sendDirectInvite(room, ui.msgInviteTo); ui.msgInviteTo = ''; render(); },
-        }, t('msgSend'))));
+        }, t('msgSend'))),
+      // leaving discards the keys on this identity — two taps, default community exempt
+      builtin ? null : h('div', { class: 'row' },
+        h('button', {
+          class: 'btn-ghost btn-sm ' + (ui.msgLeaveArm ? 'btn-danger' : ''),
+          onClick: () => {
+            if (ui.msgLeaveArm) leaveCommunity(room);
+            else { ui.msgLeaveArm = true; render(); }
+          },
+        }, ui.msgLeaveArm ? t('msgLeaveConfirm') : t('msgLeave'))));
   }
 
   // ---- dm thread ----------------------------------------------------------
@@ -888,6 +1063,7 @@ export function messagesFeature(ctx) {
         setTimeout(() => { ui.tab = 'messages'; ui.msgView = 'home'; render(); }, 0);
       }
       startDMs();
+      syncLists().catch(() => {});
     },
     stop() {
       for (const u of allUnsubs) { try { u(); } catch {} }
@@ -896,6 +1072,7 @@ export function messagesFeature(ctx) {
       threads.clear();
       pendingDirect.clear();
       dmStarted = false;
+      listsSynced = false;
     },
   };
 }
