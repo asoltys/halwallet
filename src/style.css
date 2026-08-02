@@ -9,6 +9,7 @@
   --line: #e6e8ec;
   --line-strong: #d4d8de;
   --accent: #15171a; /* coinos black */
+  --accent-hover: #2c3037; /* accent, slightly lifted */
   --accent-fg: #ffffff; /* text on accent */
   --accent-ink: #000000;
   --accent-soft: #ececef;
@@ -40,6 +41,7 @@
   --line: #2a2f37;
   --line-strong: #3a414b;
   --accent: #ffffff; /* coinos white on dark */
+  --accent-hover: #d9dce1; /* accent, slightly dimmed */
   --accent-fg: #0f1216; /* text on accent */
   --accent-ink: #e7e9ee;
   --accent-soft: #262b33;
@@ -156,7 +158,7 @@ button:hover { background: var(--surface2); }
 button:active { transform: translateY(1px); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
-.btn-primary:hover { background: #ec8a12; }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn-ghost { background: transparent; }
 .btn-sm { padding: 7px 11px; font-size: 13px; border-radius: 9px; }
 .btn-block { width: 100%; display: block; }
