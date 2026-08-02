@@ -1432,7 +1432,7 @@ function settingsTab() {
     'div',
     { class: 'col', style: 'gap:16px' },
     // The active wallet's own settings, inlined (auto-logout lives in Advanced).
-    ...(a ? [recoveryCard(a), walletNameCard(a), pubkeyCard(a)] : []),
+    ...(a ? [walletNameCard(a), pubkeyCard(a), recoveryCard(a)] : []),
     ...featureAll('settingsCards'),
     networkCard(),
     explorerCard(),
@@ -1838,9 +1838,9 @@ function accountSettingsScreen() {
     'div',
     { class: 'col', style: 'gap:16px' },
     brandHeader(false),
-    recoveryCard(a),
     walletNameCard(a),
     pubkeyCard(a),
+    recoveryCard(a),
     nostrNpubCard(a),
     autolockCard(a),
     h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.editLabel = null; ui.revealShown = false; ui.pubkeyShown = false; ui.loadSeed = null; goBack(() => { ui.screen = 'accounts'; }); } }, t('back'))
