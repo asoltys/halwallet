@@ -4,8 +4,7 @@
 
 import { newMnemonic } from '../wallet.js';
 import { getNetwork } from '../api.js';
-import { installGiftWallet, previewGift, giftOutpoints, buildClaimTx, giftMinimum, lockGift, previewLockedGift } from './gifts-wallet.js';
-import { parseNostrPubkey, npubOf, fetchNostrProfile, decryptWithCode } from '../nostr.js';
+import { installGiftWallet, previewGift, giftOutpoints, buildClaimTx, giftMinimum } from './gifts-wallet.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { fmtBtc, timeAgo, shortAddr } from '../format.js';
@@ -50,25 +49,10 @@ export function giftsFeature(ctx) {
     }
   }
 
-  // A gift locked to a nostr key: /lg/<base64url>. Returns the public preview
-  // ({ amount, to, eph, ct }) — claimed by the recipient's own wallet, not a fresh
-  // one, so we don't auto-create a wallet here.
-  function readLockedGiftHash() {
-    try {
-      const m = location.pathname.match(/^\/lg\/([A-Za-z0-9_-]+)\/?$/);
-      if (!m) return null;
-      history.replaceState(null, '', '/');
-      return previewLockedGift(m[1]);
-    } catch {
-      return null;
-    }
-  }
-
   // Entry point for claiming a gift code. If the recipient already has wallet(s),
   // offer to claim into one or make a new one; otherwise go straight to a fresh
   // wallet (the original first-timer flow).
   function claimGift(code) {
-    ui.claimLocked = null;
     ui.claimArkAmount = null;
     ui.claimAuto = false;
     // An ark gift can only land in a wallet on ITS network — other wallets
@@ -394,68 +378,13 @@ export function giftsFeature(ctx) {
     render();
   }
 
-  // A locked gift opened from a link: the amount + recipient are public. The
-  // recipient pastes the claim code from their nostr DM; that decrypts the payload,
-  // then it's claimed into a fresh wallet exactly like a normal gift.
-  function lockedGiftClaimView() {
-    const lk = ui.claimLocked;
-    // NIP-07: if a nostr browser extension is present, the recipient can decrypt
-    // in-place — no code needed.
-    const hasExt = !!(typeof globalThis !== 'undefined' && globalThis.nostr && lk.eph && lk.ctKey);
-    return h('div', { class: 'col', style: 'gap:16px;padding:16px;max-width:460px;margin:0 auto;width:100%' },
-      h('div', { class: 'card col', style: 'gap:14px;align-items:center' },
-        h('h3', { style: 'margin:0' }, t('giftForYou')),
-        h('div', { class: 'amt' }, fmtAmount(lk.amount), ' ', unitTag()),
-        h('div', { class: 'row gap6', style: 'align-items:center' },
-          h('span', { class: 'small muted' }, t('giftLockedTo')),
-          profileChip(lk.to, { size: 36 })),
-        ui.claimError && h('div', { class: 'notice err' }, ui.claimError),
-        hasExt ? h('button', { class: 'btn-primary btn-block', disabled: ui.busy, onClick: claimViaExtension }, ui.busy ? h('span', { class: 'spinner' }) : t('claimWithExtension')) : null,
-        hasExt ? h('div', { class: 'small faint', style: 'text-align:center' }, t('orEnterCode')) : h('p', { class: 'small muted', style: 'text-align:center;margin:0' }, t('giftCodeHint')),
-        h('input', { type: 'text', class: 'mono-input', style: 'width:100%', placeholder: t('claimCodePlaceholder'),
-          autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: ui.claimCodeInput,
-          onInput: (e) => { ui.claimCodeInput = e.target.value; } }),
-        h('button', { class: (hasExt ? '' : 'btn-primary ') + 'btn-block', onClick: submitLockedCode }, t('claimGift')),
-        h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.claimLocked = null; ui.claimCodeInput = ''; ui.claimError = ''; render(); } }, t('dismiss'))
-      )
-    );
-  }
-
-  async function claimViaExtension() {
-    const ext = typeof globalThis !== 'undefined' && globalThis.nostr;
-    if (!ext) return;
-    ui.busy = true; ui.claimError = ''; render();
-    try {
-      const pk = await ext.getPublicKey();
-      if (pk !== ui.claimLocked.to) { ui.claimError = t('extWrongAccount'); ui.busy = false; render(); return; }
-      if (!ext.nip44 || !ext.nip44.decrypt) { ui.claimError = t('extNoNip44'); ui.busy = false; render(); return; }
-      const payload = await ext.nip44.decrypt(ui.claimLocked.eph, ui.claimLocked.ctKey);
-      if (!payload || !previewGift(payload)) { ui.claimError = t('extDecryptFailed'); ui.busy = false; render(); return; }
-      ui.busy = false; ui.claimLocked = null; ui.claimCodeInput = ''; ui.claimError = '';
-      claimGift(payload); // claim into an existing wallet or a fresh one
-    } catch {
-      ui.busy = false; ui.claimError = t('extDecryptFailed'); render();
-    }
-  }
-
-  function submitLockedCode() {
-    const code = (ui.claimCodeInput || '').trim();
-    if (!code) return;
-    let payload = null;
-    try { payload = decryptWithCode(code, ui.claimLocked.ct); } catch {}
-    if (!payload || !previewGift(payload)) { ui.claimError = t('claimCodeWrong'); render(); return; }
-    ui.claimLocked = null; ui.claimCodeInput = ''; ui.claimError = '';
-    claimGift(payload); // claim into an existing wallet or a fresh one
-  }
-
-  // Re-view a previously created gift's link + QR (from its stored record), so the
-  // sender can re-share an unclaimed gift. For a locked gift, also surfaces the
-  // claim code that was DM'd, in case it needs re-sending.
+  // Re-view a previously created gift's link + QR (from its stored record), so
+  // the sender can re-share an unclaimed gift.
   function viewGiftView() {
     const g = ui.viewGift; // { code, locked, amount, claimCode }
-    const url = `${location.origin}/${g.locked ? 'lg' : 'g'}/${g.code}`;
+    const url = `${location.origin}/g/${g.code}`;
     let svg = null;
-    try { svg = g.locked ? qrSvg(url) : qrSvg(url.toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }); } catch {}
+    try { svg = qrSvg(url.toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }); } catch {}
     return h('div', { class: 'col', style: 'gap:16px;padding:16px;max-width:460px;margin:0 auto;width:100%' },
       h('div', { class: 'card col', style: 'gap:12px;align-items:center' },
         h('h3', { style: 'margin:0' }, t('giftView')),
@@ -525,27 +454,11 @@ export function giftsFeature(ctx) {
     doCreateGift(amt, rate);
   }
 
-  // Finalize a freshly-built gift. With a recipient npub it's a locked gift: the
-  // claim payload is encrypted under a one-time code, the link carries only the
-  // ciphertext, and the code is DM'd to the recipient over nostr. Without, it's a
-  // plain bearer gift.
+  // Finalize a freshly-built gift: a plain bearer link.
   function finishGift(g, fallbackAmt) {
     const amount = g.amount || fallbackAmt || 0;
-    const pk = ui.giftLockNpub.trim() ? parseNostrPubkey(ui.giftLockNpub) : null;
-    if (!pk) {
-      ui.giftCode = g.code; ui.giftLocked = false; ui.giftClaimCode = null; ui.giftDmStatus = null;
-      wallet.recordGift({ code: g.code, locked: false, amount, outpoints: g.reserved });
-      return;
-    }
-    const { blob, claimCode } = lockGift(g.code, amount, pk);
-    ui.giftCode = blob; ui.giftLocked = true; ui.giftClaimCode = claimCode; ui.giftDmStatus = 'sending';
-    wallet.recordGift({ code: blob, locked: true, amount, claimCode, outpoints: g.reserved });
-    const dmText = t('giftDmText', { amount: fmtAmount(amount) + ' ' + unitLabel(), link: giftUrl(), code: claimCode });
-    if (wallet.sendNostrDM) {
-      wallet.sendNostrDM(pk, dmText).then((ok) => { ui.giftDmStatus = ok ? 'sent' : 'failed'; render(); }).catch(() => { ui.giftDmStatus = 'failed'; render(); });
-    } else {
-      ui.giftDmStatus = 'failed'; // no sync/nostr feature in this build — the claim code fallback shows
-    }
+    ui.giftCode = g.code;
+    wallet.recordGift({ code: g.code, locked: false, amount, outpoints: g.reserved });
   }
 
   function giftCard() {
@@ -556,28 +469,18 @@ export function giftsFeature(ctx) {
       h('h3', {}, t('giftLink')),
       ui.giftCode
         ? h('div', { class: 'col', style: 'align-items:center;gap:10px' },
-            ui.giftLocked && (() => {
-              const lk = previewLockedGift(ui.giftCode);
-              if (!lk) return null;
-              return h('div', { class: 'col gap6', style: 'width:100%;align-items:center' },
-                h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'small muted' }, t('giftLockedTo')), profileChip(lk.to)),
-                ui.giftDmStatus === 'sent' ? h('div', { class: 'small', style: 'color:var(--ok,#2a8)' }, t('giftDmSent'))
-                  : ui.giftDmStatus === 'failed' ? h('div', { class: 'col gap6', style: 'align-items:center' }, h('div', { class: 'small err' }, t('giftDmFailed')), ui.giftClaimCode ? copyBtn(ui.giftClaimCode, t('giftCopyCode')) : null)
-                  : h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('giftDmSending'))));
-            })(),
-            // A bearer gift uppercases the URL for a smaller alphanumeric QR (the
             // base32 code is case-insensitive). A locked gift's payload is
             // case-sensitive base64url, so it uses a plain byte-mode QR. A large
             // (many-input) gift can exceed QR capacity — then fall back to the link.
             (() => {
               let svg = null;
-              try { svg = ui.giftLocked ? qrSvg(giftUrl()) : qrSvg(giftUrl().toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }); } catch {}
+              try { svg = qrSvg(giftUrl().toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }); } catch {}
               return svg ? h('div', { html: svg }) : h('div', { class: 'small faint', style: 'text-align:center;padding:8px' }, t('giftQrTooLong'));
             })(),
             h('div', { class: 'addr-box break', style: 'width:100%;font-size:12px' }, giftUrl()),
             h('div', { class: 'row gap6 wrap' },
               copyBtn(giftUrl(), t('copyLink')),
-              h('button', { class: 'btn-sm grow', onClick: () => { ui.giftCode = null; ui.giftAmount = ''; ui.giftMax = false; ui.giftLockNpub = ''; ui.giftLocked = false; ui.giftClaimCode = null; ui.giftDmStatus = null; ui.giftIsArk = false; render(); } }, t('giftAnother'))
+              h('button', { class: 'btn-sm grow', onClick: () => { ui.giftCode = null; ui.giftAmount = ''; ui.giftMax = false; ui.giftIsArk = false; render(); } }, t('giftAnother'))
             )
           )
         : ui.giftSplitOffer
@@ -629,17 +532,6 @@ export function giftsFeature(ctx) {
               ui.giftSource === 'ark' ? t('giftArkNote')
                 : ui.giftMax ? t('giftAllNote')
                 : t('giftMinNote', { n: fmtAmount(giftMinimum(giftRate())) + ' ' + unitLabel() })),
-            (() => {
-              const raw = ui.giftLockNpub.trim();
-              const pk = raw ? parseNostrPubkey(raw) : null;
-              return h('div', { class: 'col gap6' },
-                h('input', { type: 'text', class: 'mono-input', placeholder: t('giftLockPlaceholder'),
-                  autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: ui.giftLockNpub,
-                  onInput: (e) => { ui.giftLockNpub = e.target.value; render(); } }),
-                !raw ? h('div', { class: 'small faint' }, t('giftLockHint'))
-                  : pk ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'small muted' }, t('giftLockTo')), profileChip(pk))
-                  : h('div', { class: 'small err' }, t('giftLockInvalid')));
-            })(),
             ui.giftError && h('div', { class: 'notice err' }, ui.giftError),
             ui.busy
               ? h('button', { class: 'btn-block', disabled: true }, h('span', { class: 'spinner sm' }))
@@ -797,7 +689,7 @@ export function giftsFeature(ctx) {
   // Gift link: presign a chosen amount as a #gift= PSBT that whoever opens claims
   // into a fresh wallet only they control. The coin is reserved until claimed.
   function giftUrl() {
-    return `${location.origin}/${ui.giftLocked ? 'lg' : ui.giftIsArk ? 'ag' : 'g'}/${ui.giftCode}`;
+    return `${location.origin}/${ui.giftIsArk ? 'ag' : 'g'}/${ui.giftCode}`;
   }
 
   function giftRate() {
@@ -850,31 +742,6 @@ export function giftsFeature(ctx) {
     render();
   }
 
-  // --- nostr profiles (avatar + name) — cached, lazily fetched, re-renders ----
-  const _profileCache = new Map(); // pubkeyHex -> profile | null | 'loading'
-  function nostrProfile(pkHex) {
-    if (_profileCache.has(pkHex)) return _profileCache.get(pkHex);
-    _profileCache.set(pkHex, 'loading');
-    fetchNostrProfile(pkHex).then((p) => { _profileCache.set(pkHex, p || null); render(); }).catch(() => { _profileCache.set(pkHex, null); render(); });
-    return 'loading';
-  }
-  // A row showing the recipient's avatar + name (or a shortened npub fallback).
-  function profileChip(pkHex, { size = 30 } = {}) {
-    const p = nostrProfile(pkHex);
-    const npub = npubOf(pkHex) || pkHex;
-    const short = npub.slice(0, 12) + '…' + npub.slice(-4);
-    const avatar = (pic) =>
-      pic
-        ? h('img', { src: pic, style: `width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex:0 0 auto`, onError: (e) => { e.target.style.visibility = 'hidden'; } })
-        : h('div', { style: `width:${size}px;height:${size}px;border-radius:50%;background:#9993;flex:0 0 auto` });
-    if (p === 'loading') return h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, short));
-    const name = (p && p.name) || short;
-    return h('div', { class: 'row gap6', style: 'align-items:center;min-width:0' },
-      avatar(p && p.picture),
-      h('span', { class: p && p.name ? '' : 'small muted', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name));
-  }
-
-  // "Payment received!" takeover right after a gift claim (no scan wait).
   function claimCelebration() {
     // A gift was just claimed into this wallet — celebrate immediately (the
     // background scan credits the coin and advances the address meanwhile).
@@ -907,12 +774,10 @@ export function giftsFeature(ctx) {
     bootUrl() {
       const code = readGiftHash();
       if (code) { claimGift(code); return true; } // bearer gift → claim into an existing wallet or a new one
-      ui.claimLocked = readLockedGiftHash(); // locked gift → claim with your own wallet
       return false;
     },
     giftOpened(code) { checkGiftClaimed(code); },
     screenView() {
-      if (ui.claimLocked) return lockedGiftClaimView();
       if (ui.viewGift) return viewGiftView();
       if (ui.claimChoose) return claimChooseView();
       if (ui.screen === 'claim') return claimScreen();

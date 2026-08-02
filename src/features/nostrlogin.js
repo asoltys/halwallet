@@ -16,6 +16,9 @@ import {
   walletForSigner, publishWalletBackup,
 } from '../nostr-login.js';
 
+// The nostr ostrich, in the brand's monochrome.
+const OSTRICH = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="vertical-align:-3px"><path d="M6.6 2.2c1.5 0 2.8 1.2 2.8 2.8v.6h1.9c2.7 0 4.9 2.2 4.9 4.9 0 .7-.5 1.2-1.2 1.2h-2.3c-.5 0-.9.4-.9.9v1.1c0 1.6.5 3.1 1.4 4.4l1.3 1.8c.3.4 0 1-.5 1H9.2c-.4 0-.7-.3-.7-.7 0-2.6-.9-5.1-2.6-7.1A6.9 6.9 0 0 1 3.8 8.4V5c0-1.6 1.3-2.8 2.8-2.8Zm.2 2.1a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z"/></svg>';
+
 export function nostrLoginFeature(ctx) {
   const { h, ui, render, wallet, toast } = ctx;
 
@@ -149,8 +152,17 @@ export function nostrLoginFeature(ctx) {
           h('button', { class: 'btn-primary grow', disabled: ui.nostrLoginBusy, onClick: createForSigner },
             ui.nostrLoginBusy ? h('span', { class: 'spinner' }) : t('nlCreateBtn'))));
     }
+    // Collapsed by default: one button, expanded only when asked for.
+    if (!ui.nostrLoginOpen) {
+      return h('button', {
+        class: 'btn-block row gap6', style: 'align-items:center;justify-content:center',
+        onClick: () => { ui.nostrLoginOpen = true; ui.nostrLoginError = ''; render(); },
+      }, h('span', { html: OSTRICH }), t('nlSignIn'));
+    }
     return h('div', { class: 'card col', style: 'gap:10px' },
-      h('h3', { style: 'margin:0' }, t('nlTitle')),
+      h('div', { class: 'row between' },
+        h('h3', { style: 'margin:0' }, t('nlTitle')),
+        h('span', { class: 'linklike small', onClick: () => { ui.nostrLoginOpen = false; render(); } }, t('cancel'))),
       h('p', { class: 'small muted', style: 'margin:0' }, t('nlDesc')),
       signerButtons(loginWith));
   }

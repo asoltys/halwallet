@@ -6,7 +6,6 @@
 import * as btc from '@scure/btc-signer';
 import { hex, base64urlnopad, base32nopad } from '@scure/base';
 import { utxoId } from '../wallet.js';
-import { encryptGiftPayload } from '../nostr.js';
 import { p2wpkh } from '@scure/btc-signer/payment';
 import { concatBytes } from '@noble/hashes/utils';
 
@@ -447,20 +446,3 @@ export function buildClaimTx(code, toAddress, feeRate, net) {
 // public (anyone can see what it is and who it's for), but the claim payload (the
 // gift code) is NIP-44-encrypted to the recipient via an ephemeral key — so the
 // link can be shared openly yet only the recipient's nostr key can claim it.
-const LOCKED_GIFT_VERSION = 1;
-// Encrypt the gift's claim payload under a one-time code. The code is delivered
-// to the recipient via a nostr DM; the public link carries only the ciphertext.
-// Returns { blob (for the /lg/ link), claimCode (to DM) }.
-export function lockGift(code, amount, recipientPkHex) {
-  const { code: claimCode, ctCode, eph, ctKey } = encryptGiftPayload(code, recipientPkHex);
-  const blob = base64urlnopad.encode(new TextEncoder().encode(JSON.stringify({ v: LOCKED_GIFT_VERSION, amount, to: recipientPkHex, ct: ctCode, eph, ctKey })));
-  return { blob, claimCode };
-}
-// The public fields of a locked-gift blob (or null). Decryption needs the code.
-export function previewLockedGift(blob) {
-  try {
-    const o = JSON.parse(new TextDecoder().decode(base64urlnopad.decode(blob)));
-    if (o.v === LOCKED_GIFT_VERSION && typeof o.amount === 'number' && o.to && o.ct) return o;
-  } catch {}
-  return null;
-}

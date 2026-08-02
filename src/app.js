@@ -76,12 +76,7 @@ const ui = {
   pubkeyShown: false, // account public key revealed in Settings
   giftMode: false, // gift sub-view active on the Send page
   giftAmount: '', // gift-create amount input
-  giftLockNpub: '', // optional: lock the gift to this recipient nostr npub
-  giftLocked: false, // the just-created gift is locked to a nostr key
   giftClaimCode: null, // the one-time claim code DM'd to the recipient (fallback)
-  giftDmStatus: null, // 'sending' | 'sent' | 'failed' — nostr DM of the claim code
-  claimLocked: null, // a locked gift being opened: { v, amount, to, ct }
-  claimCodeInput: '', // the claim code the recipient pastes from their nostr DM
   viewGift: null, // re-viewing a previously created gift's link/QR { code, locked, amount, claimCode }
   claimChoose: null, // opening a gift with existing wallets present: { code } — pick a target
   giftCode: null, // last-created gift PSBT code

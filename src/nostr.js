@@ -58,8 +58,6 @@ export async function publishOn(relays, evt) {
   } catch { return false; }
 }
 
-// --- locking a gift to a recipient's Nostr key ---------------------------
-// An npub or 64-hex nostr pubkey → hex, or null if it isn't one.
 // NIP-47 wallet services sign with their own per-connection key and must
 // speak whichever encryption the client asked for, so export both schemes.
 export { nip04, nip44 };
@@ -71,25 +69,8 @@ export function parseNostrPubkey(input) {
   try { const d = nip19decode(s); if (d.type === 'npub') return d.data; } catch {}
   return null;
 }
+// An npub or 64-hex nostr pubkey → hex, or null if it isn't one.
 export function npubOf(pkHex) { try { return npubEncode(pkHex); } catch { return null; } }
-
-// Encrypt a gift payload two ways: (1) under a fresh one-time code, delivered to
-// the recipient out-of-band via a nostr DM — the manual path; and (2) to the
-// recipient's nostr pubkey via an ephemeral key, so a NIP-07 browser extension
-// can decrypt it in-place with no code. Both decrypt to the same payload.
-export function encryptGiftPayload(plaintext, recipientPkHex) {
-  const codeKey = randomBytes(32);
-  const ephSk = generateSecretKey();
-  return {
-    code: base64urlnopad.encode(codeKey),
-    ctCode: nip44.encrypt(plaintext, codeKey),
-    eph: getPublicKey(ephSk),
-    ctKey: nip44.encrypt(plaintext, nip44.getConversationKey(ephSk, recipientPkHex)),
-  };
-}
-export function decryptWithCode(code, ct) {
-  return nip44.decrypt(ct, base64urlnopad.decode((code || '').trim()));
-}
 
 // Profiles live across the network, so look them up on popular relays (broader
 // than the sync relays).
