@@ -500,32 +500,6 @@ export class ArkManager {
     return action.id;
   }
 
-  // A send whose recipient is one of the USER's own foreign-branch keys (the
-  // NWC pouch): no address, no mailbox delivery — the caller receives the
-  // signed recipient vtxo bytes directly and stores them wherever the branch
-  // lives. Same cosign machinery as send(), so all its failure handling holds.
-  async sendToPubkey(destPubkeyHex, amountSat) {
-    const input = this._selectInput(amountSat);
-    const changeSat = input.amountSat - amountSat;
-    const action = {
-      id: `send-${Date.now()}`, type: 'send', step: 'created',
-      inputId: input.id, amountSat, destAddress: null,
-      destPubkey: destPubkeyHex, destBlindedId: null,
-      changeIndex: changeSat > 0 ? this.state.nextKeyIndex++ : null, changeSat,
-    };
-    input.state = 'pending';
-    this.state.actions.push(action);
-    this._save();
-    await this._driveSend(action);
-    if (action.step !== 'done') throw new Error(action.error || 'send did not complete');
-    return {
-      vtxos: (action.destBytesList || []).map((b) => {
-        const v = decodeVtxo(hex.decode(b));
-        return { id: v.id, bytes: b, amountSat: v.amountSat, expiryHeight: v.expiryHeight };
-      }),
-    };
-  }
-
   _sendOutputs(action) {
     const outputs = [{ amountSat: action.amountSat, userPubkey: hex.decode(action.destPubkey) }];
     if (action.changeSat > 0) {

@@ -7,10 +7,8 @@
 // at any time.
 //
 // hal holds no native Lightning balance, so every Lightning operation here
-// runs over Ark: paying goes through the swap bridge when one is configured
-// and falls back to the ASP's own lightning-send, and receiving mints an
-// invoice on the ASP. That means NWC availability tracks Ark availability —
-// no Ark server, no wallet service.
+// runs over Ark: the ASP pays and mints invoices. That means NWC
+// availability tracks Ark availability — no Ark server, no wallet service.
 //
 // Shape of the protocol (mirrors coinos-server/lib/nwc.ts):
 //   kind 13194  info event, content = space-separated supported methods
@@ -18,8 +16,9 @@
 //   kind 23195  response (wallet -> client), same encryption scheme back
 // Encryption is nip04 unless the request carries `["encryption","nip44_v2"]`.
 //
-// IMPORTANT limitation, surfaced in the UI: hal is a web wallet, so it only
-// answers while a tab is open. It is not an always-on wallet service.
+// While a tab is open it answers directly; with background answering on,
+// the service worker answers from a mirrored state (see nwc-bg.js) so the
+// wallet keeps working closed.
 
 import { hex } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
@@ -30,7 +29,7 @@ import {
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { getNetwork } from '../api.js';
-import { buildPouch, loadPouch, savePouch, clearPouch, pouchKey } from '../nwc-pouch.js';
+import { loadBg, saveBg, clearBg } from '../nwc-bg.js';
 import { maybeBolt11 } from '../ark/lightning.js';
 
 const REQ_KIND = 23194;
@@ -82,6 +81,7 @@ export function nwcFeature(ctx) {
     // travels — and the payment just changed the ark state (vtxos, movement)
     // that the user's other devices display.
     try { wallet.saveCache(); } catch {}
+    writeBg(); // keep the worker's mirror as fresh as the state it spends
   }
 
   // The relays advertised in the URI MUST be the ones we listen on, or a
@@ -449,7 +449,7 @@ export function nwcFeature(ctx) {
     });
     if (!r.ok) throw new Error(`notifier refused: ${r.status}`);
     const st = load(); st.background = true; save(st);
-    await writePouch();
+    writeBg();
     return true;
   }
 
@@ -493,56 +493,45 @@ export function nwcFeature(ctx) {
     const st = load(); st.background = false; save(st);
     // no background answering means no reason to keep spendable keys where a
     // worker can read them
-    try { await clearPouch(wallet._cacheKey()); } catch {}
+    try { await clearBg(wallet._cacheKey()); } catch {}
   }
 
-  // (Re)write the pouch record the worker answers from: connections' service
-  // keys, ASP + bridge endpoints, the chain-6 key window — while PRESERVING
-  // anything the pouch already holds (its coins, the worker's spend log and
-  // manager state), which a rebuild must never wipe.
-  async function writePouch() {
+  // (Re)write the background record the worker answers from: the full ark
+  // state mirror plus this feature's connections. The ark feature owns the
+  // heavy lifting; this decides WHEN (background answering on).
+  let bgTimer = null;
+  function writeBg() {
     if (!load().background) return;
-    const cfg = hook('arkPouchContext');
-    if (!cfg) return;
-    try {
-      const prev = await loadPouch(wallet._cacheKey());
-      const fresh = buildPouch({
-        ...cfg, vtxos: prev?.vtxos || [], account: wallet.account(), connections: conns(),
-      });
-      if (prev) {
-        fresh.mgr = prev.mgr;
-        fresh.spends = prev.spends;
-        fresh.swaps = prev.swaps;
-        fresh.fundSeq = prev.fundSeq;
-        if (prev.mgr?.nextKeyIndex) fresh.nextKeyIndex = prev.mgr.nextKeyIndex;
-      }
-      await savePouch(wallet._cacheKey(), fresh);
-      pouchSat = await hook('arkPouchBalance');
-    } catch (e) { console.warn('nwc: could not write pouch', e.message); }
+    clearTimeout(bgTimer);
+    bgTimer = setTimeout(async () => {
+      try {
+        if (!hook('arkBgReady')) return;
+        await hook('arkBgWrite', conns());
+      } catch (e) { console.warn('nwc: could not write background state', e.message); }
+    }, 1500);
   }
 
   // When the app opens after the worker has been answering: absorb its spends
-  // into the budgets and history, and rescue any swap it left hanging.
-  let pouchSat = null; // cached for the (synchronous) settings card
-  async function reconcilePouch() {
+  // into the budgets and history. (The ark feature separately merges the
+  // worker's coin state on connect.)
+  async function reconcileBg() {
     try {
       if (!load().background) return;
-      await hook('arkPouchRecover');
-      const pouch = await loadPouch(wallet._cacheKey());
-      if (!pouch) return;
-      const fresh = (pouch.spends || []).filter((s) => !s.absorbed);
+      const rec = await loadBg(wallet._cacheKey());
+      if (!rec) return;
+      const fresh = (rec.spends || []).filter((s) => !s.absorbed);
       if (fresh.length) {
         for (const s of fresh) {
           const c = conns().find((x) => x.id === s.connId);
           if (c) recordSpend(c, (s.amountSat || 0) + (s.feeSat || 0));
           s.absorbed = true;
         }
-        await hook('arkPouchNoteSpends', fresh);
-        await savePouch(wallet._cacheKey(), pouch);
+        await hook('arkBgNoteSpends', fresh);
+        await saveBg(wallet._cacheKey(), rec);
       }
-      pouchSat = await hook('arkPouchBalance');
+      writeBg(); // refresh the mirror after the merge settled
       render();
-    } catch (e) { console.warn('nwc: pouch reconcile failed', e.message); }
+    } catch (e) { console.warn('nwc: background reconcile failed', e.message); }
   }
 
   // An open window handles the request itself; the worker just nudges it.
@@ -561,7 +550,7 @@ export function nwcFeature(ctx) {
   let watchdog = null;
   function startWatchdog() {
     if (watchdog) return;
-    watchdog = setInterval(() => { if (conns().length) listen(); }, 90 * 1000);
+    watchdog = setInterval(() => { if (conns().length) { listen(); writeBg(); } }, 90 * 1000);
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => listen());
       document.addEventListener('visibilitychange', () => {
@@ -615,41 +604,10 @@ export function nwcFeature(ctx) {
             h('button', { class: 'btn-sm', onClick: async () => {
               try {
                 if (load().background) { await disableBackground(); toast(t('nwcBackgroundOff')); }
-                else { await enableBackground(); await reconcilePouch(); toast(t('nwcBackgroundOn')); }
+                else { await enableBackground(); await reconcileBg(); toast(t('nwcBackgroundOn')); }
               } catch (e) { toast(e.message); }
               render();
             } }, load().background ? t('nwcOn') : t('nwcOff')))
-        : null,
-      list.length && load().background
-        ? h('div', { class: 'col', style: 'gap:6px' },
-            h('div', { class: 'row between' },
-              h('span', { class: 'small' }, t('nwcPouch')),
-              h('span', { class: 'small' }, pouchSat == null ? '…' : fmtAmount(pouchSat))),
-            h('p', { class: 'small faint', style: 'margin:0' }, t('nwcPouchDesc')),
-            h('div', { class: 'row gap6' },
-              h('input', { type: 'number', min: '1', placeholder: t('nwcPouchAmount'), value: ui.nwcPouchAmt || '',
-                style: 'flex:1', onInput: (e) => { ui.nwcPouchAmt = e.target.value; } }),
-              h('button', { class: 'btn-sm', onClick: async () => {
-                const sat = parseInt(ui.nwcPouchAmt, 10);
-                if (!sat) return;
-                try {
-                  const moved = await hook('arkPouchFund', sat);
-                  ui.nwcPouchAmt = '';
-                  pouchSat = await hook('arkPouchBalance');
-                  toast(t('nwcPouchFunded', { sats: fmtAmount(moved) }));
-                } catch (e) { toast(e.message); }
-                render();
-              } }, t('nwcPouchFund')),
-              pouchSat > 0
-                ? h('button', { class: 'btn-ghost btn-sm', onClick: async () => {
-                    try {
-                      const moved = await hook('arkPouchEmpty');
-                      pouchSat = await hook('arkPouchBalance');
-                      toast(t('nwcPouchEmptied', { sats: fmtAmount(moved) }));
-                    } catch (e) { toast(e.message); }
-                    render();
-                  } }, t('nwcPouchEmpty'))
-                : null))
         : null,
       st
         ? h('div', { class: 'col', style: 'gap:6px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:8px' },
@@ -677,7 +635,7 @@ export function nwcFeature(ctx) {
 
   return {
     id: 'nwc',
-    init() { listen(); startWatchdog(); refreshRegistration(); reconcilePouch(); },
+    init() { listen(); startWatchdog(); refreshRegistration(); reconcileBg(); },
     stop() { stop(); if (watchdog) { clearInterval(watchdog); watchdog = null; } },
     settingsCards() { return [nwcCard()]; },
   };

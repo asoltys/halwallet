@@ -82,7 +82,6 @@ const ui = {
   giftDmStatus: null, // 'sending' | 'sent' | 'failed' — nostr DM of the claim code
   claimLocked: null, // a locked gift being opened: { v, amount, to, ct }
   claimCodeInput: '', // the claim code the recipient pastes from their nostr DM
-  consolidateError: null, // error from a coin-consolidation attempt
   viewGift: null, // re-viewing a previously created gift's link/QR { code, locked, amount, claimCode }
   claimChoose: null, // opening a gift with existing wallets present: { code } — pick a target
   giftCode: null, // last-created gift PSBT code
@@ -1476,38 +1475,12 @@ function settingsTab() {
     ),
     networkCard(),
     ...featureAll('settingsCards'),
-    consolidateCard(),
     explorerCard(),
     null
   );
 }
 
-// Merge many small coins into one. Useful after lots of small receives/gifts —
-// keeps future sends/gifts to a single input (cheaper, smaller gift QR).
-function consolidateCard() {
-  if (wallet.watchOnly) return null;
-  const n = wallet.spendableCoinCount ? wallet.spendableCoinCount() : 0;
-  if (n < 2) return null;
-  return h('div', { class: 'card col' },
-    h('h3', {}, t('consolidateTitle')),
-    h('p', { class: 'small muted', style: 'margin:0' }, t('consolidateDesc', { n })),
-    ui.consolidateError && h('div', { class: 'notice err' }, ui.consolidateError),
-    h('button', { class: 'btn-block', disabled: ui.busy || wallet.offline, onClick: doConsolidate }, ui.busy ? h('span', { class: 'spinner' }) : t('consolidateAction', { n })));
-}
-async function doConsolidate() {
-  if (wallet.offline) { ui.consolidateError = t('scanOffline'); render(); return; }
-  ui.busy = true; ui.consolidateError = ''; render();
-  try {
-    const rate = (wallet.feeRates && wallet.feeRates.halfHourFee) || 5;
-    await wallet.consolidate(rate);
-    toast(t('consolidateDone'));
-    wallet.scan().catch(() => {});
-  } catch (e) {
-    ui.consolidateError = e.message || t('consolidateFailed');
-  }
-  ui.busy = false;
-  render();
-}
+
 
 
 

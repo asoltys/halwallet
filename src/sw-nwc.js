@@ -1,9 +1,10 @@
 // Service-worker side of background NWC. Bundled by build.js and appended to
 // the generated sw.js, replacing the notify-only push handler: a push now
-// first tries to ANSWER the request from the pouch (see nwc-respond.js), and
-// only falls back to the wake-the-user notification when it can't.
+// first tries to ANSWER the request from the background state mirror (see
+// nwc-respond.js), and only falls back to the wake-the-user notification
+// when it can't.
 
-import { respondFromPouch } from './nwc-respond.js';
+import { respondFromBg } from './nwc-respond.js';
 
 const NOTIFIER = 'https://nwcpush.coinos.io';
 
@@ -21,7 +22,7 @@ self.addEventListener('push', (e) => {
     }
     let handled = false;
     try {
-      handled = await respondFromPouch(data, {
+      handled = await respondFromBg(data, {
         notifier: NOTIFIER,
         log: (m) => console.log('[sw-nwc]', m),
       });

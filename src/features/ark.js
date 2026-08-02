@@ -7,7 +7,7 @@ import { HDKey } from '@scure/bip32';
 import { hex, base32nopad, bech32 } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import { ArkManager } from '../ark/manager.js';
-import { pouchKey, loadPouch, savePouch, POUCH_CHANGE_BASE } from '../nwc-pouch.js';
+import { loadBg, saveBg, buildBg } from '../nwc-bg.js';
 import { boardFee } from '../ark/board.js';
 import { maybeBolt11, lnSendFee } from '../ark/lightning.js';
 import { decodeVtxo, getVtxoStatus, VTXO_STATE_SPENT, concatBytes } from '../ark/proto.js';
@@ -16,8 +16,6 @@ import { utxoId } from '../wallet.js';
 import {
   getNetwork, setNetwork, arkPresets, getArkProviderId, setArkProviderId,
   getArkCustom, setArkCustom, getArkConfig,
-  bridgePresets, getBridgeProviderId, setBridgeProviderId, getBridgeCustom,
-  setBridgeCustom, getBridgeToken, setBridgeToken, getBridgeConfig,
 } from '../api.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
@@ -333,7 +331,7 @@ export function arkFeature(ctx) {
       // against the server, so a stale spendable is caught here rather than
       // only at send time.
       mgr.reconcile().catch(() => {});
-      resumeBridgeSwaps(mgr).catch(() => {}); // refund any HTLC a bridge left hanging
+      mergeBgWorkerState(mgr).catch(() => {}); // absorb what the SW did while we were closed
       // Receives arrive in real time over the mailbox stream; the poll is the
       // fallback and what drives in-flight boards/refreshes forward.
       mgr.startMailboxStream();
@@ -452,128 +450,77 @@ export function arkFeature(ctx) {
     }, 2500));
   }
 
-  // ---- third-party swap bridge (cheaper bolt11 sends) ---------------------
-  // When a bridge is configured we lock the amount in an HTLC only it can
-  // claim — and only by revealing the invoice preimage. Trustless: if it
-  // never pays we get a cosigned refund, or exit through the refund leaf.
-  // Requires an ASP supporting HTLC vtxos, so any failure falls back to the
-  // ASP's own (pricier) lightning-send.
-  async function bridgeQuote(invoice) {
-    const cfg = getBridgeConfig();
-    if (!cfg) return null;
-    const r = await fetch(`${cfg.url}/quote?invoice=${encodeURIComponent(invoice)}`,
-      { headers: cfg.token ? { authorization: `Bearer ${cfg.token}` } : {} });
-    const q = await r.json();
-    if (!r.ok || q.error) throw new Error(q.error || `bridge quote failed (${r.status})`);
-    return { ...q, bridgeUrl: cfg.url, token: cfg.token };
-  }
-
-  // Lock the HTLC, hand it to the bridge, and record the swap so a crash or
-  // a failed payment can still be refunded later.
-  async function bridgePay(quote, invoice) {
-    const mgr = await connectArk();
-    const lock = await mgr.htlcLock({
-      amountSat: quote.totalSat,
-      claimPubkey: quote.claimPubkey,
-      paymentHash: quote.paymentHash,
-      htlcExpiry: quote.htlcExpiry,
-    });
-    // persist before handing it over: the HTLC exists on the server now
-    const swaps = (mgr.state.bridgeSwaps = mgr.state.bridgeSwaps || []);
-    const rec = {
-      paymentHash: quote.paymentHash, invoice, bridgeUrl: quote.bridgeUrl,
-      amountSat: quote.amountSat, feeSat: quote.feeSat,
-      htlcVtxo: lock.htlcVtxos[0], refundIndex: lock.refundIndex,
-      htlcExpiry: quote.htlcExpiry, step: 'submitted', ts: Date.now(),
-    };
-    swaps.push(rec);
-    mgr._save();
-
-    let res;
-    try {
-      const r = await fetch(`${quote.bridgeUrl}/swap`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(quote.token ? { authorization: `Bearer ${quote.token}` } : {}),
-        },
-        body: JSON.stringify({ invoice, htlcVtxo: lock.htlcVtxos[0] }),
-      });
-      res = await r.json();
-      if (!r.ok || res.error) throw new Error(res.error || `bridge error (${r.status})`);
-    } catch (e) {
-      rec.step = 'failed';
-      rec.error = e.message;
-      mgr._save();
-      await tryBridgeRefund(rec).catch(() => {});
-      throw e;
-    }
-    if (res.step !== 'done') {
-      rec.step = 'unpaid';
-      mgr._save();
-      await tryBridgeRefund(rec).catch(() => {});
-      throw new Error(res.error || t('arkLnRefunded'));
-    }
-    // proof of payment: the preimage must hash to the invoice's payment hash
-    if (!res.preimage || hex.encode(sha256(hex.decode(res.preimage))) !== quote.paymentHash) {
-      rec.step = 'suspect';
-      mgr._save();
-      throw new Error('bridge returned an invalid preimage');
-    }
-    rec.step = 'done';
-    rec.preimage = res.preimage;
-    mgr._save();
-    mgr._movement({
-      type: 'ln-send', amountSat: quote.amountSat, status: 'complete',
-      detail: `via bridge · fee ${quote.feeSat} sat`, invoice, preimage: res.preimage,
-    });
-    mgr._save();
-    return res;
-  }
-
-  // An ephemeral manager over the POUCH's chain-6 keys — used to empty the
-  // pouch and to refund worker-initiated swaps (their refund pubkeys are
-  // pouch keys, which the main manager cannot sign for). State persists back
-  // into the pouch record so the service worker sees the same coin set.
-  async function pouchManager(pouch) {
+  // ---- background NWC mirror ---------------------------------------------
+  // The service worker answers wallet-connect requests while the app is
+  // closed, spending the SAME ark balance the app does. The mirror is the
+  // full manager state plus the chain-3 keys for its live coins and a window
+  // of upcoming change indices (the worker cannot derive). nwc.js decides
+  // WHEN to mirror (background answering on) and supplies the connections.
+  async function writeBgMirror(connections) {
     const cfg = getArkConfig();
-    const account6 = { deriveChild: () => ({ deriveChild: (i) => ({ privateKey: hex.decode(pouch.keys[String(i)] || pouch.keys['0']) }) }) };
-    const storage = {
-      load: () => pouch.mgr || {
-        v: 1, serverPubkey: pouch.ark.serverPubkey || null, mailboxCheckpoint: 0,
-        nextKeyIndex: pouch.nextKeyIndex || POUCH_CHANGE_BASE,
-        vtxos: (pouch.vtxos || []).map((v) => ({ ...v, state: v.state || 'spendable' })),
-        actions: [], movements: [],
-      },
-      save: (s) => { pouch.mgr = s; savePouch(wallet._cacheKey(), pouch).catch(() => {}); },
+    if (!cfg || !ark || !ark.info || !ark.state) return;
+    const prev = await loadBg(wallet._cacheKey());
+    const rec = buildBg({
+      ark: { arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(), serverPubkey: ark.info.serverPubkey },
+      mgrState: ark.state,
+      keyFor: (i) => hex.encode(ark._key(i).privkey),
+      connections,
+    });
+    if (prev) rec.spends = prev.spends; // the worker's log survives rewrites
+    await saveBg(wallet._cacheKey(), rec);
+  }
+
+  // On connect, fold whatever the worker did while we were closed back into
+  // the live state: its spent flips and change vtxos merge in (the additive
+  // merge never resurrects anything reconcile() disproves), its key
+  // allocations advance ours, and its in-flight ln actions become resumable.
+  async function mergeBgWorkerState(mgr) {
+    const rec = await loadBg(wallet._cacheKey());
+    if (!rec) return;
+    if (rec.v < 3) {
+      await sweepLegacyPouch(rec).catch((e) => console.warn('ark: pouch sweep failed', e.message));
+      return;
+    }
+    if (!rec.mgr) return;
+    const merged = mergeArkStates(mgr.state, rec.mgr);
+    // the worker's view of OUR vtxos is newer for anything it spent
+    const workerState = new Map((rec.mgr.vtxos || []).map((v) => [v.id, v.state]));
+    for (const v of merged.vtxos) {
+      if (workerState.get(v.id) === 'spent') v.state = 'spent';
+    }
+    merged.nextKeyIndex = Math.max(merged.nextKeyIndex || 1, rec.mgr.nextKeyIndex || 1);
+    mgr.state = merged;
+    mgr._save();
+    await mgr.reconcile().catch(() => {});
+    await mgr.resumePending().catch(() => {});
+  }
+
+  // A leftover chain-6 pouch from before whole-balance background spending:
+  // sweep its coins home using the keys stored in the record itself, then
+  // let the next mirror write replace it.
+  async function sweepLegacyPouch(rec) {
+    if (!(rec.vtxos || []).some((v) => (v.state || 'spendable') === 'spendable')) return;
+    const cfg = getArkConfig();
+    const mgr = await connectArk();
+    const shim = { deriveChild: () => ({ deriveChild: (i) => ({ privateKey: hex.decode(rec.keys[String(i)] || rec.keys['0']) }) }) };
+    let state = {
+      v: 1, serverPubkey: rec.ark?.serverPubkey || null, mailboxCheckpoint: 0,
+      nextKeyIndex: rec.nextKeyIndex || 20,
+      vtxos: (rec.mgr?.vtxos || rec.vtxos || []).map((v) => ({ ...v, state: v.state || 'spendable' })),
+      actions: [], movements: [],
     };
-    return new ArkManager({
-      account: account6, storage,
+    const pm = await new ArkManager({
+      account: shim,
+      storage: { load: () => state, save: (s2) => { state = s2; } },
       arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(),
     }).init();
-  }
-
-  // Ask the bridge to hand an unpaid HTLC back, and take ownership of it.
-  async function tryBridgeRefund(rec) {
-    const mgr = await connectArk();
-    const r = await fetch(`${rec.bridgeUrl}/refund`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ paymentHash: rec.paymentHash }),
-    });
-    const out = await r.json();
-    if (!r.ok || out.error) throw new Error(out.error || 'refund failed');
-    const got = await mgr.acceptHtlcRefund({
-      vtxoBytesList: out.refundVtxos, refundIndex: rec.refundIndex,
-    });
-    rec.step = 'refunded';
-    mgr._save();
-    return got;
-  }
-
-  // Retry refunds for any bridge swap left hanging (called on connect).
-  async function resumeBridgeSwaps(mgr) {
-    const open = (mgr.state.bridgeSwaps || []).filter((r) => ['unpaid', 'failed'].includes(r.step));
-    for (const rec of open) await tryBridgeRefund(rec).catch(() => {});
+    const dest = mgr.address();
+    for (let guard = 0; guard < 30; guard++) {
+      const v = (pm.state.vtxos || []).find((x) => x.state === 'spendable');
+      if (!v) break;
+      await pm.send(dest, v.amountSat);
+    }
+    await saveBg(wallet._cacheKey(), { ...rec, vtxos: [], mgr: state, sweptAt: Date.now() });
   }
 
   // Pay a bolt11 with no UI at all — used by the NWC wallet service. Same
@@ -593,18 +540,6 @@ export function arkFeature(ctx) {
     // payment picks the stale coin and the ASP rejects it ("state: spent").
     await mgr.reconcile().catch(() => {});
 
-    // 1. the bridge, when one is configured and can take it
-    try {
-      const q = await bridgeQuote(invoice);
-      if (q && mgr.vtxos().some((v) => v.state === 'spendable' && v.amountSat >= q.totalSat)) {
-        const res = await bridgePay(q, invoice);
-        return { preimage: res.preimage, feeSat: q.feeSat, amountSat: q.amountSat };
-      }
-    } catch (e) {
-      console.warn('nwc: bridge pay failed, falling back to the ASP:', e.message);
-    }
-
-    // 2. the ASP's native lightning-send
     const id = await mgr.payLnInvoice(invoice);
     for (let i = 0; i < 60; i++) {
       const a = mgr.lnAction(id);
@@ -648,23 +583,6 @@ export function arkFeature(ctx) {
     const p = ui.arkLnPay;
     if (!p || p.invoice !== invoice) return;
     if (!p.amountSat) { p.status = 'ready'; render(); return; }
-    // A configured bridge is cheaper than the ASP; quote it first and fall
-    // back silently if it's unreachable or won't take the swap.
-    try {
-      const q = await bridgeQuote(invoice);
-      if (q && ui.arkLnPay === p) {
-        const covers = mgr.vtxos().some((v) => v.state === 'spendable' && v.amountSat >= q.totalSat);
-        if (covers) {
-          p.bridge = q;
-          p.feeSat = q.feeSat;
-          p.status = 'ready';
-          render();
-          return;
-        }
-      }
-    } catch (e) {
-      console.warn('bridge quote failed, using the ASP:', e.message);
-    }
     const tip = await mgr.chain.tipHeight();
     const candidates = mgr.vtxos().filter((v) => v.state === 'spendable')
       .sort((a, b) => a.amountSat - b.amountSat);
@@ -684,9 +602,9 @@ export function arkFeature(ctx) {
         }, 4000);
         return;
       }
-      // can't cover once fees are in — hand off to the Boltz path
+      // can't cover once fees are in
       ui.arkLnPay = null;
-      if (!ctx.hook('startLnPayBoltz', invoice, meta)) { ui.sendError = t('arkNotConnected'); }
+      ui.sendError = t('arkLnPayFailed');
       render();
       return;
     }
@@ -702,21 +620,6 @@ export function arkFeature(ctx) {
     ui.busy = true; ui.sendError = ''; render();
     try {
       const mgr = await connectArk();
-      if (p.bridge) {
-        p.status = 'paying'; render();
-        try {
-          await bridgePay(p.bridge, p.invoice);
-          ui.arkLnPaid = { amountSat: p.amountSat, meta: p.meta };
-          ui.arkLnPay = null;
-          ui.busy = false; render();
-          return;
-        } catch (e) {
-          // the bridge couldn't do it (and has refunded us) — fall back to
-          // the ASP rather than dead-ending the payment
-          console.warn('bridge swap failed, falling back to the ASP:', e.message);
-          p.bridge = null; p.status = 'ready';
-        }
-      }
       const id = await mgr.payLnInvoice(p.invoice, { amountSat: sats });
       const settle = (a) => {
         if (a.step === 'done') {
@@ -777,7 +680,7 @@ export function arkFeature(ctx) {
               h('div', { style: 'display:flex;align-items:center' }, unitTag()))
           : null,
         p.amountSat != null ? row(t('lnPayAmount'), p.amountSat) : null,
-        p.feeSat != null && p.feeSat > 0 ? row(p.bridge ? t('arkLnBridgeFee') : t('arkLnFee'), p.feeSat) : null,
+        p.feeSat != null && p.feeSat > 0 ? row(t('arkLnFee'), p.feeSat) : null,
         p.amountSat != null && p.feeSat != null
           ? [h('div', { style: 'border-top:1px solid var(--line, #ddd);margin:2px 0' }), row(t('lnPayTotal'), total, true)]
           : null),
@@ -983,41 +886,6 @@ export function arkFeature(ctx) {
         ? h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.arkExitPage = true; ui.arkError = ''; render(); } }, t('arkExitPageTitle'))
         : null
     );
-  }
-
-  // Swap-bridge settings: an optional cheaper route for bolt11 sends.
-  function bridgeCard() {
-    const net = getNetwork();
-    const id = getBridgeProviderId(net);
-    const presets = bridgePresets(net);
-    if (presets.length <= 1 || !arkAvailable()) return null;
-    return h('div', { class: 'card col' },
-      h('h3', { class: 'row gap6', style: 'align-items:center' }, '⚡', t('arkBridgeTitle')),
-      h('p', { class: 'small muted', style: 'margin:0' }, t('arkBridgeDesc')),
-      h('select', {
-        onChange: (e) => { setBridgeProviderId(e.target.value, net); render(); },
-      }, presets.map((p) => h('option', { value: p.id, selected: p.id === id }, p.label))),
-      id === 'custom'
-        ? h('label', { class: 'field' },
-            h('span', { class: 'lab' }, t('arkBridgeUrl')),
-            h('input', {
-              type: 'text', class: 'mono-input', placeholder: 'https://swap.example.com',
-              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
-              value: getBridgeCustom(net),
-              onChange: (e) => { setBridgeCustom(e.target.value, net); render(); },
-            }))
-        : null,
-      id !== 'off'
-        ? h('label', { class: 'field' },
-            h('span', { class: 'lab' }, t('arkBridgeToken')),
-            h('input', {
-              type: 'password', class: 'mono-input', placeholder: t('arkBridgeTokenPh'),
-              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
-              value: getBridgeToken(net),
-              onChange: (e) => { setBridgeToken(e.target.value, net); render(); },
-            }))
-        : null,
-      id !== 'off' ? h('div', { class: 'small faint' }, t('arkBridgeTrust')) : null);
   }
 
   async function doArkBoard() {
@@ -1699,93 +1567,23 @@ export function arkFeature(ctx) {
       return { invoice: a.invoice, paymentHash: a.paymentHash, amountSat };
     },
     arkMovements() { const s = arkStateNow(); return s ? (s.movements || []) : []; },
-    // endpoints + server identity + bridge for the NWC pouch record
-    arkPouchContext() {
-      const cfg = getArkConfig();
-      if (!cfg || !ark || !ark.info) return null;
-      return {
-        arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(),
-        serverPubkey: ark.info.serverPubkey, bridge: getBridgeConfig(),
-      };
+    // Whether background answering can mirror right now.
+    arkBgReady() { return !!(ark && ark.info && ark.state); },
+    // nwc.js calls this (with its connections) whenever the mirror should
+    // refresh: on enable, on connection changes, after payments, on a timer.
+    async arkBgWrite(connections) { return writeBgMirror(connections); },
+    async arkBgSpendableSat() {
+      const rec = await loadBg(wallet._cacheKey());
+      return ((rec && rec.mgr && rec.mgr.vtxos) || [])
+        .filter((v) => v.state === 'spendable').reduce((n, v) => n + (v.amountSat || 0), 0);
     },
-    // Move sats INTO the pouch: an arkoor self-send to a chain-6 key whose
-    // signed recipient bytes we keep directly — no address, no mailbox.
-    async arkPouchFund(amountSat) {
-      const pouch = await loadPouch(wallet._cacheKey());
-      if (!pouch) throw new Error('enable background answering first');
+    // Worker payments become ordinary history lines once the app opens.
+    async arkBgNoteSpends(spends) {
       const mgr = await connectArk();
-      const idx = (pouch.fundSeq || 0) % POUCH_CHANGE_BASE;
-      const dest = pouchKey(wallet.account(), idx);
-      const out = await mgr.sendToPubkey(hex.encode(dest.pubkey), amountSat);
-      pouch.fundSeq = (pouch.fundSeq || 0) + 1;
-      const add = out.vtxos.map((v) => ({ ...v, keyIndex: idx, state: 'spendable' }));
-      pouch.vtxos = [...(pouch.vtxos || []), ...add];
-      if (pouch.mgr) pouch.mgr.vtxos = [...(pouch.mgr.vtxos || []), ...add.map((v) => ({ ...v }))];
-      pouch.updated = Date.now();
-      await savePouch(wallet._cacheKey(), pouch);
-      return add.reduce((n, v) => n + v.amountSat, 0);
-    },
-    // Everything back to the main wallet (ordinary arkoor sends to our own
-    // ark address, so they arrive like any receive).
-    async arkPouchEmpty() {
-      const pouch = await loadPouch(wallet._cacheKey());
-      if (!pouch) return 0;
-      const pm = await pouchManager(pouch);
-      const mgr = await connectArk();
-      const dest = mgr.address();
-      let moved = 0;
-      for (let guard = 0; guard < 30; guard++) {
-        const v = (pm.state.vtxos || []).find((x) => x.state === 'spendable');
-        if (!v) break;
-        await pm.send(dest, v.amountSat); // full amount: no change stays behind
-        moved += v.amountSat;
-      }
-      pouch.vtxos = (pm.state.vtxos || []).filter((x) => x.state === 'spendable');
-      pouch.mgr = pm.state;
-      pouch.updated = Date.now();
-      await savePouch(wallet._cacheKey(), pouch);
-      return moved;
-    },
-    async arkPouchBalance() {
-      const pouch = await loadPouch(wallet._cacheKey());
-      if (!pouch) return 0;
-      const vs = (pouch.mgr && pouch.mgr.vtxos) || pouch.vtxos || [];
-      return vs.filter((v) => (v.state || 'spendable') === 'spendable').reduce((n, v) => n + (v.amountSat || 0), 0);
-    },
-    // Recover worker-initiated swaps: finished ones become history, dead ones
-    // are refunded with the POUCH's own keys (the refund pubkey is chain 6 —
-    // the main manager cannot sign for it).
-    async arkPouchRecover() {
-      const pouch = await loadPouch(wallet._cacheKey());
-      if (!pouch || !(pouch.swaps || []).some((r) => ['submitted', 'refundable'].includes(r.step))) return;
-      const pm = await pouchManager(pouch);
-      for (const rec of pouch.swaps) {
-        if (!['submitted', 'refundable'].includes(rec.step)) continue;
-        try {
-          const st = await fetch(`${rec.bridgeUrl}/swap?paymentHash=${rec.paymentHash}`).then((r) => r.json());
-          if (st.step === 'done' && st.preimage) { rec.step = 'done'; rec.preimage = st.preimage; continue; }
-        } catch {}
-        try {
-          const r = await fetch(`${rec.bridgeUrl}/refund`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ paymentHash: rec.paymentHash }),
-          });
-          const out = await r.json();
-          if (!r.ok || out.error) throw new Error(out.error || 'refund failed');
-          await pm.acceptHtlcRefund({ vtxoBytesList: out.refundVtxos, refundIndex: rec.refundIndex });
-          rec.step = 'refunded';
-        } catch {}
-      }
-      pouch.mgr = pm.state;
-      await savePouch(wallet._cacheKey(), pouch);
-    },
-    // Pouch payments become ordinary history lines once the app opens.
-    async arkPouchNoteSpends(spends) {
-      const mgr = await connectArk();
-      for (const s of spends) {
+      for (const sp of spends) {
         mgr._movement({
-          type: 'ln-send', amountSat: s.amountSat, status: 'complete',
-          detail: `via pouch · fee ${s.feeSat || 0} sat`, invoice: s.invoice || '', preimage: s.preimage || '',
+          type: 'ln-send', amountSat: sp.amountSat, status: 'complete',
+          detail: `while closed · fee ${sp.feeSat || 0} sat`, invoice: sp.invoice || '', preimage: sp.preimage || '',
         });
       }
       mgr._save();
@@ -1872,7 +1670,7 @@ export function arkFeature(ctx) {
           : null,
         done ? null : h('div', { class: 'small muted', style: 'margin-top:2px' }, t('arkBoardedNote')));
     },
-    settingsCards() { return [arkCard(), bridgeCard()]; },
+    settingsCards() { return [arkCard()]; },
 
     // ---- ark-gift hooks (called by the gifts feature via ctx.hook) ----
     arkGiftInfo() {

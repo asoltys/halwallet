@@ -1,28 +1,28 @@
-// NWC auto-answer from the pouch — the half of background wallet-connect
-// that pays without a tap. Runs inside the service worker's push handler:
-// the push payload carries the encrypted request event, the pouch (IndexedDB)
-// carries the connection service keys and a bounded set of coins, and the
-// reply goes back through the notifier's /publish endpoint — no WebSocket,
-// no seed, nothing outside the pouch's blast radius.
+// NWC auto-answer while the app is closed. Runs inside the service worker's
+// push handler: the push payload carries the encrypted request event, the
+// background record (IndexedDB) carries the connection service keys and a
+// mirror of the wallet's ark state, and the reply goes back through the
+// notifier's /publish endpoint — no WebSocket, no seed.
 //
 // Trust: the notifier transports ciphertext both ways. Requests arrive
 // nip04/nip44-encrypted and signed by the client; replies leave encrypted and
 // signed by the per-connection service key. The notifier can neither read nor
-// forge either. Spending happens directly against the ASP/bridge over fetch.
+// forge either. Payments run the ASP's own Lightning send directly over
+// fetch — the same path the open app uses.
 //
 // Anything this module can't handle returns false, and the caller falls back
-// to today's behavior: a notification that opens the wallet.
+// to a notification that opens the wallet.
 
 import { hex } from '@scure/base';
-import { sha256 } from '@noble/hashes/sha256';
 import * as nip04 from 'nostr-tools/nip04';
 import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { ArkManager } from './ark/manager.js';
 import { maybeBolt11 } from './ark/lightning.js';
-import { allPouches, savePouch, POUCH_KEY_WINDOW, POUCH_CHANGE_BASE } from './nwc-pouch.js';
+import { allBgs, saveBg } from './nwc-bg.js';
 
 const MAX_AGE_SEC = 120;
+const PAY_WAIT_MS = 20_000; // inside the SW's ~30s budget, with reply margin
 const nowSec = () => Math.floor(Date.now() / 1000);
 const errRes = (t, code, message) => ({ result_type: t, error: { code, message } });
 
@@ -42,24 +42,15 @@ async function buildReply(conn, ev, scheme, payload) {
   }, sk);
 }
 
-const seedState = (pouch) => ({
-  v: 1,
-  serverPubkey: pouch.ark.serverPubkey || null,
-  mailboxCheckpoint: 0,
-  nextKeyIndex: pouch.nextKeyIndex || POUCH_CHANGE_BASE,
-  vtxos: (pouch.vtxos || []).map((v) => ({ ...v, state: v.state || 'spendable' })),
-  actions: [],
-  movements: [],
-});
-
-const spendableVtxos = (pouch) =>
-  ((pouch.mgr && pouch.mgr.vtxos) || seedState(pouch).vtxos).filter((v) => v.state === 'spendable');
+const spendableSat = (rec) =>
+  ((rec.mgr && rec.mgr.vtxos) || []).filter((v) => v.state === 'spendable')
+    .reduce((n, v) => n + (v.amountSat || 0), 0);
 
 // data: the push payload { type:'nwc', servicePubkey, event }. Returns true
 // when the request was fully dealt with (reply published or deliberately
 // left to another device); false means "wake the user instead".
-export async function respondFromPouch(data, {
-  notifier, fetchFn = fetch, pouchesFn = allPouches, saveFn = savePouch, log = () => {},
+export async function respondFromBg(data, {
+  notifier, fetchFn = fetch, recordsFn = allBgs, saveFn = saveBg, log = () => {},
 } = {}) {
   const ev = data && data.event;
   if (!ev || ev.kind !== 23194 || !ev.id || !ev.pubkey) return false;
@@ -67,10 +58,10 @@ export async function respondFromPouch(data, {
 
   const target = (ev.tags?.find((t) => t[0] === 'p') || [])[1];
   if (!target) return false;
-  let walletKey = null, pouch = null, conn = null;
-  for (const p of await pouchesFn()) {
-    const c = (p.pouch.connections || []).find((x) => x.servicePk === target);
-    if (c) { walletKey = p.walletKey; pouch = p.pouch; conn = c; break; }
+  let walletKey = null, rec = null, conn = null;
+  for (const r of await recordsFn()) {
+    const c = (r.rec.connections || []).find((x) => x.servicePk === target);
+    if (c && r.rec.v >= 3) { walletKey = r.walletKey; rec = r.rec; conn = c; break; }
   }
   if (!conn) return false;
   if (ev.pubkey !== conn.clientPk) return false;
@@ -92,7 +83,7 @@ export async function respondFromPouch(data, {
   };
   // Another device (an open tab elsewhere) may have answered already — a
   // paid zap must never be shouted over with a late error, and paying twice
-  // wastes a lock cycle. The notifier tracks recent reply e-tags.
+  // wastes funds-in-flight. The notifier tracks recent reply e-tags.
   const answered = async () => {
     try {
       const r = await fetchFn(`${notifier}/answered?event=${ev.id}`);
@@ -105,7 +96,7 @@ export async function respondFromPouch(data, {
       result_type: 'get_info',
       result: {
         alias: 'Hal', color: '#f7931a',
-        network: pouch.ark.network === 'mainnet' ? 'mainnet' : pouch.ark.network,
+        network: rec.ark.network === 'mainnet' ? 'mainnet' : rec.ark.network,
         block_height: 0, block_hash: '',
         methods: ['get_info', 'get_balance', 'pay_invoice', 'list_transactions'],
       },
@@ -113,12 +104,11 @@ export async function respondFromPouch(data, {
     return true;
   }
   if (method === 'get_balance') {
-    const sat = spendableVtxos(pouch).reduce((n, v) => n + (v.amountSat || 0), 0);
-    await publish({ result_type: 'get_balance', result: { balance: sat * 1000 } });
+    await publish({ result_type: 'get_balance', result: { balance: spendableSat(rec) * 1000 } });
     return true;
   }
   if (method === 'list_transactions') {
-    const txs = (pouch.spends || []).slice(-(params.limit || 20)).map((s) => ({
+    const txs = (rec.spends || []).slice(-(params.limit || 20)).map((s) => ({
       type: 'outgoing', invoice: s.invoice || '', preimage: s.preimage || '',
       amount: (s.amountSat || 0) * 1000, fees_paid: (s.feeSat || 0) * 1000,
       created_at: Math.floor((s.ts || Date.now()) / 1000),
@@ -145,101 +135,76 @@ export async function respondFromPouch(data, {
     return true;
   }
   const today = new Date().toISOString().slice(0, 10);
-  const spentToday = (pouch.spends || [])
+  const spentToday = (rec.spends || [])
     .filter((s) => s.connId === conn.id && new Date(s.ts).toISOString().slice(0, 10) === today)
     .reduce((n, s) => n + (s.amountSat || 0) + (s.feeSat || 0), 0);
   if (spentToday + dec.amountSat > conn.dailySat) {
     await publish(errRes('pay_invoice', 'QUOTA_EXCEEDED', `over the remaining daily budget (${Math.max(0, conn.dailySat - spentToday)} sat)`));
     return true;
   }
+  if (spendableSat(rec) < dec.amountSat) return false; // stale/empty mirror: wake the user
 
-  // The worker only pays through the bridge (one HTLC lock, one HTTP swap).
-  // No bridge, no coins, or an exhausted key window → wake the user instead.
-  if (!pouch.bridge || !pouch.bridge.url) return false;
-  const nextIdx = (pouch.mgr && pouch.mgr.nextKeyIndex) || pouch.nextKeyIndex || POUCH_CHANGE_BASE;
-  if (nextIdx >= POUCH_KEY_WINDOW - 1) { log('pouch key window exhausted'); return false; }
-
-  const auth = pouch.bridge.token ? { authorization: `Bearer ${pouch.bridge.token}` } : {};
-  let quote;
-  try {
-    const r = await fetchFn(`${pouch.bridge.url}/quote?invoice=${encodeURIComponent(invoice)}`, { headers: auth });
-    quote = await r.json();
-    if (!r.ok || quote.error) throw new Error(quote.error || `quote failed (${r.status})`);
-  } catch (e) { log('quote failed: ' + e.message); return false; }
-  if (!spendableVtxos(pouch).some((v) => v.amountSat >= quote.totalSat)) {
-    log('pouch cannot cover ' + quote.totalSat);
-    return false; // underfunded pouch: the user should top up — notify
-  }
-
+  // The ASP's own Lightning send, over the mirrored state. Change and HTLC
+  // outputs allocate from nextKeyIndex, which must stay inside the key
+  // window the app pre-derived; if it ran out, wake the user instead.
+  if (!rec.keys[String(rec.mgr.nextKeyIndex || 1)]) { log('key window exhausted'); return false; }
   const storage = {
-    load: () => pouch.mgr || seedState(pouch),
-    save: (s) => { pouch.mgr = s; saveFn(walletKey, pouch).catch(() => {}); },
+    load: () => rec.mgr,
+    save: (s) => { rec.mgr = s; saveFn(walletKey, rec).catch(() => {}); },
   };
-  const keyShim = { deriveChild: () => ({ deriveChild: (i) => ({ privateKey: hex.decode(pouch.keys[String(i)] || pouch.keys['0']) }) }) };
+  const keyShim = { deriveChild: () => ({ deriveChild: (i) => {
+    const k = rec.keys[String(i)];
+    if (!k) throw new Error(`key index ${i} outside the mirrored window`);
+    return { privateKey: hex.decode(k) };
+  } }) };
   let mgr;
   try {
     mgr = await new ArkManager({
       account: keyShim, storage,
-      arkUrl: pouch.ark.arkUrl, esploraUrl: pouch.ark.esploraUrl, network: pouch.ark.network,
+      arkUrl: rec.ark.arkUrl, esploraUrl: rec.ark.esploraUrl, network: rec.ark.network,
     }).init();
   } catch (e) { log('ark init failed: ' + e.message); return false; }
 
-  let lock;
+  let id;
   try {
-    lock = await mgr.htlcLock({
-      amountSat: quote.totalSat, claimPubkey: quote.claimPubkey,
-      paymentHash: quote.paymentHash, htlcExpiry: quote.htlcExpiry,
-    });
-  } catch (e) { log('htlc lock failed: ' + e.message); return false; }
-
-  // Persist the swap BEFORE handing it to the bridge: if we die mid-flight,
-  // the app finds the record on next open and runs its refund machinery.
-  pouch.swaps = pouch.swaps || [];
-  const rec = {
-    paymentHash: quote.paymentHash, invoice, bridgeUrl: pouch.bridge.url,
-    amountSat: quote.amountSat, feeSat: quote.feeSat,
-    htlcVtxo: lock.htlcVtxos[0], refundIndex: lock.refundIndex,
-    htlcExpiry: quote.htlcExpiry, step: 'submitted', ts: Date.now(),
-  };
-  pouch.swaps.push(rec);
-  await saveFn(walletKey, pouch);
-
-  let res;
-  try {
-    const r = await fetchFn(`${pouch.bridge.url}/swap`, {
-      method: 'POST', headers: { 'content-type': 'application/json', ...auth },
-      body: JSON.stringify({ invoice, htlcVtxo: lock.htlcVtxos[0] }),
-    });
-    res = await r.json();
-    if (!r.ok || res.error) throw new Error(res.error || `bridge error (${r.status})`);
-    if (res.step !== 'done') throw new Error(res.error || 'bridge did not pay');
-    if (!res.preimage || hex.encode(sha256(hex.decode(res.preimage))) !== quote.paymentHash) {
-      throw new Error('bridge returned an invalid preimage');
-    }
+    id = await mgr.payLnInvoice(invoice);
   } catch (e) {
-    rec.step = 'refundable';
-    rec.error = e.message;
-    await saveFn(walletKey, pouch);
-    // the winner may have paid while we were locking — never shout over it
     if (!(await answered())) {
       await publish(errRes('pay_invoice', 'INTERNAL', e.message)).catch(() => {});
     }
     return true;
   }
+  const deadline = Date.now() + PAY_WAIT_MS;
+  let a = mgr.lnAction(id);
+  while (a && !['done', 'failed'].includes(a.step) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1500));
+    await mgr.driveLn(id).catch(() => {});
+    a = mgr.lnAction(id);
+  }
+  if (!a || a.step === 'failed') {
+    if (!(await answered())) {
+      await publish(errRes('pay_invoice', 'INTERNAL', (a && a.error) || 'payment failed')).catch(() => {});
+    }
+    return true;
+  }
+  if (a.step !== 'done') {
+    // still in flight as our budget runs out: the app resumes it from the
+    // mirrored state on next open — wake the user rather than guess.
+    log('payment still pending at SW deadline');
+    return false;
+  }
 
-  rec.step = 'done';
-  rec.preimage = res.preimage;
-  pouch.spends = pouch.spends || [];
-  pouch.spends.push({
-    connId: conn.id, amountSat: quote.amountSat, feeSat: quote.feeSat,
-    paymentHash: quote.paymentHash, preimage: res.preimage, invoice, ts: Date.now(),
+  rec.spends = rec.spends || [];
+  rec.spends.push({
+    connId: conn.id, amountSat: a.amountSat || dec.amountSat, feeSat: a.feeSat || 0,
+    paymentHash: dec.paymentHash, preimage: a.preimage, invoice, ts: Date.now(),
   });
-  if (pouch.spends.length > 200) pouch.spends = pouch.spends.slice(-200);
-  await saveFn(walletKey, pouch);
+  if (rec.spends.length > 200) rec.spends = rec.spends.slice(-200);
+  await saveFn(walletKey, rec);
   await publish({
     result_type: 'pay_invoice',
-    result: { preimage: res.preimage, fees_paid: (quote.feeSat || 0) * 1000 },
+    result: { preimage: a.preimage, fees_paid: (a.feeSat || 0) * 1000 },
   });
-  log(`paid ${quote.amountSat} sat via bridge from the pouch`);
+  log(`paid ${a.amountSat || dec.amountSat} sat via the ASP from the background mirror`);
   return true;
 }

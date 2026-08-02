@@ -178,21 +178,6 @@ export async function buildSwNwc({ minify = true } = {}) {
   return result.outputs[0].text();
 }
 
-// The silent-payment scanning worker, bundled separately (its own global scope)
-// and embedded as base64 so the single-file app can spawn it from a Blob URL.
-export async function buildSpWorker({ minify = true } = {}) {
-  const result = await Bun.build({
-    entrypoints: ['./src/sp-worker.js'],
-    target: 'browser',
-    minify,
-  });
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error('sp-worker bundle failed');
-  }
-  return result.outputs[0].text();
-}
-
 // Optional-feature selection: HAL_FEATURES is a comma list of enabled
 // features (gifts,swaps,ark,zaps,sp,nwc). Unset means all; "none"/"" means a minimal
 // on-chain-only wallet. A build plugin swaps src/features/index.js for a
@@ -200,7 +185,7 @@ export async function buildSpWorker({ minify = true } = {}) {
 // feature's code (and its network endpoints) never enters the bundle.
 // NB order matters and must match src/features/index.js — nwc sits after ark
 // because it drives ark's headless pay/balance seam.
-const ALL_FEATURES = { gifts: 'giftsFeature', swaps: 'swapsFeature', ark: 'arkFeature', zaps: 'zapsFeature', sp: 'spFeature', nwc: 'nwcFeature', sync: 'syncFeature' };
+const ALL_FEATURES = { gifts: 'giftsFeature', ark: 'arkFeature', zaps: 'zapsFeature', nwc: 'nwcFeature', sync: 'syncFeature' };
 
 export function enabledFeatures(spec = process.env.HAL_FEATURES) {
   if (spec == null) return Object.keys(ALL_FEATURES);
@@ -236,10 +221,6 @@ export async function buildHtml({ minify = true, pwa = minify, features = proces
   let js = await result.outputs[0].text();
   // Guard against a literal </script> inside the bundle closing our tag early.
   js = js.replaceAll('</script', '<\\/script');
-  // The silent-payment scan worker only ships when the sp feature does.
-  const workerB64 = enabledFeatures(features).includes('sp')
-    ? Buffer.from(await buildSpWorker({ minify })).toString('base64')
-    : '';
   const css = await Bun.file('./src/style.css').text();
 
   return `<!doctype html>
@@ -255,7 +236,6 @@ ${pwa ? PWA_HEAD : ''}<style>${css}</style>
 </head>
 <body>
 <div id="app"></div>
-${workerB64 ? `<script>globalThis.__SP_WORKER__=${JSON.stringify(workerB64)}</script>` : ''}
 <script>${js}</script>
 ${pwa ? SW_REGISTER + '\n' : ''}</body>
 </html>`;

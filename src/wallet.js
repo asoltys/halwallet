@@ -1229,21 +1229,6 @@ export class Wallet {
 
 
 
-  // Number of unreserved spendable coins (for the consolidate prompt/action).
-  spendableCoinCount() {
-    const locked = this.lockedCoinIds();
-    return this.utxos.filter((u) => !locked.has(utxoId(u)) && (u.confirmed || u.chain === 1)).length;
-  }
-
-  // Merge all unreserved spendable coins into one, via a max self-send. Leaves
-  // the wallet with a single coin so future sends/gifts use one input.
-  async consolidate(feeRate) {
-    const rate = Math.max(1, Math.round(feeRate));
-    const draft = this.buildTx({ recipients: [{ address: this.freshReceive().address }], feeRate: rate, sendMax: true });
-    const hex = this.sign(draft.tx);
-    await this.broadcast(hex);
-    return { txid: draft.tx.id, inputs: draft.inputsCount };
-  }
 
 
 
