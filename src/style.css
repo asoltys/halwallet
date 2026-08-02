@@ -193,7 +193,6 @@ textarea { resize: vertical; min-height: 84px; font-family: var(--mono); font-si
   border-radius: 11px; padding: 12px 14px; word-break: break-all; text-align: center;
 }
 .path { font-family: var(--mono); font-size: 12px; color: var(--faint); }
-.hiw-tribute { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 2px !important; }
 .addr-check { font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--muted); word-break: break-all; padding: 0 2px; }
 .addr-check .hl { color: var(--ink); font-weight: 700; }
 

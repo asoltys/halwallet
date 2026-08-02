@@ -536,8 +536,7 @@ function howItWorksScreen() {
       para('hiwSp1')),
     h('div', { class: 'card col', style: 'gap:14px' },
       h('h3', {}, '🎁 ' + t('hiwGiftsTitle')),
-      para('hiwGifts1'),
-      h('p', { class: 'small muted hiw-tribute', style: 'margin:0' }, ...linkify(t('hiwTribute')))),
+      para('hiwGifts1')),
     h('button', { class: 'btn-block', onClick: back }, t('back'))
   );
 }
@@ -546,7 +545,6 @@ function howItWorksScreen() {
 // returning an array of text + anchor nodes. Keeps i18n strings link-free.
 const HIW_LINKS = [
   ['mempool.space', 'https://mempool.space'],
-  ['Hal Finney', 'https://en.wikipedia.org/wiki/Hal_Finney_(computer_scientist)'],
 ];
 function linkify(text) {
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

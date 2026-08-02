@@ -9,8 +9,6 @@ static `index.html` you can save and run offline, forever.
 Live at **https://v3.coinos.io** (the built `index.html` also runs straight
 from the filesystem with no server).
 
-Built on the shoulders of [Hal Finney](https://en.wikipedia.org/wiki/Hal_Finney_(computer_scientist)) —
-this project began life as "Hal Wallet" in his memory.
 
 ## Features
 
