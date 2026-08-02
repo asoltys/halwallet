@@ -10,6 +10,8 @@ import { schnorr, secp256k1 } from "@noble/curves/secp256k1";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { finalizeEvent, generateSecretKey, getPublicKey, getEventHash, verifyEvent } from "nostr-tools/pure";
 import { nip44 } from "nostr-tools";
+import * as nip19 from "nostr-tools/nip19";
+import { base64urlnopad } from "@scure/base";
 
 const utf8 = (s) => new TextEncoder().encode(s);
 
@@ -231,4 +233,100 @@ export const foldGuestbook = (entries, { nowMs, banned = new Set() } = {}) => {
 export const observeAuthor = (members, author, t) => {
   let cur = members.get(author);
   if (!cur || (cur.state !== "join" && t > cur.t)) members.set(author, { state: "join", t, id: "" });
+};
+
+// ---- CORD-05 invite links ----
+// A link is $BASE/invite/<naddr>#<fragment>: the naddr names the bundle's
+// addressable coordinate (kind 33301, per-link signer, empty d), the fragment
+// carries [version=4][flags][relays?][token:16] base64url. The token derives
+// the bundle's decrypt key and never reaches any server.
+
+export const inviteKey = (token) => hkdf32(token, "concord/invite-key", ZERO32);
+
+// Our relays aren't in the stock dictionary (CORD-05 §3), so encode them as
+// wss-implied literals (leading 0) — dictionary ids still decode.
+const INVITE_DICT = { 1: "wss://jskitty.com/nostr", 2: "wss://asia.vectorapp.io/nostr", 3: "wss://relay.ditto.pub", 4: "wss://relay.dreamith.to" };
+
+export const encodeInviteFragment = (relays, token) => {
+  let parts = [new Uint8Array([4, 0, Math.min(relays.length, 3)])];
+  for (let url of relays.slice(0, 3)) {
+    let m = url.match(/^wss:\/\/(.+)$/);
+    let bytes = utf8(m ? m[1] : url);
+    parts.push(new Uint8Array([m ? 0 : 255, bytes.length]), bytes);
+  }
+  parts.push(token);
+  return base64urlnopad.encode(concat(...parts));
+};
+
+export const decodeInviteFragment = (frag) => {
+  try {
+    let b = base64urlnopad.decode(frag);
+    if (b[0] < 4) return null; // legacy dictionary generation
+    let relays = [], i = 2;
+    if (b[1] & 1) relays = [INVITE_DICT[1], INVITE_DICT[2], INVITE_DICT[3], INVITE_DICT[4]];
+    else {
+      let count = b[i++];
+      for (let n = 0; n < count && i < b.length; n++) {
+        let lead = b[i++];
+        if (lead >= 1 && lead <= 254) { if (INVITE_DICT[lead]) relays.push(INVITE_DICT[lead]); continue; }
+        let len = b[i++];
+        let s = new TextDecoder().decode(b.slice(i, i + len));
+        i += len;
+        relays.push(lead === 0 ? "wss://" + s : s);
+      }
+    }
+    let token = b.slice(i, i + 16);
+    if (token.length !== 16) return null;
+    return { relays, token };
+  } catch {
+    return null;
+  }
+};
+
+// Parse any invite URL or bare "naddr…#fragment" into its protocol parts.
+export const parseInviteLink = (text) => {
+  let m = String(text || "").trim().match(/(?:invite\/)?(naddr1[02-9ac-hj-np-z]+)#([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  try {
+    let d = nip19.decode(m[1]);
+    if (d.type !== "naddr" || d.data.kind !== 33301) return null;
+    let frag = decodeInviteFragment(m[2]);
+    if (!frag) return null;
+    return { signerPk: d.data.pubkey, naddr: m[1], fragment: m[2], ...frag };
+  } catch {
+    return null;
+  }
+};
+
+export const makeInviteLink = (base, signerPk, relays, token) =>
+  `${base}/invite/${nip19.naddrEncode({ kind: 33301, pubkey: signerPk, identifier: "" })}#${encodeInviteFragment(relays, token)}`;
+
+// The kind 33301 addressable bundle event, signed by the per-link keypair.
+export const makeInviteBundleEvent = (linkSk, bundle, token) =>
+  finalizeEvent(
+    {
+      kind: 33301,
+      content: nip44.encrypt(JSON.stringify(bundle), inviteKey(token)),
+      tags: [["d", ""], ["vsk", "6"]],
+      created_at: Math.floor(Date.now() / 1000),
+    },
+    linkSk
+  );
+
+// Decrypt + validate a fetched bundle. Returns the bundle, { revoked: true },
+// or null. The community_id self-certifies the owner (CORD-05 §1), and bounds
+// apply before anything allocates.
+export const openInviteBundle = (evt, token) => {
+  if (evt.tags?.some((t) => t[0] === "vsk" && t[1] === "9")) return { revoked: true };
+  try {
+    let b = JSON.parse(nip44.decrypt(evt.content, inviteKey(token)));
+    if (communityId(b.owner, b.owner_salt) !== b.community_id) return null;
+    if (!/^[0-9a-f]{64}$/.test(b.community_root)) return null;
+    if (!Array.isArray(b.channels) || b.channels.length > 256) return null;
+    b.relays = (b.relays || []).slice(0, 5);
+    if (b.expires_at && Date.now() > b.expires_at) return { expired: true, name: b.name };
+    return b;
+  } catch {
+    return null;
+  }
 };

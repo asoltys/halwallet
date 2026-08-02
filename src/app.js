@@ -333,7 +333,7 @@ wallet.subscribe(scheduleRender);
 // buttons (and Android/system back) move between screens we've actually viewed.
 // We snapshot only the navigation-relevant `ui` fields, so incidental re-renders
 // (typing, polling, balance updates) don't create history entries.
-const NAV_FIELDS = ['screen', 'tab', 'txDetail', 'bump', 'giftMode', 'claimStep'];
+const NAV_FIELDS = ['screen', 'tab', 'txDetail', 'bump', 'giftMode', 'claimStep', 'msgView', 'msgCommunity', 'msgPeer'];
 function navSnapshot() {
   const s = {};
   for (const f of NAV_FIELDS) s[f] = ui[f] ?? null;

@@ -84,6 +84,9 @@ export async function extensionSigner() {
     signEvent: (e) => nostr.signEvent(e),
     encryptSelf: (txt) => nostr.nip44.encrypt(pubkey, txt),
     decryptSelf: (ct) => nostr.nip44.decrypt(pubkey, ct),
+    // peer variants: NIP-17 DMs seal to the recipient, not to self
+    encryptTo: (peer, txt) => nostr.nip44.encrypt(peer, txt),
+    decryptFrom: (peer, ct) => nostr.nip44.decrypt(peer, ct),
   };
 }
 
@@ -104,6 +107,8 @@ export async function bunkerSigner(uri, { onAuth } = {}) {
     signEvent: (e) => signer.signEvent(e),
     encryptSelf: (txt) => signer.nip44Encrypt(pubkey, txt),
     decryptSelf: (ct) => signer.nip44Decrypt(pubkey, ct),
+    encryptTo: (peer, txt) => signer.nip44Encrypt(peer, txt),
+    decryptFrom: (peer, ct) => signer.nip44Decrypt(peer, ct),
     close: () => { try { signer.close(); } catch {} },
   };
 }
@@ -117,6 +122,8 @@ export function keySigner(sk) {
     signEvent: async (e) => finalizeEvent(e, sk),
     encryptSelf: async (txt) => nip44.encrypt(txt, conv),
     decryptSelf: async (ct) => nip44.decrypt(ct, conv),
+    encryptTo: async (peer, txt) => nip44.encrypt(txt, nip44.getConversationKey(sk, peer)),
+    decryptFrom: async (peer, ct) => nip44.decrypt(ct, nip44.getConversationKey(sk, peer)),
   };
 }
 

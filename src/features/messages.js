@@ -1,23 +1,28 @@
-// Messages — encrypted community chat over the Concord protocol (CORD-01..04),
-// the successor to Marmot/White Noise for Discord-shaped rooms on nostr.
+// Messages — Concord community chat (CORD-01..05) + NIP-17 private DMs.
 //
-// coinos ships with one built-in community: "coinos". Its join material (below)
-// includes the community_root, so holding the app is holding membership —
-// relays only ever see kind-1059 wraps signed by derived stream keys. The
-// community was founded by Adam's npub, which makes him owner (position 0)
-// and sole authority for the control plane fold.
+// Communities are end-to-end private: there is no global discovery in
+// Concord, membership travels by invite. coinos ships with one built-in
+// community (below) so every user starts somewhere; beyond it users join by
+// invite link, by direct invite (giftwrapped to their npub), or by founding
+// their own community in-app.
 //
-// Messages are signed by the session's nostr login identity when a signer is
-// live (extension, or a pasted key before reload), else by the wallet's
-// NIP-06 key — both only ever *sign* the seal; all encryption happens under
-// stream keys the app already holds, so remote signers need no nip44 round-trips.
+// Identity: the session's nostr login when a signer is live, else the
+// wallet's NIP-06 key. Community traffic encrypts under stream keys the app
+// holds (signers only sign seals); DMs seal to the peer, which is what the
+// widened signer adapters (encryptTo/decryptFrom) exist for. The DM inbox
+// listens for both identities and decrypts with whichever keys are present.
 
-import { subscribeOn, publishOn, fetchNostrProfile, npubOf } from '../nostr.js';
+import {
+  subscribeOn, publishOn, queryOn, fetchNostrProfile, fetchInboxRelays,
+  npubOf, parseNostrPubkey, generateSecretKey, getPublicKey, finalizeEvent,
+} from '../nostr.js';
 import {
   channelKey, controlKey, guestbookKey, openWrap, wrapRumor,
-  foldControl, foldGuestbook, observeAuthor, eventMs, msTags,
+  foldControl, foldGuestbook, observeAuthor, eventMs, msTags, makeEdition,
+  communityId, parseInviteLink, makeInviteLink, makeInviteBundleEvent, openInviteBundle,
 } from '../concord.js';
-import { hexToBytes } from '@noble/hashes/utils';
+import { makeDM, unwrapDM, wrapDM } from '../dm.js';
+import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { t } from '../i18n.js';
 
 // Genesis output of tools/concord-genesis.js — the coinos community's join
@@ -35,45 +40,34 @@ const COMMUNITY = {
 };
 
 const EPOCH = 0;
-const CACHE_MAX = 50; // messages kept per channel in feature state
+const DM_RELAYS = ['wss://relay.coinos.io', 'wss://nos.lol'];
+const APP_BASE = 'https://v3.coinos.io';
+const CACHE_MAX = 50; // messages kept per channel / per DM thread in feature state
 
 export function messagesFeature(ctx) {
   const { h, ui, render, wallet, toast, hook } = ctx;
 
-  const root = hexToBytes(COMMUNITY.community_root);
-  const cid = COMMUNITY.community_id;
-  const control = controlKey(root, cid, EPOCH);
-  const guestbook = guestbookKey(root, cid, EPOCH);
-  const chStream = (id) => channelKey(root, id, EPOCH);
+  // ---- persisted state ----------------------------------------------------
 
-  // ---- state ------------------------------------------------------------
-
-  let folded = null; // control-plane fold: { metadata, channels, banned, ... }
-  let controlEntries = [];
-  let guestEntries = [];
-  let byChannel = new Map(); // channelId -> Map(rumorId -> {rumor, author})
-  let edits = new Map(); // target rumor id -> latest edit rumor
-  let deletes = new Set(); // rumor ids deleted by their author
-  let reactions = new Map(); // target rumor id -> Map(author -> emoji)
-  let seenWraps = new Set();
-  let unsubs = [];
-  let started = false;
-
-  const profiles = new Map(); // pubkey -> {name, picture} | null while loading
-  const st = () => wallet.loadFeatureState('messages', { joined: {}, cache: {} });
+  const st = () => {
+    const s = wallet.loadFeatureState('messages', {});
+    s.joined ||= {}; // { [cid]: { [pubkey]: true } }
+    s.cache ||= {}; // { [channelId]: [msgs] }
+    s.communities ||= []; // join material beyond the built-in
+    s.invites ||= {}; // { [cid]: { sk, token, url } } — minted links
+    s.dms ||= {}; // { [peerPk]: [{ id, from, text, t }] }
+    s.declined ||= {}; // direct-invite rumor ids dismissed
+    // pre-multi-community shape: joined was { [pubkey]: true } for coinos
+    for (const k of Object.keys(s.joined))
+      if (s.joined[k] === true) { (s.joined[COMMUNITY.community_id] ||= {})[k] = true; delete s.joined[k]; }
+    return s;
+  };
   const save = (s) => wallet.saveFeatureState('messages', s);
 
-  const channels = () => {
-    // The control plane is the authority; the baked-in list covers the gap
-    // until the first fold lands (offline, cold relays).
-    if (folded && folded.channels.size)
-      return [...folded.channels.entries()].map(([id, c]) => ({ id, name: c.name }));
-    return COMMUNITY.channels;
-  };
-  const currentChannel = () =>
-    channels().find((c) => c.id === ui.msgChannel) || channels()[0];
+  const communities = () => [COMMUNITY, ...st().communities];
+  const communityById = (cid) => communities().find((c) => c.community_id === cid);
 
-  // ---- identity ----------------------------------------------------------
+  // ---- identity -----------------------------------------------------------
 
   async function identity() {
     const id = hook('nostrLoginIdentity');
@@ -84,60 +78,25 @@ export function messagesFeature(ctx) {
     if (wallet.nostr && wallet.nostr.sk) return { pubkey: wallet.nostr.pk, signer: wallet.nostr.sk };
     return null;
   }
-
-  // ---- inbound -----------------------------------------------------------
-
-  const refold = () => {
-    folded = foldControl(controlEntries, { ownerHex: COMMUNITY.owner, cid });
+  const myPubkeys = () => {
+    const pks = [];
+    const id = hook('nostrLoginIdentity');
+    if (id) pks.push(id.pubkey);
+    if (wallet.nostr && wallet.nostr.pk && !pks.includes(wallet.nostr.pk)) pks.push(wallet.nostr.pk);
+    return pks;
   };
+  const isMe = (pk) => myPubkeys().includes(pk);
 
-  const onChat = (channelId) => (wrap) => {
-    if (seenWraps.has(wrap.id)) return;
-    seenWraps.add(wrap.id);
-    const opened = openWrap(wrap, chStream(channelId));
-    if (!opened) return;
-    const { rumor, author } = opened;
-    const tag = (k) => rumor.tags?.find((x) => x[0] === k);
-    // CORD-03 §3: the rumor must commit to the channel/epoch that decrypted it
-    if (tag('channel')?.[1] !== channelId || tag('epoch')?.[1] !== String(EPOCH)) return;
-    if (folded && folded.banned.has(author)) return;
-    if (rumor.kind === 9) {
-      let msgs = byChannel.get(channelId) || byChannel.set(channelId, new Map()).get(channelId);
-      msgs.set(rumor.id, { rumor, author });
-    } else if (rumor.kind === 5) {
-      for (const e of rumor.tags.filter((x) => x[0] === 'e')) {
-        const m = byChannel.get(channelId)?.get(e[1]);
-        if (!m || m.author === author) deletes.add(e[1]);
-      }
-    } else if (rumor.kind === 3302) {
-      const target = tag('e')?.[1];
-      if (target) {
-        const cur = edits.get(target);
-        if (!cur || eventMs(rumor) > eventMs(cur.rumor)) edits.set(target, { rumor, author });
-      }
-    } else if (rumor.kind === 7) {
-      const target = tag('e')?.[1];
-      if (target) {
-        let r = reactions.get(target) || reactions.set(target, new Map()).get(target);
-        r.set(author, rumor.content);
-      }
-    }
-    const tms = eventMs(rumor);
-    if (tms) observeAuthor(members, author, tms);
-    scheduleRepaint();
-  };
+  // ---- shared runtime -----------------------------------------------------
 
-  let members = new Map();
-  const refoldGuestbook = () => {
-    members = foldGuestbook(guestEntries, { nowMs: Date.now(), banned: folded?.banned });
-    for (const [, msgs] of byChannel)
-      for (const { rumor, author } of msgs.values()) {
-        const tms = eventMs(rumor);
-        if (tms) observeAuthor(members, author, tms);
-      }
-  };
+  const rooms = new Map(); // cid -> room runtime
+  const threads = new Map(); // peerPk -> Map(rumorId -> { rumor, mine })
+  const pendingDirect = new Map(); // rumor id -> { bundle, from }
+  const profiles = new Map(); // pubkey -> profile | null while loading
+  const seenWraps = new Set();
+  let dmStarted = false;
+  let allUnsubs = [];
 
-  // Coalesce repaints: relays replay history in a burst on subscribe.
   let repaintTimer = null;
   const scheduleRepaint = () => {
     if (repaintTimer) return;
@@ -146,129 +105,6 @@ export function messagesFeature(ctx) {
       if (ui.screen === 'wallet' && ui.tab === 'messages') render();
     }, 80);
   };
-
-  function start() {
-    if (started) return;
-    started = true;
-    const relays = COMMUNITY.relays;
-    unsubs.push(
-      subscribeOn(relays, { kinds: [1059], authors: [control.pk], limit: 500 }, (wrap) => {
-        if (seenWraps.has(wrap.id)) return;
-        seenWraps.add(wrap.id);
-        const opened = openWrap(wrap, control);
-        if (!opened || opened.rumor.kind !== 3308) return;
-        controlEntries.push(opened);
-        refold();
-        scheduleRepaint();
-      })
-    );
-    unsubs.push(
-      subscribeOn(relays, { kinds: [1059], authors: [guestbook.pk], limit: 500 }, (wrap) => {
-        if (seenWraps.has(wrap.id)) return;
-        seenWraps.add(wrap.id);
-        const opened = openWrap(wrap, guestbook);
-        if (!opened) return;
-        guestEntries.push(opened);
-        refoldGuestbook();
-        scheduleRepaint();
-      })
-    );
-    for (const c of COMMUNITY.channels) subChannel(c.id);
-    // warm the timeline from the local cache so the page paints instantly
-    const cached = st().cache;
-    for (const [chId, list] of Object.entries(cached || {}))
-      for (const m of list) {
-        let msgs = byChannel.get(chId) || byChannel.set(chId, new Map()).get(chId);
-        if (!msgs.has(m.rumor.id)) msgs.set(m.rumor.id, m);
-      }
-  }
-
-  const subbed = new Set();
-  function subChannel(id) {
-    if (subbed.has(id)) return;
-    subbed.add(id);
-    unsubs.push(subscribeOn(COMMUNITY.relays, { kinds: [1059], authors: [chStream(id).pk], limit: 200 }, onChat(id)));
-  }
-
-  function persistCache() {
-    const s = st();
-    s.cache = {};
-    for (const [chId, msgs] of byChannel) {
-      const list = [...msgs.values()]
-        .filter((m) => !deletes.has(m.rumor.id))
-        .sort((a, b) => eventMs(a.rumor) - eventMs(b.rumor))
-        .slice(-CACHE_MAX);
-      s.cache[chId] = list;
-    }
-    save(s);
-  }
-
-  // ---- outbound ----------------------------------------------------------
-
-  async function ensureJoined(id) {
-    const s = st();
-    if (s.joined[id.pubkey]) return;
-    const { created_at, ms } = msTags(Date.now());
-    const rumor = { kind: 3306, pubkey: id.pubkey, content: 'join', tags: [ms], created_at };
-    const wrap = await wrapRumor(rumor, id.signer, guestbook);
-    publishOn(COMMUNITY.relays, wrap);
-    s.joined[id.pubkey] = true;
-    save(s);
-  }
-
-  async function sendMessage() {
-    const text = (ui.msgDraft || '').trim();
-    const ch = currentChannel();
-    if (!text || !ch || ui.msgSending) return;
-    const id = await identity();
-    if (!id) { toast(t('msgNoIdentity')); return; }
-    ui.msgSending = true;
-    render();
-    try {
-      const { created_at, ms } = msTags(Date.now());
-      const rumor = {
-        kind: 9, pubkey: id.pubkey, content: text,
-        tags: [['channel', ch.id], ['epoch', String(EPOCH)], ms], created_at,
-      };
-      const wrap = await wrapRumor(rumor, id.signer, chStream(ch.id));
-      // optimistic insert (the relay echo will dedupe on wrap id)
-      const opened = openWrap(wrap, chStream(ch.id));
-      if (opened) {
-        seenWraps.add(wrap.id);
-        let msgs = byChannel.get(ch.id) || byChannel.set(ch.id, new Map()).get(ch.id);
-        msgs.set(opened.rumor.id, opened);
-      }
-      ui.msgDraft = '';
-      const ok = await publishOn(COMMUNITY.relays, wrap);
-      if (!ok) toast(t('msgSendFailed'));
-      ensureJoined(id).catch(() => {});
-      persistCache();
-    } catch (e) {
-      toast(e.message || String(e));
-    } finally {
-      ui.msgSending = false;
-      ui.msgStick = true;
-      render();
-    }
-  }
-
-  async function deleteMessage(m) {
-    const id = await identity();
-    if (!id || id.pubkey !== m.author) return;
-    const ch = currentChannel();
-    const { created_at, ms } = msTags(Date.now());
-    const rumor = {
-      kind: 5, pubkey: id.pubkey, content: '',
-      tags: [['channel', ch.id], ['epoch', String(EPOCH)], ['e', m.rumor.id], ['k', '9'], ms], created_at,
-    };
-    const wrap = await wrapRumor(rumor, id.signer, chStream(ch.id));
-    deletes.add(m.rumor.id);
-    render();
-    publishOn(COMMUNITY.relays, wrap);
-    persistCache();
-  }
-
-  // ---- profiles ----------------------------------------------------------
 
   function profileOf(pk) {
     if (profiles.has(pk)) return profiles.get(pk);
@@ -279,14 +115,458 @@ export function messagesFeature(ctx) {
     }).catch(() => profiles.set(pk, {}));
     return null;
   }
-
   const displayName = (pk) => {
     const p = profileOf(pk);
     if (p && p.name) return p.name;
-    return npubOf(pk).slice(0, 12) + '…';
+    const npub = npubOf(pk);
+    return npub ? npub.slice(0, 12) + '…' : pk.slice(0, 12) + '…';
   };
 
-  // ---- view --------------------------------------------------------------
+  // ---- community rooms ----------------------------------------------------
+
+  function ensureRoom(jm) {
+    let room = rooms.get(jm.community_id);
+    if (room) return room;
+    const root = hexToBytes(jm.community_root);
+    room = {
+      jm,
+      control: controlKey(root, jm.community_id, jm.root_epoch || EPOCH),
+      guestbook: guestbookKey(root, jm.community_id, jm.root_epoch || EPOCH),
+      chStream: (id) => channelKey(root, id, EPOCH),
+      folded: null,
+      controlEntries: [],
+      guestEntries: [],
+      members: new Map(),
+      byChannel: new Map(),
+      edits: new Map(),
+      deletes: new Set(),
+      reactions: new Map(),
+      subbed: new Set(),
+      relays: jm.relays && jm.relays.length ? jm.relays : DM_RELAYS,
+    };
+    rooms.set(jm.community_id, room);
+
+    const refold = () => { room.folded = foldControl(room.controlEntries, { ownerHex: jm.owner, cid: jm.community_id }); };
+    const refoldGuestbook = () => {
+      room.members = foldGuestbook(room.guestEntries, { nowMs: Date.now(), banned: room.folded?.banned });
+      for (const [, msgs] of room.byChannel)
+        for (const { rumor, author } of msgs.values()) {
+          const tms = eventMs(rumor);
+          if (tms) observeAuthor(room.members, author, tms);
+        }
+    };
+
+    allUnsubs.push(
+      subscribeOn(room.relays, { kinds: [1059], authors: [room.control.pk], limit: 500 }, (wrap) => {
+        if (seenWraps.has(wrap.id)) return;
+        seenWraps.add(wrap.id);
+        const opened = openWrap(wrap, room.control);
+        if (!opened || opened.rumor.kind !== 3308) return;
+        room.controlEntries.push(opened);
+        refold();
+        scheduleRepaint();
+      }),
+      subscribeOn(room.relays, { kinds: [1059], authors: [room.guestbook.pk], limit: 500 }, (wrap) => {
+        if (seenWraps.has(wrap.id)) return;
+        seenWraps.add(wrap.id);
+        const opened = openWrap(wrap, room.guestbook);
+        if (!opened) return;
+        room.guestEntries.push(opened);
+        refoldGuestbook();
+        scheduleRepaint();
+      })
+    );
+    for (const c of jm.channels || []) subChannel(room, c.id);
+    // warm from local cache so the page paints before relays answer
+    const cached = st().cache;
+    for (const c of jm.channels || [])
+      for (const m of cached[c.id] || []) {
+        const msgs = room.byChannel.get(c.id) || room.byChannel.set(c.id, new Map()).get(c.id);
+        if (!msgs.has(m.rumor.id)) msgs.set(m.rumor.id, m);
+      }
+    return room;
+  }
+
+  function subChannel(room, id) {
+    if (room.subbed.has(id)) return;
+    room.subbed.add(id);
+    allUnsubs.push(subscribeOn(room.relays, { kinds: [1059], authors: [room.chStream(id).pk], limit: 200 }, (wrap) => {
+      if (seenWraps.has(wrap.id)) return;
+      seenWraps.add(wrap.id);
+      const opened = openWrap(wrap, room.chStream(id));
+      if (!opened) return;
+      onChat(room, id, opened);
+    }));
+  }
+
+  function onChat(room, channelId, { rumor, author }) {
+    const tag = (k) => rumor.tags?.find((x) => x[0] === k);
+    // CORD-03 §3: the rumor must commit to the channel/epoch that decrypted it
+    if (tag('channel')?.[1] !== channelId || tag('epoch')?.[1] !== String(EPOCH)) return;
+    if (room.folded && room.folded.banned.has(author)) return;
+    if (rumor.kind === 9) {
+      const msgs = room.byChannel.get(channelId) || room.byChannel.set(channelId, new Map()).get(channelId);
+      msgs.set(rumor.id, { rumor, author });
+    } else if (rumor.kind === 5) {
+      for (const e of rumor.tags.filter((x) => x[0] === 'e')) {
+        const m = room.byChannel.get(channelId)?.get(e[1]);
+        if (!m || m.author === author) room.deletes.add(e[1]);
+      }
+    } else if (rumor.kind === 3302) {
+      const target = tag('e')?.[1];
+      if (target) {
+        const cur = room.edits.get(target);
+        if (!cur || eventMs(rumor) > eventMs(cur.rumor)) room.edits.set(target, { rumor, author });
+      }
+    } else if (rumor.kind === 7) {
+      const target = tag('e')?.[1];
+      if (target) {
+        const r = room.reactions.get(target) || room.reactions.set(target, new Map()).get(target);
+        r.set(author, rumor.content);
+      }
+    }
+    const tms = eventMs(rumor);
+    if (tms) observeAuthor(room.members, author, tms);
+    scheduleRepaint();
+  }
+
+  const roomChannels = (room) => {
+    if (room.folded && room.folded.channels.size)
+      return [...room.folded.channels.entries()].map(([id, c]) => ({ id, name: c.name }));
+    return room.jm.channels || [];
+  };
+
+  function persistCache(room) {
+    const s = st();
+    for (const [chId, msgs] of room.byChannel) {
+      s.cache[chId] = [...msgs.values()]
+        .filter((m) => !room.deletes.has(m.rumor.id))
+        .sort((a, b) => eventMs(a.rumor) - eventMs(b.rumor))
+        .slice(-CACHE_MAX);
+    }
+    save(s);
+  }
+
+  async function ensureJoined(room, id) {
+    const s = st();
+    const j = (s.joined[room.jm.community_id] ||= {});
+    if (j[id.pubkey]) return;
+    const { created_at, ms } = msTags(Date.now());
+    const tags = [ms];
+    if (room.jm.invitedBy) tags.push(['invite', room.jm.invitedBy, room.jm.inviteLabel || '']);
+    const wrap = await wrapRumor({ kind: 3306, pubkey: id.pubkey, content: 'join', tags, created_at }, id.signer, room.guestbook);
+    publishOn(room.relays, wrap);
+    j[id.pubkey] = true;
+    save(s);
+  }
+
+  async function sendMessage(room, chId) {
+    const text = (ui.msgDraft || '').trim();
+    if (!text || ui.msgSending) return;
+    const id = await identity();
+    if (!id) { toast(t('msgNoIdentity')); return; }
+    ui.msgSending = true;
+    render();
+    try {
+      const { created_at, ms } = msTags(Date.now());
+      const rumor = {
+        kind: 9, pubkey: id.pubkey, content: text,
+        tags: [['channel', chId], ['epoch', String(EPOCH)], ms], created_at,
+      };
+      const wrap = await wrapRumor(rumor, id.signer, room.chStream(chId));
+      // optimistic insert (the relay echo will dedupe on wrap id)
+      const opened = openWrap(wrap, room.chStream(chId));
+      if (opened) {
+        seenWraps.add(wrap.id);
+        const msgs = room.byChannel.get(chId) || room.byChannel.set(chId, new Map()).get(chId);
+        msgs.set(opened.rumor.id, opened);
+      }
+      ui.msgDraft = '';
+      const ok = await publishOn(room.relays, wrap);
+      if (!ok) toast(t('msgSendFailed'));
+      ensureJoined(room, id).catch(() => {});
+      persistCache(room);
+    } catch (e) {
+      toast(e.message || String(e));
+    } finally {
+      ui.msgSending = false;
+      ui.msgStick = true;
+      render();
+    }
+  }
+
+  async function deleteMessage(room, chId, m) {
+    const id = await identity();
+    if (!id || id.pubkey !== m.author) return;
+    const { created_at, ms } = msTags(Date.now());
+    const rumor = {
+      kind: 5, pubkey: id.pubkey, content: '',
+      tags: [['channel', chId], ['epoch', String(EPOCH)], ['e', m.rumor.id], ['k', '9'], ms], created_at,
+    };
+    const wrap = await wrapRumor(rumor, id.signer, room.chStream(chId));
+    room.deletes.add(m.rumor.id);
+    render();
+    publishOn(room.relays, wrap);
+    persistCache(room);
+  }
+
+  // ---- founding a community (CORD-02 genesis) -----------------------------
+
+  async function createCommunity(name) {
+    const id = await identity();
+    if (!id) { toast(t('msgNoIdentity')); return; }
+    name = name.trim().slice(0, 64);
+    if (!name) return;
+    const ownerSalt = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+    const rootBytes = crypto.getRandomValues(new Uint8Array(32));
+    const cid = communityId(id.pubkey, ownerSalt);
+    const generalId = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+    const control = controlKey(rootBytes, cid, 0);
+    const guestbook = guestbookKey(rootBytes, cid, 0);
+    const now = Date.now();
+    const relays = DM_RELAYS;
+    const meta = { ...makeEdition({ vsk: 0, eid: cid, version: 1, content: JSON.stringify({ name, relays }) }, now), pubkey: id.pubkey };
+    const general = { ...makeEdition({ vsk: 2, eid: generalId, version: 1, content: JSON.stringify({ name: 'general', private: false }) }, now + 1), pubkey: id.pubkey };
+    const { created_at, ms } = msTags(now + 2);
+    const join = { kind: 3306, pubkey: id.pubkey, content: 'join', tags: [ms], created_at };
+    const events = [
+      await wrapRumor(meta, id.signer, control, { plaintext: true }),
+      await wrapRumor(general, id.signer, control, { plaintext: true }),
+      await wrapRumor(join, id.signer, guestbook),
+    ];
+    for (const e of events) await publishOn(relays, e);
+    const jm = {
+      community_id: cid, owner: id.pubkey, owner_salt: ownerSalt,
+      community_root: bytesToHex(rootBytes), root_epoch: 0,
+      channels: [{ id: generalId, name: 'general' }], relays, name,
+    };
+    const s = st();
+    s.communities.push(jm);
+    (s.joined[cid] ||= {})[id.pubkey] = true;
+    save(s);
+    ensureRoom(jm);
+    ui.msgView = 'room';
+    ui.msgCommunity = cid;
+    ui.msgChannel = null;
+    ui.msgNewName = '';
+    ui.msgHomePanel = null;
+    render();
+  }
+
+  // ---- invites ------------------------------------------------------------
+
+  function bundleFor(room, creatorPk) {
+    return {
+      community_id: room.jm.community_id, owner: room.jm.owner, owner_salt: room.jm.owner_salt,
+      community_root: room.jm.community_root, root_epoch: room.jm.root_epoch || 0,
+      channels: roomChannels(room).map((c) => ({ id: c.id, name: c.name })),
+      relays: room.relays, name: (room.folded?.metadata?.name) || room.jm.name,
+      creator_npub: creatorPk,
+    };
+  }
+
+  async function mintInviteLink(room) {
+    const id = await identity();
+    if (!id) { toast(t('msgNoIdentity')); return null; }
+    const s = st();
+    const existing = s.invites[room.jm.community_id];
+    if (existing) return existing.url;
+    const linkSk = generateSecretKey();
+    const token = crypto.getRandomValues(new Uint8Array(16));
+    const evt = makeInviteBundleEvent(linkSk, bundleFor(room, id.pubkey), token);
+    const ok = await publishOn(room.relays, evt);
+    if (!ok) { toast(t('msgSendFailed')); return null; }
+    const url = makeInviteLink(APP_BASE, getPublicKey(linkSk), room.relays, token);
+    s.invites[room.jm.community_id] = { sk: bytesToHex(linkSk), token: bytesToHex(token), url };
+    save(s);
+    return url;
+  }
+
+  async function sendDirectInvite(room, input) {
+    const peer = parseNostrPubkey(input);
+    if (!peer) { toast(t('msgBadNpub')); return; }
+    const id = await identity();
+    if (!id) { toast(t('msgNoIdentity')); return; }
+    if (!(id.signer instanceof Uint8Array) && !id.signer.encryptTo) { toast(t('msgSignerNoDm')); return; }
+    const rumor = {
+      kind: 3313, pubkey: id.pubkey,
+      content: JSON.stringify(bundleFor(room, id.pubkey)),
+      tags: [], created_at: Math.floor(Date.now() / 1000),
+    };
+    const wrap = await wrapDM(id.signer, peer, rumor, [['k', '3313']]);
+    const inbox = (await fetchInboxRelays(peer)).slice(0, 4);
+    const ok = await publishOn([...new Set([...inbox, ...DM_RELAYS])], wrap);
+    toast(ok ? t('msgInviteSent') : t('msgSendFailed'));
+  }
+
+  function acceptBundle(b, { invitedBy, inviteLabel } = {}) {
+    const s = st();
+    if (!communityById(b.community_id)) {
+      const jm = {
+        community_id: b.community_id, owner: b.owner, owner_salt: b.owner_salt,
+        community_root: b.community_root, root_epoch: b.root_epoch || 0,
+        channels: (b.channels || []).map((c) => ({ id: c.id, name: c.name })),
+        relays: (b.relays || []).slice(0, 5), name: b.name || 'community',
+        invitedBy, inviteLabel,
+      };
+      s.communities.push(jm);
+      save(s);
+    }
+    const room = ensureRoom(communityById(b.community_id));
+    identity().then((id) => id && ensureJoined(room, id)).catch(() => {});
+    ui.msgView = 'room';
+    ui.msgCommunity = b.community_id;
+    ui.msgChannel = null;
+    ui.msgHomePanel = null;
+    pendingLink = null;
+    render();
+  }
+
+  // A link invite being previewed (pasted or arrived via /invite/<naddr>#…).
+  let pendingLink = null; // { parsed, state: 'loading'|'ready'|'error', bundle?, error? }
+
+  async function loadLinkInvite(parsed) {
+    pendingLink = { parsed, state: 'loading' };
+    scheduleRepaint();
+    const relays = [...new Set([...(parsed.relays || []), ...DM_RELAYS])];
+    const evts = await queryOn(relays, { kinds: [33301], authors: [parsed.signerPk] }, 4000);
+    const newest = evts.sort((a, b) => b.created_at - a.created_at)[0];
+    const b = newest && openInviteBundle(newest, parsed.token);
+    if (!b) pendingLink = { parsed, state: 'error', error: t('msgInviteNotFound') };
+    else if (b.revoked) pendingLink = { parsed, state: 'error', error: t('msgInviteRevoked') };
+    else if (b.expired) pendingLink = { parsed, state: 'error', error: t('msgInviteExpired') };
+    else pendingLink = { parsed, state: 'ready', bundle: b };
+    scheduleRepaint();
+  }
+
+  function joinFromText(text) {
+    const parsed = parseInviteLink(text);
+    if (!parsed) { toast(t('msgBadInvite')); return; }
+    ui.msgJoinText = '';
+    ui.msgHomePanel = null;
+    loadLinkInvite(parsed);
+  }
+
+  // An invite link opened in the browser lands here before the wallet exists.
+  const urlInvite = typeof location !== 'undefined' ? parseInviteLink(location.href) : null;
+  if (urlInvite) { try { history.replaceState(null, '', '/'); } catch {} }
+
+  // ---- DMs ----------------------------------------------------------------
+
+  const threadOf = (peer) => threads.get(peer) || threads.set(peer, new Map()).get(peer);
+
+  function noteDM(peer, rumor, mine) {
+    if (!peer || !rumor.id) return;
+    threadOf(peer).set(rumor.id, { rumor, mine });
+    scheduleRepaint();
+  }
+
+  async function handleInboxWrap(wrap) {
+    if (seenWraps.has(wrap.id)) return;
+    seenWraps.add(wrap.id);
+    const decryptors = [];
+    if (wallet.nostr && wallet.nostr.sk) decryptors.push(wallet.nostr.sk);
+    const login = hook('nostrLoginIdentity');
+    if (login && login.signer && login.signer.decryptFrom) decryptors.push(login.signer);
+    for (const d of decryptors) {
+      const got = await unwrapDM(wrap, d).catch(() => null);
+      if (!got) continue;
+      if (got.rumor.kind === 14) {
+        noteDM(got.peer, got.rumor, isMe(got.author));
+        persistDms();
+      } else if (got.rumor.kind === 3313 && !isMe(got.author)) {
+        try {
+          const b = openDirectBundle(got.rumor.content);
+          if (b && !st().declined[got.rumor.id] && !communityById(b.community_id))
+            pendingDirect.set(got.rumor.id, { bundle: b, from: got.author, rid: got.rumor.id });
+          scheduleRepaint();
+        } catch {}
+      }
+      return;
+    }
+  }
+
+  function openDirectBundle(json) {
+    const b = JSON.parse(json);
+    if (communityId(b.owner, b.owner_salt) !== b.community_id) return null;
+    if (!/^[0-9a-f]{64}$/.test(b.community_root || '')) return null;
+    if (!Array.isArray(b.channels) || b.channels.length > 256) return null;
+    if (b.expires_at && Date.now() > b.expires_at) return null;
+    return b;
+  }
+
+  function startDMs() {
+    if (dmStarted) return;
+    const pks = myPubkeys();
+    if (!pks.length) return;
+    dmStarted = true;
+    // warm threads from the local cache
+    const s = st();
+    for (const [peer, list] of Object.entries(s.dms))
+      for (const m of list)
+        threadOf(peer).set(m.id, { rumor: { id: m.id, pubkey: m.from, content: m.text, created_at: m.t, kind: 14 }, mine: isMe(m.from) });
+    allUnsubs.push(subscribeOn(DM_RELAYS, { kinds: [1059], '#p': pks, limit: 400 }, (wrap) => {
+      handleInboxWrap(wrap).catch(() => {});
+    }));
+    ensureDmRelayList().catch(() => {});
+  }
+
+  // Publish a kind 10050 DM-relay list for the wallet key if none exists, so
+  // other NIP-17 clients can find our inbox. Never touch a login npub's list
+  // — the user's other clients own that.
+  async function ensureDmRelayList() {
+    if (!wallet.nostr || !wallet.nostr.sk) return;
+    const pk = wallet.nostr.pk;
+    const existing = await queryOn(DM_RELAYS, { kinds: [10050], authors: [pk] }, 2500);
+    if (existing.length) return;
+    const evt = finalizeEvent({
+      kind: 10050,
+      content: '',
+      tags: DM_RELAYS.map((r) => ['relay', r]),
+      created_at: Math.floor(Date.now() / 1000),
+    }, wallet.nostr.sk);
+    publishOn(DM_RELAYS, evt);
+  }
+
+  async function sendDM(peer) {
+    const text = (ui.msgDraft || '').trim();
+    if (!text || ui.msgSending) return;
+    const id = await identity();
+    if (!id) { toast(t('msgNoIdentity')); return; }
+    if (!(id.signer instanceof Uint8Array) && !id.signer.encryptTo) { toast(t('msgSignerNoDm')); return; }
+    ui.msgSending = true;
+    render();
+    try {
+      const { rumor, toPeer, toSelf } = await makeDM(id.signer, peer, text);
+      noteDM(peer, rumor, true);
+      ui.msgDraft = '';
+      const inbox = (await fetchInboxRelays(peer)).slice(0, 4);
+      const ok = await publishOn([...new Set([...inbox, ...DM_RELAYS])], toPeer);
+      publishOn(DM_RELAYS, toSelf);
+      if (!ok) toast(t('msgSendFailed'));
+      persistDms();
+    } catch (e) {
+      toast(e.message || String(e));
+    } finally {
+      ui.msgSending = false;
+      ui.msgStick = true;
+      render();
+    }
+  }
+
+  function persistDms() {
+    const s = st();
+    const byRecent = [...threads.entries()]
+      .map(([peer, m]) => [peer, [...m.values()].sort((a, b) => a.rumor.created_at - b.rumor.created_at)])
+      .sort((a, b) => (b[1].at(-1)?.rumor.created_at || 0) - (a[1].at(-1)?.rumor.created_at || 0))
+      .slice(0, 30);
+    s.dms = {};
+    for (const [peer, list] of byRecent)
+      s.dms[peer] = list.slice(-CACHE_MAX).map((m) => ({ id: m.rumor.id, from: m.rumor.pubkey, text: m.rumor.content, t: m.rumor.created_at }));
+    save(s);
+  }
+
+  // ---- views --------------------------------------------------------------
 
   const timeLabel = (tms) => {
     const d = new Date(tms);
@@ -297,46 +577,191 @@ export function messagesFeature(ctx) {
         ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   };
 
-  function messageRows(chId, myPk) {
-    const msgs = [...(byChannel.get(chId)?.values() || [])]
-      .filter((m) => !deletes.has(m.rumor.id))
-      .filter((m) => !(folded && folded.banned.has(m.author)))
+  const avatar = (pk, cls = 'chat-avatar') => {
+    const p = profileOf(pk);
+    return p && p.picture
+      ? h('img', { class: cls, src: p.picture, alt: '' })
+      : h('div', { class: cls + ' fallback' }, displayName(pk).slice(0, 2));
+  };
+
+  const backBtn = (onClick) => h('button', { class: 'iconbtn chat-back', onClick }, '‹');
+
+  const stickToBottom = () => {
+    queueMicrotask(() => {
+      const log = document.querySelector('.chat-log');
+      if (log && ui.msgStick !== false) log.scrollTop = log.scrollHeight;
+    });
+  };
+
+  const composer = (placeholder, onSend) =>
+    h('div', { class: 'chat-compose' },
+      h('input', {
+        class: 'grow', type: 'text', id: 'msg-draft', placeholder,
+        value: ui.msgDraft || '', maxlength: '2000',
+        onInput: (e) => { ui.msgDraft = e.target.value; },
+        onKeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); } },
+      }),
+      h('button', { class: 'btn-primary btn-sm', disabled: ui.msgSending, onClick: onSend },
+        ui.msgSending ? h('span', { class: 'spinner sm' }) : t('msgSend')));
+
+  // ---- home ---------------------------------------------------------------
+
+  function homeView() {
+    startDMs();
+    for (const jm of communities()) ensureRoom(jm);
+
+    const dmRows = [...threads.entries()]
+      .map(([peer, m]) => {
+        const last = [...m.values()].sort((a, b) => a.rumor.created_at - b.rumor.created_at).at(-1);
+        return { peer, last };
+      })
+      .filter((x) => x.last)
+      .sort((a, b) => b.last.rumor.created_at - a.last.rumor.created_at);
+
+    const kids = [];
+
+    if (pendingLink) kids.push(linkInviteCard());
+    for (const [rid, inv] of pendingDirect) kids.push(directInviteCard(rid, inv));
+
+    // ---- DMs
+    kids.push(h('div', { class: 'row between', style: 'align-items:baseline' },
+      h('h3', { style: 'margin:0' }, t('msgDmsTitle')),
+      h('button', { class: 'linklike', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'newdm' ? null : 'newdm'; render(); } }, t('msgNewDm'))));
+    if (ui.msgHomePanel === 'newdm')
+      kids.push(h('div', { class: 'row gap6' },
+        h('input', {
+          class: 'grow', type: 'text', placeholder: t('msgNpubPlaceholder'),
+          value: ui.msgNewDmTo || '', onInput: (e) => { ui.msgNewDmTo = e.target.value; },
+        }),
+        h('button', {
+          class: 'btn-sm', onClick: () => {
+            const pk = parseNostrPubkey(ui.msgNewDmTo);
+            if (!pk) { toast(t('msgBadNpub')); return; }
+            ui.msgNewDmTo = '';
+            ui.msgHomePanel = null;
+            ui.msgView = 'dm';
+            ui.msgPeer = pk;
+            ui.msgStick = true;
+            render();
+          },
+        }, t('msgOpen'))));
+    kids.push(
+      dmRows.length
+        ? h('div', { class: 'list' }, dmRows.map(({ peer, last }) =>
+            h('div', {
+              class: 'item chat-thread-row',
+              onClick: () => { ui.msgView = 'dm'; ui.msgPeer = peer; ui.msgStick = true; render(); },
+            },
+            avatar(peer),
+            h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
+              h('div', { class: 'row between' },
+                h('span', { class: 'chat-name' }, displayName(peer)),
+                h('span', { class: 'chat-time' }, timeLabel(last.rumor.created_at * 1000))),
+              h('div', { class: 'muted small chat-preview' }, (last.mine ? t('msgYouPrefix') + ' ' : '') + last.rumor.content)))))
+        : h('div', { class: 'muted small' }, t('msgNoDms')));
+
+    // ---- communities
+    kids.push(h('div', { class: 'row between mt16', style: 'align-items:baseline' },
+      h('h3', { style: 'margin:0' }, t('msgCommunitiesTitle')),
+      h('div', { class: 'row gap6' },
+        h('button', { class: 'linklike', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'join' ? null : 'join'; render(); } }, t('msgJoin')),
+        h('button', { class: 'linklike', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'create' ? null : 'create'; render(); } }, t('msgCreate')))));
+    if (ui.msgHomePanel === 'join')
+      kids.push(h('div', { class: 'row gap6' },
+        h('input', {
+          class: 'grow', type: 'text', placeholder: t('msgInvitePlaceholder'),
+          value: ui.msgJoinText || '', onInput: (e) => { ui.msgJoinText = e.target.value; },
+        }),
+        h('button', { class: 'btn-sm', onClick: () => joinFromText(ui.msgJoinText) }, t('msgJoin'))));
+    if (ui.msgHomePanel === 'create')
+      kids.push(h('div', { class: 'row gap6' },
+        h('input', {
+          class: 'grow', type: 'text', placeholder: t('msgNamePlaceholder'), maxlength: '64',
+          value: ui.msgNewName || '', onInput: (e) => { ui.msgNewName = e.target.value; },
+        }),
+        h('button', { class: 'btn-sm', onClick: () => createCommunity(ui.msgNewName || '') }, t('msgCreate'))));
+    kids.push(h('div', { class: 'list' }, communities().map((jm) => {
+      const room = rooms.get(jm.community_id);
+      const name = room?.folded?.metadata?.name || jm.name;
+      const memberCount = room ? [...room.members.values()].filter((m) => m.state === 'join').length : 0;
+      return h('div', {
+        class: 'item chat-thread-row',
+        onClick: () => { ui.msgView = 'room'; ui.msgCommunity = jm.community_id; ui.msgChannel = null; ui.msgStick = true; render(); },
+      },
+      h('div', { class: 'chat-avatar fallback' }, name.slice(0, 2)),
+      h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
+        h('div', { class: 'chat-name' }, name),
+        h('div', { class: 'muted small' },
+          memberCount ? t('msgMembers', { n: memberCount }) : t('msgEncrypted'))));
+    })));
+
+    return h('div', { class: 'card col', style: 'gap:10px' }, ...kids);
+  }
+
+  function linkInviteCard() {
+    const pl = pendingLink;
+    return h('div', { class: 'notice info col', style: 'gap:8px' },
+      pl.state === 'loading' ? h('div', { class: 'row gap6' }, h('span', { class: 'spinner sm' }), t('msgInviteLoading'))
+      : pl.state === 'error' ? h('div', { class: 'row between' },
+          h('span', {}, pl.error),
+          h('button', { class: 'linklike', onClick: () => { pendingLink = null; render(); } }, t('msgDismiss')))
+      : h('div', { class: 'col', style: 'gap:8px' },
+          h('div', {}, t('msgInviteTo', { name: pl.bundle.name || 'community' })),
+          h('div', { class: 'muted small' }, t('msgInviteFounder', { npub: (npubOf(pl.bundle.owner) || '').slice(0, 16) + '…' })),
+          h('div', { class: 'row gap6' },
+            h('button', { class: 'btn-primary btn-sm', onClick: () => acceptBundle(pl.bundle, { invitedBy: pl.bundle.creator_npub }) }, t('msgJoin')),
+            h('button', { class: 'btn-ghost btn-sm', onClick: () => { pendingLink = null; render(); } }, t('msgDismiss')))));
+  }
+
+  function directInviteCard(rid, inv) {
+    return h('div', { class: 'notice info col', style: 'gap:8px' },
+      h('div', {}, t('msgDirectInvite', { name: inv.bundle.name || 'community', from: displayName(inv.from) })),
+      h('div', { class: 'row gap6' },
+        h('button', {
+          class: 'btn-primary btn-sm',
+          onClick: () => { pendingDirect.delete(rid); acceptBundle(inv.bundle, { invitedBy: inv.from }); },
+        }, t('msgJoin')),
+        h('button', {
+          class: 'btn-ghost btn-sm',
+          onClick: () => { const s = st(); s.declined[rid] = 1; save(s); pendingDirect.delete(rid); render(); },
+        }, t('msgDismiss'))));
+  }
+
+  // ---- room ---------------------------------------------------------------
+
+  function messageRows(room, chId) {
+    const my = myPubkeys();
+    const msgs = [...(room.byChannel.get(chId)?.values() || [])]
+      .filter((m) => !room.deletes.has(m.rumor.id))
+      .filter((m) => !(room.folded && room.folded.banned.has(m.author)))
       .sort((a, b) => eventMs(a.rumor) - eventMs(b.rumor));
     if (!msgs.length)
       return [h('div', { class: 'muted small', style: 'text-align:center;padding:24px 0' }, t('msgEmpty'))];
     let lastAuthor = null, lastT = 0;
     return msgs.map((m) => {
       const tms = eventMs(m.rumor);
-      const mine = m.author === myPk;
-      const edit = edits.get(m.rumor.id);
+      const mine = my.includes(m.author);
+      const edit = room.edits.get(m.rumor.id);
       const text = edit && edit.author === m.author ? edit.rumor.content : m.rumor.content;
       const grouped = m.author === lastAuthor && tms - lastT < 5 * 60_000;
       lastAuthor = m.author; lastT = tms;
-      const p = profileOf(m.author);
-      const reacts = reactions.get(m.rumor.id);
+      const reacts = room.reactions.get(m.rumor.id);
       const counts = new Map();
       if (reacts) for (const emoji of reacts.values()) counts.set(emoji, (counts.get(emoji) || 0) + 1);
       return h(
         'div', { class: 'chat-row' + (mine ? ' mine' : '') + (grouped ? ' grouped' : '') },
-        grouped
-          ? h('div', { class: 'chat-avatar spacer' })
-          : p && p.picture
-            ? h('img', { class: 'chat-avatar', src: p.picture, alt: '' })
-            : h('div', { class: 'chat-avatar fallback' }, displayName(m.author).slice(0, 2)),
+        grouped ? h('div', { class: 'chat-avatar spacer' }) : avatar(m.author),
         h('div', { class: 'chat-body' },
           grouped ? null : h('div', { class: 'chat-meta' },
-            h('span', { class: 'chat-name' + (m.author === COMMUNITY.owner ? ' owner' : '') },
+            h('span', { class: 'chat-name' + (m.author === room.jm.owner ? ' owner' : '') },
               displayName(m.author),
-              m.author === COMMUNITY.owner ? h('span', { class: 'chat-badge' }, t('msgAdmin')) : null),
+              m.author === room.jm.owner ? h('span', { class: 'chat-badge' }, t('msgAdmin')) : null),
             h('span', { class: 'chat-time' }, timeLabel(tms))),
           h('div', { class: 'chat-bubble' },
             text,
             edit ? h('span', { class: 'chat-edited' }, ' ', t('msgEdited')) : null,
             mine
-              ? h('button', {
-                  class: 'chat-del', title: t('msgDelete'),
-                  onClick: () => deleteMessage(m),
-                }, '×')
+              ? h('button', { class: 'chat-del', title: t('msgDelete'), onClick: () => deleteMessage(room, chId, m) }, '×')
               : null),
           counts.size
             ? h('div', { class: 'chat-reacts' },
@@ -347,54 +772,107 @@ export function messagesFeature(ctx) {
     });
   }
 
-  function messagesTab() {
-    start();
-    const ch = currentChannel();
-    const myId = hook('nostrLoginIdentity');
-    const myPk = myId ? myId.pubkey : wallet.nostr && wallet.nostr.pk;
-    const name = (folded && folded.metadata && folded.metadata.name) || COMMUNITY.name;
-    const memberCount = [...members.values()].filter((m) => m.state === 'join').length;
-
-    // pin to bottom once the burst of history lands, unless the user scrolled up
-    queueMicrotask(() => {
-      const log = document.querySelector('.chat-log');
-      if (log && ui.msgStick !== false) log.scrollTop = log.scrollHeight;
-    });
+  function roomView() {
+    const jm = communityById(ui.msgCommunity) || COMMUNITY;
+    const room = ensureRoom(jm);
+    const chans = roomChannels(room);
+    const ch = chans.find((c) => c.id === ui.msgChannel) || chans[0];
+    const name = room.folded?.metadata?.name || jm.name;
+    const memberCount = [...room.members.values()].filter((m) => m.state === 'join').length;
+    stickToBottom();
 
     return h('div', { class: 'card col chat-card' },
       h('div', { class: 'row between chat-head' },
-        h('div', { class: 'col', style: 'gap:2px' },
-          h('div', { class: 'chat-title' }, name),
-          h('div', { class: 'muted small' },
-            memberCount ? t('msgMembers', { n: memberCount }) : t('msgEncrypted'))),
-        channels().length > 1
-          ? h('div', { class: 'seg' },
-              channels().map((c) =>
+        h('div', { class: 'row gap6', style: 'align-items:center;min-width:0' },
+          backBtn(() => { ui.msgView = 'home'; render(); }),
+          h('div', { class: 'col', style: 'gap:2px;min-width:0' },
+            h('div', { class: 'chat-title' }, name),
+            h('div', { class: 'muted small' },
+              memberCount ? t('msgMembers', { n: memberCount }) : t('msgEncrypted')))),
+        h('div', { class: 'row gap6', style: 'align-items:center' },
+          chans.length > 1
+            ? h('div', { class: 'seg' }, chans.map((c) =>
                 h('button', {
-                  class: c.id === ch.id ? 'active' : '',
-                  onClick: () => { ui.msgChannel = c.id; ui.msgStick = true; subChannel(c.id); render(); },
+                  class: c.id === ch?.id ? 'active' : '',
+                  onClick: () => { ui.msgChannel = c.id; ui.msgStick = true; subChannel(room, c.id); render(); },
                 }, '#' + c.name)))
-          : h('div', { class: 'tag' }, '#' + ch.name)),
+            : h('div', { class: 'tag' }, '#' + (ch ? ch.name : '')),
+          h('button', {
+            class: 'iconbtn', title: t('msgInviteTitle'),
+            onClick: () => { ui.msgInvitePanel = !ui.msgInvitePanel; render(); },
+          }, '+'))),
+      ui.msgInvitePanel ? invitePanel(room) : null,
       h('div', {
         class: 'chat-log',
         onScroll: (e) => {
           const el = e.target;
           ui.msgStick = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
         },
-      }, ...(ch ? messageRows(ch.id, myPk) : [])),
-      h('div', { class: 'chat-compose' },
+      }, ...(ch ? messageRows(room, ch.id) : [])),
+      composer(t('msgPlaceholder', { channel: ch ? ch.name : '' }), () => ch && sendMessage(room, ch.id)));
+  }
+
+  function invitePanel(room) {
+    return h('div', { class: 'col chat-invite', style: 'gap:8px' },
+      h('div', { class: 'row gap6' },
+        h('button', {
+          class: 'btn-sm', disabled: ui.msgMinting,
+          onClick: async () => {
+            ui.msgMinting = true; render();
+            try {
+              const url = await mintInviteLink(room);
+              if (url) { await navigator.clipboard.writeText(url); toast(t('msgLinkCopied')); }
+            } finally { ui.msgMinting = false; render(); }
+          },
+        }, ui.msgMinting ? h('span', { class: 'spinner sm' }) : t('msgCopyInvite')),
         h('input', {
-          class: 'grow', type: 'text', id: 'msg-draft',
-          placeholder: t('msgPlaceholder', { channel: ch ? ch.name : '' }),
-          value: ui.msgDraft || '',
-          maxlength: '2000',
-          onInput: (e) => { ui.msgDraft = e.target.value; },
-          onKeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } },
+          class: 'grow', type: 'text', placeholder: t('msgNpubPlaceholder'),
+          value: ui.msgInviteTo || '', onInput: (e) => { ui.msgInviteTo = e.target.value; },
         }),
         h('button', {
-          class: 'btn-primary btn-sm', disabled: ui.msgSending,
-          onClick: sendMessage,
-        }, ui.msgSending ? h('span', { class: 'spinner sm' }) : t('msgSend'))));
+          class: 'btn-sm',
+          onClick: () => { sendDirectInvite(room, ui.msgInviteTo); ui.msgInviteTo = ''; render(); },
+        }, t('msgSend'))));
+  }
+
+  // ---- dm thread ----------------------------------------------------------
+
+  function dmView() {
+    startDMs();
+    const peer = ui.msgPeer;
+    if (!peer) { ui.msgView = 'home'; return homeView(); }
+    const msgs = [...(threads.get(peer)?.values() || [])].sort((a, b) => a.rumor.created_at - b.rumor.created_at);
+    stickToBottom();
+    return h('div', { class: 'card col chat-card' },
+      h('div', { class: 'row chat-head gap6', style: 'align-items:center' },
+        backBtn(() => { ui.msgView = 'home'; render(); }),
+        avatar(peer),
+        h('div', { class: 'col', style: 'gap:2px;min-width:0' },
+          h('div', { class: 'chat-title' }, displayName(peer)),
+          h('div', { class: 'muted small' }, t('msgDmEncrypted')))),
+      h('div', {
+        class: 'chat-log',
+        onScroll: (e) => {
+          const el = e.target;
+          ui.msgStick = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+        },
+      },
+      ...(msgs.length
+        ? msgs.map((m) =>
+            h('div', { class: 'chat-row dm' + (m.mine ? ' mine' : '') },
+              h('div', { class: 'chat-body' },
+                h('div', { class: 'chat-bubble' + (m.mine ? ' me' : '') }, m.rumor.content),
+                h('div', { class: 'chat-time' }, timeLabel(m.rumor.created_at * 1000)))))
+        : [h('div', { class: 'muted small', style: 'text-align:center;padding:24px 0' }, t('msgNoDmsYet'))])),
+      composer(t('msgDmPlaceholder'), () => sendDM(peer)));
+  }
+
+  // ---- feature ------------------------------------------------------------
+
+  function messagesTab() {
+    if (ui.msgView === 'room') return roomView();
+    if (ui.msgView === 'dm') return dmView();
+    return homeView();
   }
 
   return {
@@ -404,12 +882,20 @@ export function messagesFeature(ctx) {
       if (tab !== 'messages') return null;
       return messagesTab();
     },
+    init() {
+      if (urlInvite && !pendingLink) {
+        loadLinkInvite(urlInvite);
+        setTimeout(() => { ui.tab = 'messages'; ui.msgView = 'home'; render(); }, 0);
+      }
+      startDMs();
+    },
     stop() {
-      for (const u of unsubs) { try { u(); } catch {} }
-      unsubs = [];
-      started = false;
-      subbed.clear();
-      if (byChannel.size) { try { persistCache(); } catch {} }
+      for (const u of allUnsubs) { try { u(); } catch {} }
+      allUnsubs = [];
+      rooms.clear();
+      threads.clear();
+      pendingDirect.clear();
+      dmStarted = false;
     },
   };
 }

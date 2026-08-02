@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { verifyEvent, finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import * as nip44 from 'nostr-tools/nip44';
+import { wrapManyEvents } from 'nostr-tools/nip17';
 import { SimplePool } from 'nostr-tools/pool';
 import { npubEncode } from 'nostr-tools/nip19';
 import { createHash } from 'node:crypto';
@@ -128,6 +129,48 @@ const pool = new SimplePool();
 if (!state.serviceSk) { state.serviceSk = Buffer.from(generateSecretKey()).toString('hex'); persist(); }
 const SERVICE_SK = Uint8Array.from(Buffer.from(state.serviceSk, 'hex'));
 const SERVICE_PK = getPublicKey(SERVICE_SK);
+
+// ---------------------------------------------------------------------------
+// Welcome DM — every first-time registrant gets a NIP-17 DM from Adam.
+// config: welcome: { sk: '<hex privkey>', message: '…' }. The registration is
+// the one moment we reliably know a new user's npub, so it doubles as the
+// "new user" signal. One per pubkey, ever (state.welcomed).
+// ---------------------------------------------------------------------------
+
+const WELCOME = CFG.welcome && /^[0-9a-f]{64}$/.test(CFG.welcome.sk || '') ? {
+  sk: Uint8Array.from(Buffer.from(CFG.welcome.sk, 'hex')),
+  message: CFG.welcome.message || 'Welcome to coinos!',
+} : null;
+
+async function inboxRelaysOf(pubkey) {
+  try {
+    const evs = await pool.querySync(LNURL_RELAYS, { kinds: [10002, 10050], authors: [pubkey] }, { maxWait: 4000 });
+    const newest = (kind) => evs.filter((e) => e.kind === kind).sort((a, b) => b.created_at - a.created_at)[0];
+    const dm = newest(10050);
+    if (dm) { const r = dm.tags.filter((t) => t[0] === 'relay' && t[1]).map((t) => t[1]); if (r.length) return r.slice(0, 4); }
+    const rl = newest(10002);
+    if (rl) return rl.tags.filter((t) => t[0] === 'r' && (!t[2] || t[2] === 'read')).map((t) => t[1]).slice(0, 4);
+  } catch {}
+  return [];
+}
+
+async function sendWelcome(pubkey) {
+  if (!WELCOME) return;
+  state.welcomed ||= {};
+  if (state.welcomed[pubkey]) return;
+  state.welcomed[pubkey] = Date.now();
+  persist();
+  try {
+    // wraps for [sender-copy, recipient], each to its owner's inbox
+    const [toSelf, toPeer] = wrapManyEvents(WELCOME.sk, [{ publicKey: pubkey }], WELCOME.message);
+    const inbox = await inboxRelaysOf(pubkey);
+    await Promise.allSettled(pool.publish([...new Set([...inbox, ...LNURL_RELAYS])], toPeer));
+    await Promise.allSettled(pool.publish(LNURL_RELAYS, toSelf));
+    log(`welcome DM sent to ${pubkey.slice(0, 12)}`);
+  } catch (e) {
+    log('welcome DM failed: ' + e.message);
+  }
+}
 
 const lnurlMeta = (address) => JSON.stringify([
   ['text/plain', `Paying ${address}`],
@@ -544,6 +587,7 @@ Bun.serve({
       };
       persist();
       log(`${existing ? 'updated' : 'registered'} ${key} for ${auth.pubkey.slice(0, 12)}`);
+      if (!existing) sendWelcome(state.names[key].pubkey).catch(() => {});
       return json({ ok: true, name, address: key, record: recordName(name, domain) });
     }
 

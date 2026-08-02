@@ -366,3 +366,16 @@ hr.divider { margin: 16px 0; }
   border: 1px solid var(--line-strong); border-radius: 11px; padding: 10px 13px;
 }
 .chat-compose input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* Messages v2 — home lists, DM threads, invite panel. */
+.chat-back { font-size: 22px; line-height: 1; padding: 2px 10px 4px; flex-shrink: 0; }
+.chat-thread-row { display: flex; gap: 10px; align-items: center; cursor: pointer; }
+.chat-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-invite { padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface2); }
+.chat-invite input { font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--line-strong); border-radius: 9px; padding: 7px 10px; min-width: 0; }
+.chat-row.dm { justify-content: flex-start; }
+.chat-row.dm.mine { justify-content: flex-end; }
+.chat-row.dm .chat-body { max-width: 82%; }
+.chat-row.dm.mine .chat-body { text-align: right; }
+.chat-bubble.me { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); text-align: left; }
+.chat-row.dm .chat-time { font-size: 10px; color: var(--faint); margin-top: 2px; }
