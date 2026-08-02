@@ -22,6 +22,11 @@ export function nostrLoginFeature(ctx) {
   const load = () => wallet.loadFeatureState('nostrlogin', {});
   const save = (st) => wallet.saveFeatureState('nostrlogin', st);
 
+  // The signer that opened this session, kept so the names feature can claim
+  // the user's real npub as their payment address (and nominate the wallet
+  // key as manager, so later updates work without the signer).
+  let live = null;
+
   const busy = (v) => { ui.nostrLoginBusy = v; render(); };
   const fail = (e) => { ui.nostrLoginError = e.message || String(e); busy(false); };
 
@@ -40,11 +45,16 @@ export function nostrLoginFeature(ctx) {
         busy(false);
         return;
       }
-      await ctx.hook('openMnemonic', res.mnemonic, res.passphrase || '', { nostrPubkey: signer.pubkey });
+      // Same wallet however you log in: a key-derived seed is published too,
+      // so an extension login later finds this wallet instead of making a new
+      // one. Costs nothing — anyone with the key could derive it anyway.
+      if (res.publish) await publishWalletBackup(signer, { mnemonic: res.mnemonic }).catch(() => {});
+      live = signer;
+      await ctx.openMnemonic(res.mnemonic, res.passphrase || '', { nostrPubkey: signer.pubkey });
+      save({ ...load(), pubkey: signer.pubkey, linked: Date.now() });
       toast(res.mode === 'derived' ? t('nlOpenedDerived') : t('nlOpenedRestored'));
       busy(false);
     } catch (e) { fail(e); }
-    finally { if (signer && signer.close && !ui.nostrLoginNew) signer.close(); }
   }
 
   async function createForSigner() {
@@ -55,7 +65,9 @@ export function nostrLoginFeature(ctx) {
       const mnemonic = newMnemonic();
       await publishWalletBackup(st.signer, { mnemonic });
       ui.nostrLoginNew = null;
-      await ctx.hook('openMnemonic', mnemonic, '', { nostrPubkey: st.signer.pubkey });
+      live = st.signer;
+      await ctx.openMnemonic(mnemonic, '', { nostrPubkey: st.signer.pubkey });
+      save({ ...load(), pubkey: st.signer.pubkey, linked: Date.now() });
       toast(t('nlCreated'));
       busy(false);
     } catch (e) { fail(e); }
@@ -75,11 +87,11 @@ export function nostrLoginFeature(ctx) {
         throw new Error(t('nlAlreadyLinked'));
       }
       await publishWalletBackup(signer, { mnemonic: wallet.mnemonic, passphrase: wallet.passphrase || '' });
+      live = signer;
       save({ ...load(), pubkey: signer.pubkey, linked: Date.now() });
       toast(t('nlLinked'));
       busy(false);
     } catch (e) { fail(e); }
-    finally { if (signer && signer.close) signer.close(); }
   }
 
   // ---- UI ---------------------------------------------------------------
@@ -157,6 +169,13 @@ export function nostrLoginFeature(ctx) {
 
   return {
     id: 'nostrlogin',
+    // The nostr identity this session is logged in as, for features that
+    // should speak as the user (the payment address defaults to this npub).
+    nostrLoginIdentity() {
+      const st = load();
+      if (!st.pubkey) return null;
+      return { pubkey: st.pubkey, npub: npubOf(st.pubkey), signer: live };
+    },
     unlockExtra() { return unlockExtra(); },
     settingsCards() { return [settingsCard()]; },
   };

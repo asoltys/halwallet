@@ -20,5 +20,5 @@ import { nwcFeature } from './nwc.js';
 // names sits between ark and zaps: a pasted user@domain resolves over DNS
 // (BIP-353) before the zaps feature treats it as a plain Lightning address.
 export function buildFeatures(ctx) {
-  return [giftsFeature(ctx), arkFeature(ctx), namesFeature(ctx), zapsFeature(ctx), nwcFeature(ctx), nostrLoginFeature(ctx), syncFeature(ctx)];
+  return [giftsFeature(ctx), arkFeature(ctx), nostrLoginFeature(ctx), namesFeature(ctx), zapsFeature(ctx), nwcFeature(ctx), syncFeature(ctx)];
 }

@@ -1,6 +1,8 @@
 // BIP-353 name registrar for halwallet.app — gives every hal user a
 // ₿name@halwallet.app payment address.
 //
+// Auth on every write is NIP-98 (HTTP Auth, kind 27235).
+//
 // A name is a DNSSEC-signed TXT record at
 //   <name>.user._bitcoin-payment.halwallet.app
 // whose content is a BIP-21 `bitcoin:` URI (for hal users: an ark address,
@@ -16,6 +18,8 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { verifyEvent } from 'nostr-tools/pure';
+import { npubEncode } from 'nostr-tools/nip19';
+import { createHash } from 'node:crypto';
 import { HDKey } from '@scure/bip32';
 import { mnemonicToSeedSync } from '@scure/bip39';
 import { lnBackend } from '../bridge/ln.js';
@@ -31,8 +35,6 @@ const CFG = JSON.parse(readFileSync(process.env.NAMES_CONFIG
 const DOMAIN = CFG.domain || 'coinos.io'; // the default domain for claims
 const DOMAINS = CFG.domains || { [DOMAIN]: { zoneId: CFG.zoneId } };
 const STATE = CFG.stateFile || join(import.meta.dir, 'data', 'names.json');
-const AUTH_KIND = 21353;         // arbitrary custom kind for signed claims
-const MAX_SKEW_SEC = 600;        // claim events must be fresh
 const TTL = 300;                 // record TTL: BIP-353 wallets cache by this
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -182,14 +184,34 @@ setInterval(async () => {
 // claims
 // ---------------------------------------------------------------------------
 
-// The claim is a signed nostr event: proof the caller controls the wallet's
-// nostr key, which becomes (or must match) the name's owner.
-function checkAuth(auth) {
-  if (!auth || auth.kind !== AUTH_KIND) return 'bad auth kind';
-  if (Math.abs(Date.now() / 1000 - (auth.created_at || 0)) > MAX_SKEW_SEC) return 'auth event too old';
-  if (!verifyEvent(auth)) return 'bad signature';
-  return null;
+// NIP-98 HTTP Auth (kind 27235). The signature covers this exact URL, method
+// and body hash, so a captured header is useless anywhere else.
+async function checkNip98(req, url, bodyText) {
+  const h = req.headers.get('authorization') || '';
+  const m = h.match(/^Nostr\s+(.+)$/i);
+  if (!m) return { error: 'missing Nostr authorization' };
+  let evt;
+  try { evt = JSON.parse(Buffer.from(m[1], 'base64').toString('utf8')); } catch { return { error: 'bad auth encoding' }; }
+  if (evt.kind !== 27235) return { error: 'auth must be kind 27235' };
+  if (Math.abs(Date.now() / 1000 - (evt.created_at || 0)) > 60) return { error: 'auth event expired' };
+  if (!verifyEvent(evt)) return { error: 'bad signature' };
+  const tag = (k) => (evt.tags.find((x) => x[0] === k) || [])[1];
+  if ((tag('method') || '').toUpperCase() !== req.method) return { error: 'method mismatch' };
+  let got;
+  try { got = new URL(tag('u') || ''); } catch { return { error: 'bad url tag' }; }
+  if (got.pathname !== url.pathname) return { error: 'url mismatch' };
+  if (bodyText) {
+    const want = createHash('sha256').update(bodyText).digest('hex');
+    if (tag('payload') !== want) return { error: 'payload hash mismatch' };
+  }
+  return { pubkey: evt.pubkey };
 }
+
+// npub-prefix names are the free default everyone gets, so they must not be
+// squattable: a name that looks like one may only be claimed by that very
+// identity — or by a key that identity nominated as its manager (the wallet
+// key, which is always available, even offline and in the service worker).
+const npubPrefixOwner = (name) => (/^npub1[a-z0-9]+$/.test(name) ? name : null);
 
 // coinos.io names that belong to existing coinos users are reserved for
 // them until the migration gives those users a way to claim their own.
@@ -271,24 +293,33 @@ Bun.serve({
 
     if (url.pathname === '/register' && req.method === 'POST') {
       if (!rateOk(ip)) return json({ error: 'rate limited' }, 429);
-      const body = await req.json().catch(() => null);
-      const auth = body?.auth;
-      const authErr = checkAuth(auth);
-      if (authErr) return json({ error: authErr }, 400);
+      const bodyText = await req.text();
+      const a = await checkNip98(req, url, bodyText);
+      if (a.error) return json({ error: a.error }, 401);
       let claim;
-      try { claim = JSON.parse(auth.content); } catch { return json({ error: 'bad claim content' }, 400); }
+      try { claim = JSON.parse(bodyText); } catch { return json({ error: 'bad body' }, 400); }
+      const auth = { pubkey: a.pubkey };
       const name = String(claim.name || '').toLowerCase();
       const domain = String(claim.domain || 'halwallet.app').toLowerCase();
       if (!DOMAINS[domain]) return json({ error: 'unknown domain' }, 400);
       if (!NAME_RE.test(name)) return json({ error: 'invalid name (a-z, 0-9, . _ -, max 30)' }, 400);
       if (RESERVED.has(name)) return json({ error: 'name is reserved' }, 400);
-      if (claim.action !== 'register') return json({ error: 'wrong action' }, 400);
       if (!validUri(claim.uri)) return json({ error: 'uri must be a bitcoin: URI' }, 400);
 
       const key = `${name}@${domain}`;
       const existing = state.names[key];
-      if (existing && existing.pubkey !== auth.pubkey) return json({ error: 'name is taken' }, 409);
+      // owner OR the manager key the owner nominated may update a record
+      if (existing && existing.pubkey !== auth.pubkey && existing.manager !== auth.pubkey) {
+        return json({ error: 'name is taken' }, 409);
+      }
       if (!existing && await takenByCoinosUser(domain, name)) return json({ error: 'name is taken' }, 409);
+      // an npub-shaped name belongs to that identity alone
+      if (npubPrefixOwner(name)) {
+        const managerOk = existing && existing.manager === auth.pubkey;
+        if (!npubEncode(auth.pubkey).startsWith(name) && !managerOk) {
+          return json({ error: 'that name belongs to another Nostr identity' }, 403);
+        }
+      }
       if (/[?&]lno=/.test(claim.uri)) return json({ error: 'lno is added by the registrar' }, 400);
 
       // Every name also gets a static Lightning offer on our node; payments
@@ -299,7 +330,11 @@ Bun.serve({
 
       const recordId = await cfWrite(name, domain, published, existing?.recordId);
       state.names[key] = {
-        pubkey: auth.pubkey, uri: published, recordId, updated: Date.now(), domain,
+        pubkey: existing?.pubkey || auth.pubkey,
+        // the owner may nominate a key that manages the record from here on
+        manager: (claim.manager && /^[0-9a-f]{64}$/.test(claim.manager) && auth.pubkey !== claim.manager)
+          ? claim.manager : existing?.manager,
+        uri: published, recordId, updated: Date.now(), domain,
         offerId: offer?.offerId, bolt12: offer?.bolt12,
       };
       persist();
@@ -309,19 +344,18 @@ Bun.serve({
 
     if (url.pathname === '/register' && req.method === 'DELETE') {
       if (!rateOk(ip)) return json({ error: 'rate limited' }, 429);
-      const body = await req.json().catch(() => null);
-      const auth = body?.auth;
-      const authErr = checkAuth(auth);
-      if (authErr) return json({ error: authErr }, 400);
+      const bodyText = await req.text();
+      const a = await checkNip98(req, url, bodyText);
+      if (a.error) return json({ error: a.error }, 401);
       let claim;
-      try { claim = JSON.parse(auth.content); } catch { return json({ error: 'bad claim content' }, 400); }
+      try { claim = JSON.parse(bodyText); } catch { return json({ error: 'bad body' }, 400); }
+      const auth = { pubkey: a.pubkey };
       const name = String(claim.name || '').toLowerCase();
       const domain = String(claim.domain || 'halwallet.app').toLowerCase();
-      if (claim.action !== 'delete') return json({ error: 'wrong action' }, 400);
       const key = `${name}@${domain}`;
       const existing = state.names[key];
       if (!existing) return json({ error: 'unknown name' }, 404);
-      if (existing.pubkey !== auth.pubkey) return json({ error: 'not your name' }, 403);
+      if (existing.pubkey !== auth.pubkey && existing.manager !== auth.pubkey) return json({ error: 'not your name' }, 403);
       await cfDelete(domain, existing.recordId).catch(() => {});
       if (existing.offerId && ln) await ln.call('disableoffer', { offer_id: existing.offerId }).catch(() => {});
       delete state.names[key];

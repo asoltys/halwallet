@@ -12,6 +12,7 @@
 // record falls back to the Lightning-address flow (zaps feature).
 
 import { resolveBip353, parsePaymentName, parseBip21 } from '../bip353.js';
+import { nip98Header } from '../nostr-login.js';
 import { qrSvg } from '../qr.js';
 import { isArkAddress } from './ark.js';
 import { getNetwork } from '../api.js';
@@ -24,6 +25,25 @@ const AUTH_KIND = 21353;
 export function namesFeature(ctx) {
   const { h, ui, render, wallet, hook, toast, copyBtn } = ctx;
 
+  // The wallet's own key signs registrar requests: it's the one key that is
+  // always available — offline, in the background, with no signer attached.
+  const walletSigner = () => ({
+    pubkey: wallet.nostrPubkey && wallet.nostrPubkey(),
+    signEvent: async (e) => wallet.nostrSign(e),
+  });
+
+  async function post(path, method, payload, signer) {
+    const url = `${REGISTRAR}${path}`;
+    const body = JSON.stringify(payload);
+    const auth = await nip98Header(signer || walletSigner(), url, method, body);
+    const r = await fetch(url, {
+      method, headers: { 'content-type': 'application/json', authorization: auth }, body,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) throw new Error(j.error || `registrar refused (${r.status})`);
+    return j;
+  }
+
   const load = () => wallet.loadFeatureState('names', {});
   const save = (st) => wallet.saveFeatureState('names', st);
 
@@ -35,31 +55,19 @@ export function namesFeature(ctx) {
     return addr ? `bitcoin:?ark=${encodeURIComponent(addr)}` : null;
   }
 
-  async function claim(name) {
+  async function claim(name, { signer, manager } = {}) {
     const uri = await currentUri();
     if (!uri) throw new Error(t('namesNeedArk'));
-    const auth = wallet.nostrSign({
-      kind: AUTH_KIND, created_at: Math.floor(Date.now() / 1000), tags: [],
-      content: JSON.stringify({ action: 'register', name, uri, domain: DOMAIN }),
-    });
-    if (!auth) throw new Error('wallet cannot sign');
-    const r = await fetch(`${REGISTRAR}/register`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ auth }),
-    });
-    const j = await r.json();
-    if (!r.ok || j.error) throw new Error(j.error || `registrar refused (${r.status})`);
+    const j = await post('/register', 'POST', {
+      name, uri, domain: DOMAIN,
+      // when the login identity claims its own npub name, it nominates the
+      // wallet key to keep the record updated afterwards
+      ...(manager ? { manager } : {}),
+    }, signer);
     const prev = load().name;
     save({ name, domain: DOMAIN, uri, updated: Date.now() });
     if (prev && prev !== name) {
-      const bye = wallet.nostrSign({
-        kind: AUTH_KIND, created_at: Math.floor(Date.now() / 1000), tags: [],
-        content: JSON.stringify({ action: 'delete', name: prev, domain: DOMAIN }),
-      });
-      fetch(`${REGISTRAR}/register`, {
-        method: 'DELETE', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ auth: bye }),
-      }).catch(() => {});
+      post('/register', 'DELETE', { name: prev, domain: DOMAIN }).catch(() => {});
     }
     return j;
   }
@@ -67,28 +75,8 @@ export function namesFeature(ctx) {
   async function release() {
     const st = load();
     if (!st.name) return;
-    const auth = wallet.nostrSign({
-      kind: AUTH_KIND, created_at: Math.floor(Date.now() / 1000), tags: [],
-      content: JSON.stringify({ action: 'delete', name: st.name, domain: st.domain || DOMAIN }),
-    });
-    await fetch(`${REGISTRAR}/register`, {
-      method: 'DELETE', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ auth }),
-    }).catch(() => {});
+    await post('/register', 'DELETE', { name: st.name, domain: st.domain || DOMAIN }).catch(() => {});
     save({});
-  }
-
-  // An imported seed doesn't know its username — the registrar does. Ask by
-  // the wallet's nostr pubkey and adopt what it says before deciding whether
-  // onboarding needs to prompt.
-  let checked = false; // lookup completed (gate stays closed until then)
-  async function lookupMine() {
-    try {
-      const pk = wallet.nostrPubkey && wallet.nostrPubkey();
-      if (!pk) return;
-      const r = await fetch(`${REGISTRAR}/pubkey/${pk}`).then((x) => x.json());
-      if (r && r.name) save({ ...load(), name: r.name, domain: r.domain || DOMAIN, uri: r.uri });
-    } catch {}
   }
 
   // Everyone gets an address without being asked: the default username is a
@@ -101,8 +89,18 @@ export function namesFeature(ctx) {
       let st = load();
       if (!st.name) { await lookupMine(); st = load(); }
       if (!st.name) {
-        const npub = wallet.nostrNpub && wallet.nostrNpub();
-        if (npub) { await claim(npub.slice(0, 20)); st = load(); }
+        // The address people see should be the identity they know the user
+        // by: their real npub when a nostr account is linked, else the
+        // wallet's own. Both are claimed the same way; the registrar checks
+        // that an npub-shaped name really belongs to its claimant.
+        const linked = hook('nostrLoginIdentity');
+        const npub = (linked && linked.npub) || (wallet.nostrNpub && wallet.nostrNpub());
+        if (npub) {
+          await claim(npub.slice(0, 20), linked
+            ? { signer: linked.signer, manager: wallet.nostrPubkey() }
+            : {});
+          st = load();
+        }
       }
       checked = true;
       render();

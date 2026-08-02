@@ -56,5 +56,22 @@ let denied = false;
 try { await stranger.decryptSelf(ct); } catch { denied = true; }
 check('another account cannot decrypt it', denied);
 
+console.log('\n[NIP-98 auth]');
+{
+  const { nip98Header } = await import('../src/nostr-login.js');
+  const { verifyEvent } = await import('nostr-tools/pure');
+  const { sha256: sha } = await import('@noble/hashes/sha256');
+  const body = JSON.stringify({ name: 'x' });
+  const hdr = await nip98Header(keySigner(sk), 'https://names.coinos.io/register', 'POST', body);
+  check('header uses the Nostr scheme', hdr.startsWith('Nostr '));
+  const evt = JSON.parse(Buffer.from(hdr.slice(6), 'base64').toString('utf8'));
+  check('is kind 27235', evt.kind === 27235);
+  check('signature verifies', verifyEvent(evt));
+  const tag = (k) => (evt.tags.find((x) => x[0] === k) || [])[1];
+  check('binds the url', tag('u') === 'https://names.coinos.io/register');
+  check('binds the method', tag('method') === 'POST');
+  check('binds the body hash', tag('payload') === hex.encode(sha(new TextEncoder().encode(body))));
+}
+
 console.log(fails ? `\n❌ ${fails} failure(s)` : '\n✅ nostr login behaves');
 process.exit(fails ? 1 : 0);

@@ -150,12 +150,32 @@ export async function publishWalletBackup(signer, { mnemonic, passphrase }, rela
 
 // The whole login: given a signer, produce the wallet mnemonic to open.
 // `mode` reports what happened so the UI can be honest about it.
+//
+// ONE flow for all three signer kinds, because an identity must open the
+// SAME wallet however you log into it: look for the published association
+// FIRST (that's where the money already is), and only then fall back to
+// deriving (key in hand) or generating (signer only).
 export async function walletForSigner(signer) {
-  // A pasted key derives its wallet — no lookup, no storage, no exposure.
-  if (signer.secret) {
-    return { mnemonic: seedFromNostrKey(signer.secret), mode: 'derived' };
-  }
   const found = await fetchWalletBackup(signer);
   if (found) return { mnemonic: found.mnemonic, passphrase: found.passphrase, mode: 'restored' };
+  if (signer.secret) {
+    // Publishing the derived seed costs nothing: the derivation is public,
+    // so anyone holding this key could compute it anyway. It buys the thing
+    // that matters — an extension login later finds this same wallet.
+    return { mnemonic: seedFromNostrKey(signer.secret), mode: 'derived', publish: true };
+  }
   return { mnemonic: null, mode: 'new' }; // caller decides + confirms publishing
+}
+
+// NIP-98 HTTP Auth (kind 27235): the standard way to authenticate an HTTP
+// request with a nostr key. `u` and `method` bind the signature to this exact
+// request and `payload` to its body, so a captured header can't be replayed
+// against a different endpoint or a tampered body.
+export async function nip98Header(signer, url, method, bodyText) {
+  const tags = [['u', url], ['method', method.toUpperCase()]];
+  if (bodyText) tags.push(['payload', hex.encode(sha256(new TextEncoder().encode(bodyText)))]);
+  const evt = await signer.signEvent({
+    kind: 27235, created_at: Math.floor(Date.now() / 1000), tags, content: '',
+  });
+  return 'Nostr ' + btoa(JSON.stringify(evt));
 }
