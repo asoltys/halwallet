@@ -1759,20 +1759,24 @@ function recoveryCard(a) {
   }
   if (!a.mnemonic)
     return h('div', { class: 'card col' }, h('h3', {}, t('importedKey')), h('p', { class: 'small muted', style: 'margin:0' }, t('importedKeyNote')));
+  // Collapsed by default — the word grid only exists after an explicit reveal.
+  if (!shown)
+    return h('div', { class: 'card col' },
+      h('h3', {}, t('recoveryPhrase')),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('recoveryDesc')),
+      h('button', { class: 'btn-block', onClick: () => { ui.revealShown = true; render(); } }, t('revealRecovery')));
   return h('div', { class: 'card col' },
     h('h3', {}, t('recoveryPhrase')),
     h('div', { class: 'warn-box' }, t('recoveryWarn')),
     h('div', { class: 'words' }, words.map((w, i) =>
-      h('div', { class: 'w' + (shown ? '' : ' masked') }, h('span', { class: 'n' }, i + 1), h('span', { class: 't' }, shown ? w : '••••••')))),
-    shown && a.passphrase
+      h('div', { class: 'w' }, h('span', { class: 'n' }, i + 1), h('span', { class: 't' }, w)))),
+    a.passphrase
       ? h('div', { class: 'col gap6' }, h('span', { class: 'lab' }, t('bip39Passphrase')), h('div', { class: 'addr-box' }, a.passphrase))
       : null,
-    shown
-      ? h('div', { class: 'row gap6 wrap' },
-          copyBtn(a.mnemonic, t('copyPhrase')),
-          a.passphrase ? copyBtn(a.passphrase, t('copyPassphrase')) : null,
-          h('button', { class: 'btn-sm grow', onClick: () => { ui.revealShown = false; render(); } }, t('hide')))
-      : h('button', { class: 'btn-primary btn-block', onClick: () => { ui.revealShown = true; render(); } }, t('revealRecovery'))
+    h('div', { class: 'row gap6 wrap' },
+      copyBtn(a.mnemonic, t('copyPhrase')),
+      a.passphrase ? copyBtn(a.passphrase, t('copyPassphrase')) : null,
+      h('button', { class: 'btn-sm grow', onClick: () => { ui.revealShown = false; render(); } }, t('hide')))
   );
 }
 

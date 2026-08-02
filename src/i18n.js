@@ -199,6 +199,7 @@ const STR = {
     msgLeaveConfirm: 'Really leave? Rejoining needs a new invite',
     nostrSection: 'Nostr',
     advancedSettings: 'Advanced settings',
+    recoveryDesc: 'The twelve words that back up this wallet. Anyone who sees them can steal your funds.',
     copyAddress: 'Copy address',
     paymentReceived: 'Payment received!',
     tapToProceed: 'Tap anywhere to proceed',
