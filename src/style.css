@@ -103,10 +103,8 @@ summary { cursor: pointer; }
 
 /* ---- brand / header ---- */
 .brand { display: flex; align-items: center; gap: 10px; }
-.logo {
-  width: 34px; height: 34px; flex: none; color: var(--ink);
-  display: grid; place-items: center;
-}
+.logo-full { height: 28px; flex: none; color: var(--ink); display: grid; place-items: center; }
+.logo-full svg { height: 28px; width: auto; display: block; }
 .brand h1 { font-size: 19px; }
 
 .badge {
