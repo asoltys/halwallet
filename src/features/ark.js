@@ -235,7 +235,7 @@ export function arkFeature(ctx) {
         // is what resolves it: the manager learns the server's pubkey and
         // adopts the held state if it matches — a seed imported on a new
         // device would otherwise show no ark balance until some manual poke.
-        if (!mine) setTimeout(() => initArk(), 0);
+        if (!mine) setTimeout(() => maybeInitArk(), 0);
         return;
       }
       const local = wallet.loadArkState(cfg.ark);
@@ -251,7 +251,7 @@ export function arkFeature(ctx) {
       // The merge brought vtxos our live manager doesn't have — (re)connect so
       // the balance actually shows.
       const novel = mergedN > localN || (mergedN && (!ark || !ark.state));
-      if (mergedN && novel) setTimeout(() => initArk(), 0);
+      if (mergedN && novel) setTimeout(() => maybeInitArk(), 0);
     },
   });
 
@@ -288,7 +288,20 @@ export function arkFeature(ctx) {
   function initArk() {
     stopArk();
     ui.arkError = '';
+    lastAutoInit = Date.now();
     if (arkAvailable() && arkWanted()) connectArk().catch(() => {});
+  }
+
+  // Automatic re-inits (a synced snapshot arriving) must not restart a
+  // connection that is already in flight, or retry in a tight loop when the
+  // server is unreachable: each one calls stopArk() first, so the settings
+  // card's "connecting" indicator flickers on every snapshot. User-driven
+  // calls to initArk() stay immediate.
+  let lastAutoInit = 0;
+  function maybeInitArk() {
+    if (ark || arkConnectPromise) return;
+    if (Date.now() - lastAutoInit < 20000) return;
+    initArk();
   }
 
   function connectArk() {
