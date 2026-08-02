@@ -46,6 +46,80 @@ const spendableSat = (rec) =>
   ((rec.mgr && rec.mgr.vtxos) || []).filter((v) => v.state === 'spendable')
     .reduce((n, v) => n + (v.amountSat || 0), 0);
 
+// The worker can't derive keys — the mirror carries them per chain:
+// 3 = coins/change, 4/0 = mailbox, 5 = receive preimages.
+function shimAccount(rec) {
+  const byChain = (chain, i) => {
+    const k = chain === 5 ? rec.keys5?.[String(i)]
+      : chain === 4 ? rec.key4
+      : rec.keys[String(i)];
+    if (!k) throw new Error(`chain ${chain} index ${i} outside the mirrored window`);
+    return hex.decode(k);
+  };
+  return { deriveChild: (chain) => ({ deriveChild: (i) => ({ privateKey: byChain(chain, i) }) }) };
+}
+
+async function bgManager(rec, walletKey, saveFn) {
+  const storage = {
+    load: () => rec.mgr,
+    save: (s) => { rec.mgr = s; saveFn(walletKey, rec).catch(() => {}); },
+  };
+  return new ArkManager({
+    account: shimAccount(rec), storage,
+    arkUrl: rec.ark.arkUrl, esploraUrl: rec.ark.esploraUrl, network: rec.ark.network,
+  }).init();
+}
+
+// A CLINK offer request (kind 21001): mint an invoice against the mirrored
+// wallet and reply. The payment itself arrives later over the ASP's hold
+// invoice — the app claims it on next open, so we also ask the caller to
+// raise a "money incoming" notification.
+async function respondOffer(ev, rec, walletKey, { notifier, fetchFn, saveFn, log }) {
+  const offer = rec.offer;
+  if (!offer || !offer.sk) return false;
+  const sk = hex.decode(offer.sk);
+  let req;
+  try { req = JSON.parse(nip44.decrypt(ev.content, nip44.getConversationKey(sk, ev.pubkey))); } catch { return false; }
+  const publish = async (payload) => {
+    const content = nip44.encrypt(JSON.stringify(payload), nip44.getConversationKey(sk, ev.pubkey));
+    const evt = finalizeEvent({
+      kind: 21001, created_at: nowSec(),
+      tags: [['p', ev.pubkey], ['e', ev.id], ['clink_version', '1']],
+      content,
+    }, sk);
+    const r = await fetchFn(`${notifier}/publish`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ event: evt }),
+    });
+    if (!r.ok) throw new Error(`publish refused: ${r.status}`);
+  };
+  try {
+    const answered = await fetchFn(`${notifier}/answered?event=${ev.id}`).then((r) => r.json()).catch(() => ({}));
+    if (answered.answered) return true;
+    const sat = Math.floor(req.amount_sats || 0);
+    if (!sat || sat < 1) { await publish({ error: 'Invalid Amount', code: 5, range: { min: 1, max: 1000000 } }); return true; }
+    if (!rec.keys5 || !rec.key4) return false; // old mirror: wake the user
+    if (!rec.keys5[String(rec.mgr.nextLnRecvIndex || 0)]) return false; // preimage window exhausted
+    const mgr = await bgManager(rec, walletKey, saveFn);
+    const a = await mgr.createLnInvoice(sat, (req.description || '').slice(0, 100));
+    // pending zap receipts are published by the app when it claims — stash
+    // what it needs alongside the mirror
+    if (req.zap) {
+      rec.zapPending = rec.zapPending || [];
+      rec.zapPending.push({ zap: req.zap, invoice: a.invoice, ts: Date.now() });
+      if (rec.zapPending.length > 50) rec.zapPending = rec.zapPending.slice(-50);
+    }
+    await saveFn(walletKey, rec);
+    await publish({ bolt11: a.invoice });
+    log(`minted ${sat} sat offer invoice while closed`);
+    return { notify: { title: 'Incoming payment', body: 'Someone is paying you — open Hal to receive it.' } };
+  } catch (e) {
+    log('offer mint failed: ' + e.message);
+    await publish({ error: 'Temporary Failure', code: 2 }).catch(() => {});
+    return true;
+  }
+}
+
 // data: the push payload { type:'nwc', servicePubkey, event }. Returns true
 // when the request was fully dealt with (reply published or deliberately
 // left to another device); false means "wake the user instead".
@@ -53,11 +127,23 @@ export async function respondFromBg(data, {
   notifier, fetchFn = fetch, recordsFn = allBgs, saveFn = saveBg, log = () => {},
 } = {}) {
   const ev = data && data.event;
-  if (!ev || ev.kind !== 23194 || !ev.id || !ev.pubkey) return false;
+  if (!ev || !ev.id || !ev.pubkey) return false;
   if (nowSec() - (ev.created_at || 0) > MAX_AGE_SEC) return false;
 
   const target = (ev.tags?.find((t) => t[0] === 'p') || [])[1];
   if (!target) return false;
+
+  // CLINK offer requests route by the offer service pubkey.
+  if (ev.kind === 21001) {
+    for (const r of await recordsFn()) {
+      if (r.rec.v >= 3 && r.rec.offer?.pk === target) {
+        return respondOffer(ev, r.rec, r.walletKey, { notifier, fetchFn, saveFn, log });
+      }
+    }
+    return false;
+  }
+
+  if (ev.kind !== 23194) return false;
   let walletKey = null, rec = null, conn = null;
   for (const r of await recordsFn()) {
     const c = (r.rec.connections || []).find((x) => x.servicePk === target);
@@ -148,21 +234,9 @@ export async function respondFromBg(data, {
   // outputs allocate from nextKeyIndex, which must stay inside the key
   // window the app pre-derived; if it ran out, wake the user instead.
   if (!rec.keys[String(rec.mgr.nextKeyIndex || 1)]) { log('key window exhausted'); return false; }
-  const storage = {
-    load: () => rec.mgr,
-    save: (s) => { rec.mgr = s; saveFn(walletKey, rec).catch(() => {}); },
-  };
-  const keyShim = { deriveChild: () => ({ deriveChild: (i) => {
-    const k = rec.keys[String(i)];
-    if (!k) throw new Error(`key index ${i} outside the mirrored window`);
-    return { privateKey: hex.decode(k) };
-  } }) };
   let mgr;
   try {
-    mgr = await new ArkManager({
-      account: keyShim, storage,
-      arkUrl: rec.ark.arkUrl, esploraUrl: rec.ark.esploraUrl, network: rec.ark.network,
-    }).init();
+    mgr = await bgManager(rec, walletKey, saveFn);
   } catch (e) { log('ark init failed: ' + e.message); return false; }
 
   let id;

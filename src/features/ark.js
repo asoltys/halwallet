@@ -456,15 +456,16 @@ export function arkFeature(ctx) {
   // full manager state plus the chain-3 keys for its live coins and a window
   // of upcoming change indices (the worker cannot derive). nwc.js decides
   // WHEN to mirror (background answering on) and supplies the connections.
-  async function writeBgMirror(connections) {
+  async function writeBgMirror(connections, offer) {
     const cfg = getArkConfig();
     if (!cfg || !ark || !ark.info || !ark.state) return;
     const prev = await loadBg(wallet._cacheKey());
     const rec = buildBg({
       ark: { arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(), serverPubkey: ark.info.serverPubkey },
       mgrState: ark.state,
-      keyFor: (i) => hex.encode(ark._key(i).privkey),
+      keyFor: (chain, i) => hex.encode(ark.account.deriveChild(chain).deriveChild(i).privateKey),
       connections,
+      offer,
     });
     if (prev) rec.spends = prev.spends; // the worker's log survives rewrites
     await saveBg(wallet._cacheKey(), rec);
@@ -1576,7 +1577,7 @@ export function arkFeature(ctx) {
     arkBgReady() { return !!(ark && ark.info && ark.state); },
     // nwc.js calls this (with its connections) whenever the mirror should
     // refresh: on enable, on connection changes, after payments, on a timer.
-    async arkBgWrite(connections) { return writeBgMirror(connections); },
+    async arkBgWrite(connections, offer) { return writeBgMirror(connections, offer); },
     async arkBgSpendableSat() {
       const rec = await loadBg(wallet._cacheKey());
       return ((rec && rec.mgr && rec.mgr.vtxos) || [])

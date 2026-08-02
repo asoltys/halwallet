@@ -67,6 +67,9 @@ export function lnBackend(cfg) {
   const rpc = cfg.kind === 'docker' ? dockerAdapter(cfg) : socketAdapter(cfg);
 
   return {
+    // Raw RPC passthrough — the names registrar drives offers/waitanyinvoice.
+    call: (method, params) => rpc.call(method, params),
+
     async info() {
       const r = await rpc.call('getinfo');
       return { id: r.id, alias: r.alias, blockheight: r.blockheight, network: r.network };

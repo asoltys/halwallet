@@ -29,6 +29,17 @@ self.addEventListener('push', (e) => {
     } catch (err) {
       console.warn('[sw-nwc] auto-answer failed:', err && err.message);
     }
+    // handled-with-a-heads-up: e.g. an invoice was minted while closed and
+    // the user should open Hal to complete the receive
+    if (handled && handled.notify) {
+      await self.registration.showNotification(handled.notify.title, {
+        body: handled.notify.body,
+        icon: 'icon-192.png', badge: 'icon-192.png',
+        tag: 'nwc-incoming', renotify: true,
+        data: { url: './' },
+      });
+      return;
+    }
     if (handled) return;
     await self.registration.showNotification('Payment request', {
       body: 'An app is asking your wallet to pay. Open Hal to approve.',

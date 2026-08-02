@@ -79,20 +79,31 @@ export async function allBgs() {
 // cannot derive keys, so its allocations must land inside this window.
 export const BG_KEY_LOOKAHEAD = 25;
 
-// { ark } endpoints, the manager state to mirror, and a keyFor(index) derive
-// function (the caller owns the account node — it never enters this module).
-export function buildBg({ ark, mgrState, keyFor, connections }) {
+// { ark } endpoints, the manager state to mirror, and a keyFor(chain, index)
+// derive function (the caller owns the account node — it never enters this
+// module). Chain 3 covers coins + change, chain 4/0 the mailbox, chain 5 a
+// window of receive preimages — everything the worker needs to pay AND to
+// mint invoices while the app is closed.
+export function buildBg({ ark, mgrState, keyFor, connections, offer }) {
   const keys = {};
   const idx = new Set((mgrState.vtxos || []).filter((v) => v.state !== 'spent').map((v) => v.keyIndex));
   for (let i = 0; i < BG_KEY_LOOKAHEAD; i++) idx.add((mgrState.nextKeyIndex || 1) + i);
   idx.add(0); // the receive-address key: mailbox/refund defaults land on it
-  for (const i of idx) keys[String(i)] = keyFor(i);
+  for (const i of idx) keys[String(i)] = keyFor(3, i);
+  const keys5 = {};
+  for (let i = 0; i < 15; i++) {
+    const n = (mgrState.nextLnRecvIndex || 0) + i;
+    keys5[String(n)] = keyFor(5, n);
+  }
   return {
     v: 3,
     updated: Date.now(),
     ark,
     mgr: mgrState,
     keys,
+    keys5,
+    key4: keyFor(4, 0),
+    offer: offer || null, // { sk, pk } — the CLINK offer service keypair
     connections: (connections || []).map((c) => ({
       id: c.id, servicePk: c.servicePk, serviceSk: c.serviceSk, clientPk: c.clientPk,
       maxSat: c.maxSat, dailySat: c.dailySat,

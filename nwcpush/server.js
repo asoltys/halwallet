@@ -45,6 +45,7 @@ const STATE = CFG.stateFile || join(import.meta.dir, 'data', 'registrations.json
 const MAX_PK = CFG.maxPubkeysPerDevice || 20;
 const STALE_MS = (CFG.staleDays || 30) * 86400_000;
 const REQ_KIND = 23194;
+const OFFER_KIND = 21001;
 
 webpush.setVapidDetails(CFG.vapid.subject, CFG.vapid.publicKey, CFG.vapid.privateKey);
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -95,7 +96,7 @@ function resubscribe() {
     // only live traffic: a replayed old request must not wake devices.
     // NOTE: nostr-tools ≥2.23 wants a single filter object, NOT an array —
     // an array serializes as an invalid REQ that relays reject with CLOSED.
-    { kinds: [REQ_KIND], '#p': pks, since: Math.floor(Date.now() / 1000) },
+    { kinds: [REQ_KIND, OFFER_KIND], '#p': pks, since: Math.floor(Date.now() / 1000) },
     {
       onevent: (ev) => {
         const target = ev.tags?.find((t) => t[0] === 'p')?.[1];
@@ -109,7 +110,7 @@ function resubscribe() {
   try { answeredSub?.close(); } catch {}
   answeredSub = pool.subscribeMany(
     RELAYS,
-    { kinds: [RES_KIND], since: Math.floor(Date.now() / 1000) },
+    { kinds: [RES_KIND, OFFER_KIND], since: Math.floor(Date.now() / 1000) },
     {
       onevent: (ev) => {
         for (const t of ev.tags || []) {
@@ -217,7 +218,7 @@ const server = Bun.serve({
       if (!rateOk(ip)) return json({ error: 'rate limited' }, 429);
       const body = await req.json().catch(() => null);
       const ev = body?.event;
-      if (!ev || ev.kind !== RES_KIND) return json({ error: 'kind 23195 events only' }, 400);
+      if (!ev || ![RES_KIND, OFFER_KIND].includes(ev.kind)) return json({ error: 'kind 23195/21001 events only' }, 400);
       if (JSON.stringify(ev).length > 4096) return json({ error: 'event too large' }, 400);
       if (!verifyEvent(ev)) return json({ error: 'bad signature' }, 400);
       const eTag = (ev.tags || []).find((t) => t[0] === 'e')?.[1];

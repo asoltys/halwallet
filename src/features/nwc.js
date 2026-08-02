@@ -30,6 +30,7 @@ import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { getNetwork } from '../api.js';
 import { loadBg, saveBg, clearBg } from '../nwc-bg.js';
+import { encodeNoffer } from '../noffer.js';
 import { maybeBolt11 } from '../ark/lightning.js';
 
 const REQ_KIND = 23194;
@@ -159,10 +160,22 @@ export function nwcFeature(ctx) {
     domain: 'nwc', // published as its own sync slot — see splitSnapshotDomains
     mergeAlways: true, // the merge is commutative, so older snapshots are fine
     save: () => {
-      const list = (load().conns || []);
-      return list.length ? { nwcConns: list } : {};
+      const st = load();
+      const out = {};
+      if ((st.conns || []).length) out.nwcConns = st.conns;
+      if (st.offer) out.nwcOffer = st.offer;
+      return out;
     },
     load: (d) => {
+      // the offer keypair: whichever device minted one first wins, so every
+      // device answers for the SAME offer code
+      if (d.nwcOffer && d.nwcOffer.sk) {
+        const st0 = load();
+        if (!st0.offer || (d.nwcOffer.created || 0) < (st0.offer.created || Infinity)) {
+          st0.offer = d.nwcOffer;
+          save(st0);
+        }
+      }
       if (!Array.isArray(d.nwcConns)) return;
       const st = load();
       const merged = mergeConns(st.conns || [], d.nwcConns);
@@ -376,6 +389,109 @@ export function nwcFeature(ctx) {
     return errRes('NOT_IMPLEMENTED', 'method not supported');
   }
 
+  // ---- CLINK offer (a static, zappable payment code) ---------------------
+  // One offer keypair per wallet, synced across devices like connections.
+  // Anyone with the code can request an invoice (kind 21001); every open tab
+  // answers, and the service worker answers while closed. Amounts are minted
+  // straight against the wallet's own balance — nothing custodial.
+  const OFFER_KIND = 21001;
+  function offerKeys() {
+    const st = load();
+    if (st.offer) return st.offer;
+    const sk = generateSecretKey();
+    st.offer = { sk: hex.encode(sk), pk: getPublicKey(sk), created: Date.now() };
+    save(st);
+    try { wallet.saveCache(); } catch {}
+    return st.offer;
+  }
+  const offerString = () => {
+    const o = offerKeys();
+    return encodeNoffer({ pubkey: o.pk, relay: NWC_RELAYS[0], offerId: 'zap_default', priceType: 2 });
+  };
+
+  async function onOfferRequest(ev) {
+    if (ev.kind !== OFFER_KIND) return;
+    if (handled.has(ev.id)) return;
+    handled.add(ev.id);
+    if (ev.created_at && nowSec() - ev.created_at > MAX_AGE_SEC) return;
+    const o = load().offer;
+    if (!o) return;
+    const sk = hex.decode(o.sk);
+    let req;
+    try { req = JSON.parse(nip44.decrypt(ev.content, nip44.getConversationKey(sk, ev.pubkey))); } catch { return; }
+    const sendBack = async (payload) => {
+      const content = nip44.encrypt(JSON.stringify(payload), nip44.getConversationKey(sk, ev.pubkey));
+      const evt = finalizeEvent({
+        kind: OFFER_KIND, created_at: nowSec(),
+        tags: [['p', ev.pubkey], ['e', ev.id], ['clink_version', '1']],
+        content,
+      }, sk);
+      await publish(NWC_RELAYS, evt);
+    };
+    // multi-device: stay silent if another device answered already
+    const prior = await query(NWC_RELAYS, { kinds: [OFFER_KIND], '#e': [ev.id] }, 1200).catch(() => []);
+    if (prior && prior.length) return;
+    const sat = Math.floor(req.amount_sats || 0);
+    if (!sat || sat < 1) return sendBack({ error: 'Invalid Amount', code: 5, range: { min: 1, max: 1000000 } });
+    try {
+      const inv = await hook('arkMakeInvoice', sat, (req.description || '').slice(0, 100));
+      if (req.zap) {
+        const st = load();
+        st.zapPending = [...(st.zapPending || []), { zap: req.zap, invoice: inv.invoice, ts: Date.now() }].slice(-50);
+        save(st);
+      }
+      await sendBack({ bolt11: inv.invoice });
+      lastSeen = { at: Date.now(), method: 'offer', scheme: 'nip44_v2' };
+      render();
+    } catch (e) {
+      console.warn('nwc: offer mint failed', e.message);
+      await sendBack({ error: 'Temporary Failure', code: 2 }).catch(() => {});
+    }
+  }
+
+  // Zap receipts: once a pending zap's invoice is actually received (the ark
+  // movement completes), publish the kind 9735 receipt signed by the offer
+  // key — that's what makes the zap show up under the note.
+  async function publishZapReceipts() {
+    const st = load();
+    const o = st.offer;
+    let pend = st.zapPending || [];
+    // the worker stashes its pending zaps next to the mirror — adopt them
+    try {
+      const rec = await loadBg(wallet._cacheKey());
+      if (rec && (rec.zapPending || []).length) {
+        pend = [...pend, ...rec.zapPending].slice(-50);
+        rec.zapPending = [];
+        await saveBg(wallet._cacheKey(), rec);
+      }
+    } catch {}
+    if (!o || !pend.length) return;
+    const moves = hook('arkMovements') || [];
+    const keep = [];
+    for (const z of pend) {
+      if (Date.now() - z.ts > 86400_000) continue; // expired unpaid
+      const paid = moves.find((m) => m.type === 'ln-receive' && m.status === 'complete' && m.invoice === z.invoice);
+      if (!paid) { keep.push(z); continue; }
+      try {
+        const zapReq = JSON.parse(z.zap);
+        const tags = [
+          ...zapReq.tags.filter((t2) => t2[0] === 'p' || t2[0] === 'e'),
+          ['P', zapReq.pubkey],
+          ['bolt11', z.invoice],
+          ['description', z.zap],
+        ];
+        if (paid.preimage) tags.push(['preimage', paid.preimage]);
+        const receipt = finalizeEvent({ kind: 9735, created_at: nowSec(), tags, content: '' }, hex.decode(o.sk));
+        const relayTag = zapReq.tags.find((t2) => t2[0] === 'relays');
+        const relays = [...new Set([...(relayTag ? relayTag.slice(1) : []), ...NWC_RELAYS])].slice(0, 8);
+        await publish(relays, receipt);
+      } catch (e) { console.warn('nwc: zap receipt failed', e.message); }
+    }
+    const st2 = load();
+    st2.zapPending = keep;
+    save(st2);
+  }
+
   // ---- lifecycle --------------------------------------------------------
 
   let unsubs = [];
@@ -391,9 +507,17 @@ export function nwcFeature(ctx) {
     listenGen++;
     const gen = listenGen;
     if (wallet.watchOnly) return;
+    // the offer subscription rides the same lifecycle as connections
+    if (hook('arkReady')) {
+      const o = offerKeys();
+      unsubs.push(subscribe(
+        NWC_RELAYS,
+        { kinds: [OFFER_KIND], '#p': [o.pk], since: nowSec() - MAX_AGE_SEC },
+        (ev) => { onOfferRequest(ev).catch((e) => console.warn('nwc: offer handler', e.message)); },
+      ));
+    }
     const list = conns();
     console.log(`nwc: listen() gen ${gen} — ${list.length} connection(s)`);
-    if (!list.length) return;
     for (const c of list) {
       console.log(`nwc: gen ${gen} subscribing for conn=${c.id} service=${c.servicePk.slice(0, 8)}`);
       unsubs.push(subscribe(
@@ -442,10 +566,11 @@ export function nwcFeature(ctx) {
       userVisibleOnly: true,
       applicationServerKey: b64ToBytes(publicKey),
     });
-    const list = conns();
+    const pks1 = conns().map((c) => c.servicePk);
+    if (load().offer) pks1.push(load().offer.pk);
     const r = await fetch(`${NOTIFIER}/register`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ subscription: sub.toJSON(), servicePubkeys: list.map((c) => c.servicePk) }),
+      body: JSON.stringify({ subscription: sub.toJSON(), servicePubkeys: pks1 }),
     });
     if (!r.ok) throw new Error(`notifier refused: ${r.status}`);
     const st = load(); st.background = true; save(st);
@@ -468,11 +593,12 @@ export function nwcFeature(ctx) {
         const reg = await navigator.serviceWorker.ready;
         const sub = await reg.pushManager.getSubscription();
         if (!sub) return;
-        const list = conns();
-        if (!list.length) return;
+        const pks = conns().map((c) => c.servicePk);
+        if (load().offer) pks.push(load().offer.pk);
+        if (!pks.length) return;
         await fetch(`${NOTIFIER}/register`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ subscription: sub.toJSON(), servicePubkeys: list.map((c) => c.servicePk) }),
+          body: JSON.stringify({ subscription: sub.toJSON(), servicePubkeys: pks }),
         });
       } catch (e) { console.warn('nwc: notifier re-register failed', e.message); }
     }, 1500);
@@ -506,7 +632,7 @@ export function nwcFeature(ctx) {
     bgTimer = setTimeout(async () => {
       try {
         if (!hook('arkBgReady')) return;
-        await hook('arkBgWrite', conns());
+        await hook('arkBgWrite', conns(), load().offer || null);
       } catch (e) { console.warn('nwc: could not write background state', e.message); }
     }, 1500);
   }
@@ -530,6 +656,7 @@ export function nwcFeature(ctx) {
         await saveBg(wallet._cacheKey(), rec);
       }
       writeBg(); // refresh the mirror after the merge settled
+      publishZapReceipts().catch(() => {});
       render();
     } catch (e) { console.warn('nwc: background reconcile failed', e.message); }
   }
@@ -550,7 +677,7 @@ export function nwcFeature(ctx) {
   let watchdog = null;
   function startWatchdog() {
     if (watchdog) return;
-    watchdog = setInterval(() => { if (conns().length) { listen(); writeBg(); } }, 90 * 1000);
+    watchdog = setInterval(() => { listen(); writeBg(); publishZapReceipts().catch(() => {}); }, 90 * 1000);
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => listen());
       document.addEventListener('visibilitychange', () => {
@@ -635,6 +762,7 @@ export function nwcFeature(ctx) {
 
   return {
     id: 'nwc',
+    nwcOfferString() { return hook('arkReady') && !wallet.watchOnly ? offerString() : null; },
     init() { listen(); startWatchdog(); refreshRegistration(); reconcileBg(); },
     stop() { stop(); if (watchdog) { clearInterval(watchdog); watchdog = null; } },
     settingsCards() { return [nwcCard()]; },

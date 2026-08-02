@@ -126,7 +126,7 @@ export function namesFeature(ctx) {
     if (!available()) return null;
     const st = load();
     if (st.name) {
-      const addr = `₿${st.name}@${DOMAIN}`;
+      const addr = `${st.name}@${DOMAIN}`;
       return h('div', { class: 'card col' },
         h('h3', {}, t('namesTitle')),
         h('div', { class: 'addr-box break', style: 'font-size:14px' }, addr),
@@ -135,6 +135,14 @@ export function namesFeature(ctx) {
           h('button', { class: 'btn-ghost btn-sm', onClick: async () => {
             await release(); toast(t('namesReleased')); render();
           } }, t('namesRelease'))),
+        (() => {
+          const code = hook('nwcOfferString');
+          return code ? h('details', { class: 'small faint' },
+            h('summary', {}, t('namesZapCode')),
+            h('p', { style: 'margin:4px 0' }, t('namesZapCodeHow')),
+            h('div', { class: 'addr-box break', style: 'font-size:10px' }, code),
+            copyBtn(code, t('namesZapCodeCopy'))) : null;
+        })(),
         h('details', { class: 'small faint' },
           h('summary', {}, t('namesOwnDomain')),
           h('p', { style: 'margin:4px 0' }, t('namesOwnDomainHow')),
