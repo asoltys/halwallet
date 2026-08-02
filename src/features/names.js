@@ -49,7 +49,18 @@ export function namesFeature(ctx) {
     });
     const j = await r.json();
     if (!r.ok || j.error) throw new Error(j.error || `registrar refused (${r.status})`);
+    const prev = load().name;
     save({ name, domain: DOMAIN, uri, updated: Date.now() });
+    if (prev && prev !== name) {
+      const bye = wallet.nostrSign({
+        kind: AUTH_KIND, created_at: Math.floor(Date.now() / 1000), tags: [],
+        content: JSON.stringify({ action: 'delete', name: prev, domain: DOMAIN }),
+      });
+      fetch(`${REGISTRAR}/register`, {
+        method: 'DELETE', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ auth: bye }),
+      }).catch(() => {});
+    }
     return j;
   }
 
@@ -80,12 +91,19 @@ export function namesFeature(ctx) {
     } catch {}
   }
 
-  // The record must track the wallet: re-register when the ark address moved.
+  // Everyone gets an address without being asked: the default username is a
+  // prefix of the wallet's npub — unique, boring, and free. Custom names are
+  // an optional change (and may cost something one day, to keep squatters
+  // out), so nothing here ever blocks the wallet.
   async function refresh() {
     try {
       if (!available()) { checked = true; render(); return; }
       let st = load();
       if (!st.name) { await lookupMine(); st = load(); }
+      if (!st.name) {
+        const npub = wallet.nostrNpub && wallet.nostrNpub();
+        if (npub) { await claim(npub.slice(0, 20)); st = load(); }
+      }
       checked = true;
       render();
       if (!st.name) return;
@@ -177,6 +195,10 @@ export function namesFeature(ctx) {
           h('button', { class: 'btn-ghost btn-sm', onClick: async () => {
             await release(); toast(t('namesReleased')); render();
           } }, t('namesRelease'))),
+        h('details', { class: 'small faint' },
+          h('summary', {}, t('namesCustom')),
+          h('p', { style: 'margin:4px 0' }, t('namesCustomHow')),
+          claimForm(false)),
         (() => {
           const code = hook('nwcOfferString');
           return code ? h('details', { class: 'small faint' },
@@ -224,19 +246,6 @@ export function namesFeature(ctx) {
         icon: '<svg viewBox="0 0 72 72" width="18" height="18" fill="currentColor"><path fill-rule="evenodd" d="M36 4.2C18.5 4.2 4.2 18.5 4.2 36S18.5 67.8 36 67.8 67.8 53.5 67.8 36 53.5 4.2 36 4.2ZM0 36C0 16.1 16.1 0 36 0s36 16.1 36 36-16.1 36-36 36S0 55.9 0 36Z"/><path fill-rule="evenodd" d="M36 58.6c12.5 0 22.6-10.1 22.6-22.6S48.5 13.4 36 13.4 13.4 23.5 13.4 36 23.5 58.6 36 58.6ZM36 54c9.9 0 18-8.1 18-18s-8.1-18-18-18-18 8.1-18 18 8.1 18 18 18Z"/><path d="M36 22.9c-7.2 0-13.1 5.9-13.1 13.1S28.8 49.1 36 49.1V22.9Z"/></svg>',
         render: (seg) => namePane(seg),
       }];
-    },
-    // New wallets must pick a username before using the wallet; imported
-    // seeds recover theirs from the registrar and skip straight through.
-    onboardingView() {
-      if (!available() || !checked) return null;
-      if (load().name || ui.namesLater) return null;
-      return h('div', { class: 'card col', style: 'gap:12px' },
-        h('h2', { style: 'margin:0' }, t('namesOnboardTitle')),
-        h('p', { class: 'muted', style: 'margin:0' }, t('namesOnboardDesc')),
-        claimForm(true),
-        ui.nameClaimError
-          ? h('button', { class: 'linklike small', onClick: () => { ui.namesLater = true; render(); } }, t('namesOnboardLater'))
-          : null);
     },
     // BEFORE zaps in the registry: a pasted user@domain tries DNS first.
     matchSendText(text, typed) {
