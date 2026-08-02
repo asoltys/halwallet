@@ -73,5 +73,24 @@ console.log('\n[NIP-98 auth]');
   check('binds the body hash', tag('payload') === hex.encode(sha(new TextEncoder().encode(body))));
 }
 
+console.log('\n[bunker (NIP-46) wiring]');
+{
+  const { bunkerSigner } = await import('../src/nostr-login.js');
+  const { parseBunkerInput } = await import('nostr-tools/nip46');
+  // a real Amethyst-issued address shape
+  const uri = 'bunker://81029479a85c3f2f0c8d7ca9fbd92923942e2254e873d93c1c7095f068c83a85'
+    + '?relay=wss%3A%2F%2Frelay.damus.io%2F&relay=wss%3A%2F%2Fnos.lol%2F&secret=4wdWEsG7RDzCaBt6p9ovvk0uMX6ENh2J';
+  const bp = await parseBunkerInput(uri);
+  check('parses an Amethyst bunker address', !!bp && bp.relays.length === 2 && !!bp.secret);
+  // Constructing must not throw synchronously: the failure this guards against
+  // is passing the pointer to the constructor, which leaves signer.bp unset
+  // and dies with "reading 'pubkey'" before any network call.
+  let err = null;
+  const p = bunkerSigner(uri, { onAuth: () => {} }).catch((e) => { err = e; });
+  await Promise.race([p, new Promise((r) => setTimeout(r, 1500))]);
+  check('constructs without a pubkey error', !/reading 'pubkey'|undefined/.test(String(err && err.message)), err && err.message);
+  check('rejects a non-bunker string', await bunkerSigner('nope').then(() => false, (e) => /bunker/.test(e.message)));
+}
+
 console.log(fails ? `\n❌ ${fails} failure(s)` : '\n✅ nostr login behaves');
 process.exit(fails ? 1 : 0);

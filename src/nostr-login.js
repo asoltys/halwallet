@@ -90,8 +90,11 @@ export async function extensionSigner() {
 export async function bunkerSigner(uri, { onAuth } = {}) {
   const bp = await parseBunkerInput(String(uri || '').trim());
   if (!bp) throw new Error('not a bunker:// address');
+  if (!bp.relays || !bp.relays.length) throw new Error('that bunker address lists no relays');
   const local = generateSecretKey();
-  const signer = new BunkerSigner(local, bp, {
+  // NB the pointer goes through fromBunker — the constructor takes params
+  // only, and passing the pointer there leaves the signer without one.
+  const signer = BunkerSigner.fromBunker(local, bp, {
     onauth: (url) => { if (onAuth) onAuth(url); else if (typeof window !== 'undefined') window.open(url, '_blank'); },
   });
   await signer.connect();
