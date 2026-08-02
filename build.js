@@ -181,7 +181,7 @@ export async function buildSwNwc({ minify = true } = {}) {
 // feature's code (and its network endpoints) never enters the bundle.
 // NB order matters and must match src/features/index.js — nwc sits after ark
 // because it drives ark's headless pay/balance seam.
-const ALL_FEATURES = { gifts: 'giftsFeature', ark: 'arkFeature', names: 'namesFeature', zaps: 'zapsFeature', nwc: 'nwcFeature', sync: 'syncFeature' };
+const ALL_FEATURES = { gifts: 'giftsFeature', ark: 'arkFeature', names: 'namesFeature', zaps: 'zapsFeature', nwc: 'nwcFeature', nostrlogin: 'nostrLoginFeature', sync: 'syncFeature' };
 
 export function enabledFeatures(spec = process.env.HAL_FEATURES) {
   if (spec == null) return Object.keys(ALL_FEATURES);

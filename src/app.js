@@ -500,6 +500,7 @@ function unlockScreen() {
       ui.unlockTab === 'create' ? createPane() : importPane(),
       ui.unlockError && h('div', { class: 'notice err' }, ui.unlockError)
     ),
+    featureHook('unlockExtra'),
     ui.fromWallet && accounts.length
       ? h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.fromWallet = false; ui.screen = 'wallet'; ui.unlockError = ''; render(); } }, t('back'))
       : null
@@ -2995,6 +2996,8 @@ const ctx = {
   // support) — lazy so it resolves against the final FEATURES list, and a
   // build without the target feature simply gets null back
   hook: (name, ...args) => featureHook(name, ...args),
+  // Open (or create) a wallet from a mnemonic — used by nostr login.
+  openMnemonic: async (mnemonic, passphrase, opts) => enterWallet(mnemonic, passphrase, opts),
 };
 const FEATURES = buildFeatures(ctx);
 

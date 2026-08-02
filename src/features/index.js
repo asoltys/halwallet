@@ -5,6 +5,7 @@
 // bundle. See featureIndexSource() in build.js.
 
 import { giftsFeature } from './gifts.js';
+import { nostrLoginFeature } from './nostrlogin.js';
 import { arkFeature } from './ark.js';
 import { namesFeature } from './names.js';
 import { zapsFeature } from './zaps.js';
@@ -19,5 +20,5 @@ import { nwcFeature } from './nwc.js';
 // names sits between ark and zaps: a pasted user@domain resolves over DNS
 // (BIP-353) before the zaps feature treats it as a plain Lightning address.
 export function buildFeatures(ctx) {
-  return [giftsFeature(ctx), arkFeature(ctx), namesFeature(ctx), zapsFeature(ctx), nwcFeature(ctx), syncFeature(ctx)];
+  return [giftsFeature(ctx), arkFeature(ctx), namesFeature(ctx), zapsFeature(ctx), nwcFeature(ctx), nostrLoginFeature(ctx), syncFeature(ctx)];
 }
