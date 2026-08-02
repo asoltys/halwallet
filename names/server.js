@@ -23,12 +23,13 @@ import { ArkManager } from '../src/ark/manager.js';
 
 const CFG = JSON.parse(readFileSync(process.env.NAMES_CONFIG
   || join(import.meta.dir, 'config.json'), 'utf8'));
-// { port, domain, zoneId, cfEmail, cfKey, stateFile,
+// { port, domains: { '<domain>': { zoneId } }, domain (default), cfEmail, cfKey, stateFile,
 //   ln: { kind:'socket', path } — the ASP's CLN, for per-name bolt12 offers,
 //   forwarder: { mnemonic, ark, esplora, network } — a small float ark wallet
 //     that forwards settled offer payments to the name's ark address }
 
-const DOMAIN = CFG.domain || 'halwallet.app';
+const DOMAIN = CFG.domain || 'coinos.io'; // the default domain for claims
+const DOMAINS = CFG.domains || { [DOMAIN]: { zoneId: CFG.zoneId } };
 const STATE = CFG.stateFile || join(import.meta.dir, 'data', 'names.json');
 const AUTH_KIND = 21353;         // arbitrary custom kind for signed claims
 const MAX_SKEW_SEC = 600;        // claim events must be fresh
@@ -62,25 +63,29 @@ const CF = 'https://api.cloudflare.com/client/v4';
 const cfHeaders = {
   'X-Auth-Email': CFG.cfEmail, 'X-Auth-Key': CFG.cfKey, 'content-type': 'application/json',
 };
-const recordName = (name) => `${name}.user._bitcoin-payment.${DOMAIN}`;
+const recordName = (name, domain) => `${name}.user._bitcoin-payment.${domain}`;
 
-async function cfWrite(name, uri, existingId) {
+async function cfWrite(name, domain, uri, existingId) {
   // TXT character-strings cap at 255 bytes; BIP-353 readers concatenate the
   // chunks in order, so a long ark+lno URI just spans several quoted strings.
+  const zoneId = DOMAINS[domain]?.zoneId;
+  if (!zoneId) throw new Error('unknown domain');
   const chunks = uri.match(/.{1,255}/g).map((c) => `"${c}"`).join(' ');
   const body = JSON.stringify({
-    type: 'TXT', name: recordName(name), content: chunks, ttl: TTL,
+    type: 'TXT', name: recordName(name, domain), content: chunks, ttl: TTL,
   });
   const url = existingId
-    ? `${CF}/zones/${CFG.zoneId}/dns_records/${existingId}`
-    : `${CF}/zones/${CFG.zoneId}/dns_records`;
+    ? `${CF}/zones/${zoneId}/dns_records/${existingId}`
+    : `${CF}/zones/${zoneId}/dns_records`;
   const r = await fetch(url, { method: existingId ? 'PUT' : 'POST', headers: cfHeaders, body });
   const j = await r.json();
   if (!j.success) throw new Error('dns write failed: ' + JSON.stringify(j.errors).slice(0, 200));
   return j.result.id;
 }
-async function cfDelete(recordId) {
-  const r = await fetch(`${CF}/zones/${CFG.zoneId}/dns_records/${recordId}`, {
+async function cfDelete(domain, recordId) {
+  const zoneId = DOMAINS[domain]?.zoneId;
+  if (!zoneId) throw new Error('unknown domain');
+  const r = await fetch(`${CF}/zones/${zoneId}/dns_records/${recordId}`, {
     method: 'DELETE', headers: cfHeaders,
   });
   const j = await r.json();
@@ -112,9 +117,9 @@ if (CFG.forwarder?.mnemonic) {
   log(`forwarder ark wallet ready — float ${fwd.balance().spendableSat} sat, receive ${fwd.address().slice(0, 24)}…`);
 }
 
-async function makeOffer(name) {
+async function makeOffer(address) { // "name@domain"
   if (!ln) return null;
-  const o = await ln.call('offer', { amount: 'any', description: `${name}@${DOMAIN}` });
+  const o = await ln.call('offer', { amount: 'any', description: address });
   return { offerId: o.offer_id, bolt12: o.bolt12 };
 }
 
@@ -186,6 +191,16 @@ function checkAuth(auth) {
   return null;
 }
 
+// coinos.io names that belong to existing coinos users are reserved for
+// them until the migration gives those users a way to claim their own.
+async function takenByCoinosUser(domain, name) {
+  if (domain !== 'coinos.io') return false;
+  try {
+    const r = await fetch(`https://coinos.io/api/users/${encodeURIComponent(name)}`);
+    return r.status === 200;
+  } catch { return true; } // can't verify → refuse rather than squat
+}
+
 const validUri = (u) => typeof u === 'string' && /^bitcoin:/i.test(u) && u.length <= 480
   && !/[\s"\\]/.test(u);
 
@@ -234,9 +249,11 @@ Bun.serve({
     // Availability / lookup. Public data (it's DNS).
     const m = url.pathname.match(/^\/name\/([a-z0-9._-]{1,30})$/);
     if (m && req.method === 'GET') {
-      const rec = state.names[m[1]];
-      if (!rec) return json({ name: m[1], taken: false, reserved: RESERVED.has(m[1]) || !NAME_RE.test(m[1]) });
-      return json({ name: m[1], taken: true, pubkey: rec.pubkey, uri: rec.uri });
+      const domain = (url.searchParams.get('domain') || DOMAIN).toLowerCase();
+      const rec = state.names[`${m[1]}@${domain}`];
+      if (rec) return json({ name: m[1], domain, taken: true, pubkey: rec.pubkey, uri: rec.uri });
+      const reserved = RESERVED.has(m[1]) || !NAME_RE.test(m[1]) || await takenByCoinosUser(domain, m[1]);
+      return json({ name: m[1], domain, taken: reserved, reserved });
     }
 
     if (url.pathname === '/register' && req.method === 'POST') {
@@ -248,29 +265,33 @@ Bun.serve({
       let claim;
       try { claim = JSON.parse(auth.content); } catch { return json({ error: 'bad claim content' }, 400); }
       const name = String(claim.name || '').toLowerCase();
+      const domain = String(claim.domain || 'halwallet.app').toLowerCase();
+      if (!DOMAINS[domain]) return json({ error: 'unknown domain' }, 400);
       if (!NAME_RE.test(name)) return json({ error: 'invalid name (a-z, 0-9, . _ -, max 30)' }, 400);
       if (RESERVED.has(name)) return json({ error: 'name is reserved' }, 400);
       if (claim.action !== 'register') return json({ error: 'wrong action' }, 400);
       if (!validUri(claim.uri)) return json({ error: 'uri must be a bitcoin: URI' }, 400);
 
-      const existing = state.names[name];
+      const key = `${name}@${domain}`;
+      const existing = state.names[key];
       if (existing && existing.pubkey !== auth.pubkey) return json({ error: 'name is taken' }, 409);
+      if (!existing && await takenByCoinosUser(domain, name)) return json({ error: 'name is taken' }, 409);
       if (/[?&]lno=/.test(claim.uri)) return json({ error: 'lno is added by the registrar' }, 400);
 
       // Every name also gets a static Lightning offer on our node; payments
       // to it are forwarded to the ark destination in the claim.
       let offer = existing?.offerId ? { offerId: existing.offerId, bolt12: existing.bolt12 } : null;
-      if (!offer) { try { offer = await makeOffer(name); } catch (e) { log('offer creation failed: ' + e.message); } }
+      if (!offer) { try { offer = await makeOffer(key); } catch (e) { log('offer creation failed: ' + e.message); } }
       const published = offer ? `${claim.uri}${claim.uri.includes('?') ? '&' : '?'}lno=${offer.bolt12}` : claim.uri;
 
-      const recordId = await cfWrite(name, published, existing?.recordId);
-      state.names[name] = {
-        pubkey: auth.pubkey, uri: published, recordId, updated: Date.now(),
+      const recordId = await cfWrite(name, domain, published, existing?.recordId);
+      state.names[key] = {
+        pubkey: auth.pubkey, uri: published, recordId, updated: Date.now(), domain,
         offerId: offer?.offerId, bolt12: offer?.bolt12,
       };
       persist();
-      log(`${existing ? 'updated' : 'registered'} ${name} for ${auth.pubkey.slice(0, 12)}`);
-      return json({ ok: true, name, address: `${name}@${DOMAIN}`, record: recordName(name) });
+      log(`${existing ? 'updated' : 'registered'} ${key} for ${auth.pubkey.slice(0, 12)}`);
+      return json({ ok: true, name, address: key, record: recordName(name, domain) });
     }
 
     if (url.pathname === '/register' && req.method === 'DELETE') {
@@ -282,15 +303,17 @@ Bun.serve({
       let claim;
       try { claim = JSON.parse(auth.content); } catch { return json({ error: 'bad claim content' }, 400); }
       const name = String(claim.name || '').toLowerCase();
+      const domain = String(claim.domain || 'halwallet.app').toLowerCase();
       if (claim.action !== 'delete') return json({ error: 'wrong action' }, 400);
-      const existing = state.names[name];
+      const key = `${name}@${domain}`;
+      const existing = state.names[key];
       if (!existing) return json({ error: 'unknown name' }, 404);
       if (existing.pubkey !== auth.pubkey) return json({ error: 'not your name' }, 403);
-      await cfDelete(existing.recordId).catch(() => {});
+      await cfDelete(domain, existing.recordId).catch(() => {});
       if (existing.offerId && ln) await ln.call('disableoffer', { offer_id: existing.offerId }).catch(() => {});
-      delete state.names[name];
+      delete state.names[key];
       persist();
-      log(`released ${name}`);
+      log(`released ${key}`);
       return json({ ok: true });
     }
 

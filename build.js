@@ -22,8 +22,8 @@ const STATIC = ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'icon.s
 
 const MANIFEST = {
   id: '/',
-  name: 'Hal',
-  short_name: 'Hal',
+  name: 'Coinos',
+  short_name: 'Coinos',
   description: 'Self-custody Bitcoin wallet that runs entirely in your browser.',
   start_url: './',
   scope: './',
@@ -106,7 +106,7 @@ const PWA_HEAD = `<link rel="manifest" href="manifest.webmanifest">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Hal">
+<meta name="apple-mobile-web-app-title" content="Coinos">
 <link rel="apple-touch-icon" href="icon-192.png">
 `;
 
@@ -147,7 +147,7 @@ const SW_WAKE_ONLY = `self.addEventListener('push', (e) => {
       return;
     }
     await self.registration.showNotification('Payment request', {
-      body: 'An app is asking your wallet to pay. Open Hal to approve.',
+      body: 'An app is asking your wallet to pay. Open Coinos to approve.',
       icon: 'icon-192.png', badge: 'icon-192.png',
       tag: 'nwc-' + (data.servicePubkey || 'req'), renotify: false,
       data: { url: './' },
@@ -229,7 +229,7 @@ export async function buildHtml({ minify = true, pwa = minify, features = proces
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Hal</title>
+<title>Coinos</title>
 <link rel="icon" href="${FAVICON}">
 <script>try{var t=localStorage.getItem('btc-wallet-theme');if(t!=='dark'&&t!=='light')t=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';document.documentElement.dataset.theme=t;}catch(e){}</script>
 ${pwa ? PWA_HEAD : ''}<style>${css}</style>

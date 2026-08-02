@@ -112,7 +112,7 @@ async function respondOffer(ev, rec, walletKey, { notifier, fetchFn, saveFn, log
     await saveFn(walletKey, rec);
     await publish({ bolt11: a.invoice });
     log(`minted ${sat} sat offer invoice while closed`);
-    return { notify: { title: 'Incoming payment', body: 'Someone is paying you — open Hal to receive it.' } };
+    return { notify: { title: 'Incoming payment', body: 'Someone is paying you — open Coinos to receive it.' } };
   } catch (e) {
     log('offer mint failed: ' + e.message);
     await publish({ error: 'Temporary Failure', code: 2 }).catch(() => {});
@@ -181,7 +181,7 @@ export async function respondFromBg(data, {
     await publish({
       result_type: 'get_info',
       result: {
-        alias: 'Hal', color: '#f7931a',
+        alias: 'Coinos', color: '#f7931a',
         network: rec.ark.network === 'mainnet' ? 'mainnet' : rec.ark.network,
         block_height: 0, block_hash: '',
         methods: ['get_info', 'get_balance', 'pay_invoice', 'list_transactions'],

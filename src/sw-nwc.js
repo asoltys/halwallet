@@ -42,7 +42,7 @@ self.addEventListener('push', (e) => {
     }
     if (handled) return;
     await self.registration.showNotification('Payment request', {
-      body: 'An app is asking your wallet to pay. Open Hal to approve.',
+      body: 'An app is asking your wallet to pay. Open Coinos to approve.',
       icon: 'icon-192.png', badge: 'icon-192.png',
       tag: 'nwc-' + (data.servicePubkey || 'req'), renotify: false,
       data: { url: './' },

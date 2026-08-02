@@ -326,7 +326,7 @@ export function nwcFeature(ctx) {
     if (method === 'get_info') {
       return {
         result: {
-          alias: 'Hal', color: '#f7931a', network: getNetwork() === 'mainnet' ? 'mainnet' : getNetwork(),
+          alias: 'Coinos', color: '#f7931a', network: getNetwork() === 'mainnet' ? 'mainnet' : getNetwork(),
           block_height: 0, block_hash: '', methods: METHODS,
         },
       };

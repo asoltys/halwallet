@@ -16,8 +16,8 @@ import { isArkAddress } from './ark.js';
 import { getNetwork } from '../api.js';
 import { t } from '../i18n.js';
 
-const REGISTRAR = 'https://names.halwallet.app';
-const DOMAIN = 'halwallet.app';
+const REGISTRAR = 'https://names.coinos.io';
+const DOMAIN = 'coinos.io';
 const AUTH_KIND = 21353;
 
 export function namesFeature(ctx) {
@@ -39,7 +39,7 @@ export function namesFeature(ctx) {
     if (!uri) throw new Error(t('namesNeedArk'));
     const auth = wallet.nostrSign({
       kind: AUTH_KIND, created_at: Math.floor(Date.now() / 1000), tags: [],
-      content: JSON.stringify({ action: 'register', name, uri }),
+      content: JSON.stringify({ action: 'register', name, uri, domain: DOMAIN }),
     });
     if (!auth) throw new Error('wallet cannot sign');
     const r = await fetch(`${REGISTRAR}/register`, {
@@ -48,7 +48,7 @@ export function namesFeature(ctx) {
     });
     const j = await r.json();
     if (!r.ok || j.error) throw new Error(j.error || `registrar refused (${r.status})`);
-    save({ name, uri, updated: Date.now() });
+    save({ name, domain: DOMAIN, uri, updated: Date.now() });
     return j;
   }
 
@@ -57,7 +57,7 @@ export function namesFeature(ctx) {
     if (!st.name) return;
     const auth = wallet.nostrSign({
       kind: AUTH_KIND, created_at: Math.floor(Date.now() / 1000), tags: [],
-      content: JSON.stringify({ action: 'delete', name: st.name }),
+      content: JSON.stringify({ action: 'delete', name: st.name, domain: st.domain || DOMAIN }),
     });
     await fetch(`${REGISTRAR}/register`, {
       method: 'DELETE', headers: { 'content-type': 'application/json' },
@@ -126,12 +126,12 @@ export function namesFeature(ctx) {
     if (!available()) return null;
     const st = load();
     if (st.name) {
-      const addr = `${st.name}@${DOMAIN}`;
+      const addr = `${st.name}@${st.domain || DOMAIN}`;
       return h('div', { class: 'card col' },
         h('h3', {}, t('namesTitle')),
         h('div', { class: 'addr-box break', style: 'font-size:14px' }, addr),
         h('div', { class: 'row gap6' },
-          copyBtn(`${st.name}@${DOMAIN}`, t('namesCopy')),
+          copyBtn(`${st.name}@${st.domain || DOMAIN}`, t('namesCopy')),
           h('button', { class: 'btn-ghost btn-sm', onClick: async () => {
             await release(); toast(t('namesReleased')); render();
           } }, t('namesRelease'))),
@@ -147,7 +147,7 @@ export function namesFeature(ctx) {
           h('summary', {}, t('namesOwnDomain')),
           h('p', { style: 'margin:4px 0' }, t('namesOwnDomainHow')),
           h('div', { class: 'addr-box break', style: 'font-size:11px' },
-            `${st.name}.user._bitcoin-payment.yourdomain.com. CNAME ${st.name}.user._bitcoin-payment.${DOMAIN}.`)));
+            `${st.name}.user._bitcoin-payment.yourdomain.com. CNAME ${st.name}.user._bitcoin-payment.${st.domain || DOMAIN}.`)));
     }
     return h('div', { class: 'card col' },
       h('h3', {}, t('namesTitle')),
