@@ -463,6 +463,24 @@ export function nwcFeature(ctx) {
     });
   }
 
+  // Watchdog: relay sockets can die in ways the pool's reconnect never heals
+  // (an errored socket sets skipReconnection and gives up), and a wallet
+  // service with a dead subscription is indistinguishable from one that's
+  // closed — clients just spin. Re-subscribing is cheap and duplicate
+  // deliveries are absorbed by the replay guard, so re-listen on a timer and
+  // whenever the network or the tab comes back.
+  let watchdog = null;
+  function startWatchdog() {
+    if (watchdog) return;
+    watchdog = setInterval(() => { if (conns().length) listen(); }, 90 * 1000);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => listen());
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && conns().length) listen();
+      });
+    }
+  }
+
   // ---- UI ---------------------------------------------------------------
 
   function nwcCard() {
@@ -538,8 +556,8 @@ export function nwcFeature(ctx) {
 
   return {
     id: 'nwc',
-    init() { listen(); },
-    stop() { stop(); },
+    init() { listen(); startWatchdog(); },
+    stop() { stop(); if (watchdog) { clearInterval(watchdog); watchdog = null; } },
     settingsCards() { return [nwcCard()]; },
   };
 }
