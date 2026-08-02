@@ -33,7 +33,7 @@ export const isRTL = (l) => RTL.has(l || lang);
 
 const STR = {
   en: {
-    appTitle: 'Coinos',
+    appTitle: 'coinos',
     home: 'Home',
     logout: 'Logout',
     accounts: 'Accounts',
