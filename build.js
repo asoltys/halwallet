@@ -11,11 +11,7 @@
 
 import { mkdir, readdir } from 'node:fs/promises';
 
-const FAVICON =
-  'data:image/svg+xml,' +
-  encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#f7931a"/><text x="16" y="23" font-size="20" font-family="Arial" font-weight="bold" text-anchor="middle" fill="#fff">₿</text></svg>`
-  );
+const FAVICON = 'data:image/svg+xml,%3Csvg%20width%3D%2272%22%20height%3D%2272%22%20viewBox%3D%220%200%2072%2072%22%20fill%3D%22none%22%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%3E%20%3Cpath%20d%3D%22M69.8824%2036C69.8824%2054.7127%2054.7127%2069.8824%2036%2069.8824C17.2873%2069.8824%202.11765%2054.7127%202.11765%2036C2.11765%2017.2873%2017.2873%202.11765%2036%202.11765C54.7127%202.11765%2069.8824%2017.2873%2069.8824%2036Z%22%20fill%3D%22white%22/%3E%20%3Cpath%20fill-rule%3D%22evenodd%22%20clip-rule%3D%22evenodd%22%20d%3D%22M36%204.23529C18.4568%204.23529%204.23529%2018.4568%204.23529%2036C4.23529%2053.5432%2018.4568%2067.7647%2036%2067.7647C53.5432%2067.7647%2067.7647%2053.5432%2067.7647%2036C67.7647%2018.4568%2053.5432%204.23529%2036%204.23529ZM0%2036C0%2016.1177%2016.1177%200%2036%200C55.8823%200%2072%2016.1177%2072%2036C72%2055.8823%2055.8823%2072%2036%2072C16.1177%2072%200%2055.8823%200%2036Z%22%20fill%3D%22black%22/%3E%20%3Cpath%20fill-rule%3D%22evenodd%22%20clip-rule%3D%22evenodd%22%20d%3D%22M36%2058.5882C48.4751%2058.5882%2058.5882%2048.4751%2058.5882%2036C58.5882%2023.5248%2048.4751%2013.4117%2036%2013.4117C23.5249%2013.4117%2013.4118%2023.5248%2013.4118%2036C13.4118%2048.4751%2023.5249%2058.5882%2036%2058.5882ZM36%2054C45.9411%2054%2054%2045.9411%2054%2036C54%2026.0589%2045.9411%2018%2036%2018C26.0589%2018%2018%2026.0589%2018%2036C18%2045.9411%2026.0589%2054%2036%2054Z%22%20fill%3D%22black%22/%3E%20%3Cpath%20fill-rule%3D%22evenodd%22%20clip-rule%3D%22evenodd%22%20d%3D%22M36.0001%2022.8988C36.0001%2022.8988%2036%2022.8988%2036%2022.8988C28.7644%2022.8988%2022.8988%2028.7644%2022.8988%2036C22.8988%2043.2356%2028.7644%2049.1012%2036%2049.1012C36%2049.1012%2036.0001%2049.1012%2036.0001%2049.1012V22.8988Z%22%20fill%3D%22black%22/%3E%20%3C/svg%3E';
 
 // Static assets copied verbatim into dist/ (icons referenced by the manifest).
 const STATIC = ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'icon.svg'];
@@ -29,7 +25,7 @@ const MANIFEST = {
   scope: './',
   display: 'standalone',
   background_color: '#eef0f3',
-  theme_color: '#f7931a',
+  theme_color: '#15171a',
   icons: [
     { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
     { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
@@ -102,7 +98,7 @@ self.addEventListener('fetch', (e) => {
 `;
 
 const PWA_HEAD = `<link rel="manifest" href="manifest.webmanifest">
-<meta name="theme-color" content="#f7931a">
+<meta name="theme-color" content="#15171a">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">

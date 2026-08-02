@@ -8,9 +8,10 @@
   --faint: #9aa1ac;
   --line: #e6e8ec;
   --line-strong: #d4d8de;
-  --accent: #f7931a; /* bitcoin orange */
-  --accent-ink: #b5670a;
-  --accent-soft: #fff3e2;
+  --accent: #15171a; /* coinos black */
+  --accent-fg: #ffffff; /* text on accent */
+  --accent-ink: #000000;
+  --accent-soft: #ececef;
   --green: #14935a;
   --green-soft: #e7f6ee;
   --green-line: #c4e7d4;
@@ -38,9 +39,10 @@
   --faint: #6f7782;
   --line: #2a2f37;
   --line-strong: #3a414b;
-  --accent: #f7931a;
-  --accent-ink: #f7a942;
-  --accent-soft: #2e2412;
+  --accent: #ffffff; /* coinos white on dark */
+  --accent-fg: #0f1216; /* text on accent */
+  --accent-ink: #e7e9ee;
+  --accent-soft: #262b33;
   --green: #2dbd80;
   --green-soft: #14271d;
   --green-line: #235340;
@@ -101,7 +103,7 @@ summary { cursor: pointer; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .logo {
   width: 34px; height: 34px; border-radius: 9px; flex: none;
-  background: var(--accent); color: #fff; font-weight: 800; font-size: 20px;
+  background: var(--accent); color: var(--accent-fg); font-weight: 800; font-size: 20px;
   display: grid; place-items: center;
 }
 .brand h1 { font-size: 19px; }
@@ -153,7 +155,7 @@ button, .btn {
 button:hover { background: var(--surface2); }
 button:active { transform: translateY(1px); }
 button:disabled { opacity: .5; cursor: not-allowed; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .btn-primary:hover { background: #ec8a12; }
 .btn-ghost { background: transparent; }
 .btn-sm { padding: 7px 11px; font-size: 13px; border-radius: 9px; }

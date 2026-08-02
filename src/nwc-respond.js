@@ -181,7 +181,7 @@ export async function respondFromBg(data, {
     await publish({
       result_type: 'get_info',
       result: {
-        alias: 'Coinos', color: '#f7931a',
+        alias: 'Coinos', color: '#15171a',
         network: rec.ark.network === 'mainnet' ? 'mainnet' : rec.ark.network,
         block_height: 0, block_hash: '',
         methods: ['get_info', 'get_balance', 'pay_invoice', 'list_transactions'],
