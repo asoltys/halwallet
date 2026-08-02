@@ -60,40 +60,11 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-// NWC push: the notifier wakes us when a wallet-connect request arrives.
-// This handler deliberately does NOT spend. It surfaces the request so the
-// user can open Hal, which then answers it from the relay. Auto-answering
-// from the worker needs the pouch spend path and is a separate step.
-self.addEventListener('push', (e) => {
-  let data = {};
-  try { data = e.data ? e.data.json() : {}; } catch (_) {}
-  if (data.type !== 'nwc') return;
-  e.waitUntil((async () => {
-    // If a window is already open it can handle this itself — tell it, and
-    // stay quiet rather than nagging the user.
-    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    if (clients.length) {
-      for (const c of clients) c.postMessage({ type: 'nwc-wake', servicePubkey: data.servicePubkey });
-      return;
-    }
-    await self.registration.showNotification('Payment request', {
-      body: 'An app is asking your wallet to pay. Open Hal to approve.',
-      icon: 'icon-192.png', badge: 'icon-192.png',
-      tag: 'nwc-' + (data.servicePubkey || 'req'), renotify: false,
-      data: { url: './' },
-    });
-  })());
-});
-
-self.addEventListener('notificationclick', (e) => {
-  e.notification.close();
-  e.waitUntil((async () => {
-    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const open = all.find((c) => 'focus' in c);
-    if (open) return open.focus();
-    if (self.clients.openWindow) return self.clients.openWindow('./');
-  })());
-});
+// NWC push handling lives in src/sw-nwc.js (bundled and appended below when
+// the nwc+ark features ship): it tries to ANSWER the request from the pouch
+// and falls back to a notification. {{NWC_WAKE_FALLBACK}} carries a
+// notify-only handler for builds without those features.
+{{NWC_WAKE_FALLBACK}}
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
@@ -159,6 +130,50 @@ export async function buildJsQr({ minify = true } = {}) {
   if (!result.success) {
     for (const log of result.logs) console.error(log);
     throw new Error('jsqr bundle failed');
+  }
+  return result.outputs[0].text();
+}
+
+// The notify-only push handler for builds without the ark+nwc features (the
+// full builds get the bundled auto-answering handler from src/sw-nwc.js).
+const SW_WAKE_ONLY = `self.addEventListener('push', (e) => {
+  let data = {};
+  try { data = e.data ? e.data.json() : {}; } catch (_) {}
+  if (data.type !== 'nwc') return;
+  e.waitUntil((async () => {
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (clients.length) {
+      for (const c of clients) c.postMessage({ type: 'nwc-wake', servicePubkey: data.servicePubkey });
+      return;
+    }
+    await self.registration.showNotification('Payment request', {
+      body: 'An app is asking your wallet to pay. Open Hal to approve.',
+      icon: 'icon-192.png', badge: 'icon-192.png',
+      tag: 'nwc-' + (data.servicePubkey || 'req'), renotify: false,
+      data: { url: './' },
+    });
+  })());
+});
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const open = all.find((c) => 'focus' in c);
+    if (open) return open.focus();
+    if (self.clients.openWindow) return self.clients.openWindow('./');
+  })());
+});`;
+
+// The auto-answering NWC worker module, bundled for the SW global scope.
+export async function buildSwNwc({ minify = true } = {}) {
+  const result = await Bun.build({
+    entrypoints: ['./src/sw-nwc.js'],
+    target: 'browser',
+    minify,
+  });
+  if (!result.success) {
+    for (const log of result.logs) console.error(log);
+    throw new Error('sw-nwc bundle failed');
   }
   return result.outputs[0].text();
 }
@@ -263,7 +278,14 @@ if (import.meta.main) {
   // PWA sidecars.
   await Bun.write('dist/manifest.webmanifest', JSON.stringify(MANIFEST, null, 2));
   const version = Bun.hash(html).toString(36);
-  await Bun.write('dist/sw.js', SW.replace('{{VERSION}}', version));
+  // Full builds get the auto-answering NWC worker; feature-stripped builds
+  // keep the notify-only handler (the responder would just dead-weight them).
+  const feats = enabledFeatures();
+  const nwcSw = feats.includes('nwc') && feats.includes('ark');
+  const swBody = SW
+    .replace('{{VERSION}}', version)
+    .replace('{{NWC_WAKE_FALLBACK}}', nwcSw ? '' : SW_WAKE_ONLY);
+  await Bun.write('dist/sw.js', nwcSw ? swBody + '\n' + await buildSwNwc() : swBody);
   for (const f of STATIC) await Bun.write('dist/' + f, Bun.file('static/' + f));
 
   const kb = (Buffer.byteLength(html) / 1024).toFixed(0);

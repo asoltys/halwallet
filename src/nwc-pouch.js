@@ -73,6 +73,23 @@ const get = (s, k) => new Promise((res, rej) => { const r = s.get(k); r.onsucces
 export async function loadPouch(walletKey) {
   try { return (await tx('readonly', (s) => get(s, walletKey))) || null; } catch { return null; }
 }
+// The service worker doesn't know wallet cache keys — it finds the right
+// pouch by the connection's service pubkey across all of them.
+export async function allPouches() {
+  try {
+    return await tx('readonly', (s) => new Promise((res, rej) => {
+      const out = [];
+      const cur = s.openCursor();
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (!c) return res(out);
+        out.push({ walletKey: c.key, pouch: c.value });
+        c.continue();
+      };
+      cur.onerror = () => rej(cur.error);
+    }));
+  } catch { return []; }
+}
 export async function savePouch(walletKey, pouch) {
   return tx('readwrite', (s) => { s.put(pouch, walletKey); });
 }
@@ -80,25 +97,32 @@ export async function clearPouch(walletKey) {
   return tx('readwrite', (s) => { s.delete(walletKey); });
 }
 
+// The worker can't derive keys (no seed), so the pouch carries a fixed window
+// of pre-derived chain-6 keys: funding uses low indices, the worker's change
+// and HTLC-refund outputs allocate upward from POUCH_CHANGE_BASE.
+export const POUCH_KEY_WINDOW = 50;
+export const POUCH_CHANGE_BASE = 20;
+
 // Everything the service worker needs to spend, and nothing more: the ASP
-// endpoints, the pouch vtxos with their bytes, and the private keys for
-// exactly those vtxos.
-export function buildPouch({ arkUrl, esploraUrl, network, serverPubkey, vtxos, account, connections }) {
+// endpoints, the bridge, the pouch vtxos with their bytes, and the private
+// keys for exactly the pouch's key window.
+export function buildPouch({ arkUrl, esploraUrl, network, serverPubkey, bridge, vtxos, account, connections }) {
   const keys = {};
-  for (const v of vtxos) {
-    const k = pouchKey(account, v.keyIndex);
-    keys[String(v.keyIndex)] = hex.encode(k.privkey);
+  for (let i = 0; i < POUCH_KEY_WINDOW; i++) {
+    keys[String(i)] = hex.encode(pouchKey(account, i).privkey);
   }
   return {
-    v: 1,
+    v: 2,
     updated: Date.now(),
     ark: { arkUrl, esploraUrl, network, serverPubkey },
+    bridge: bridge || null, // { url, token } — the worker pays through this
     // [{ id, bytes, keyIndex, amountSat, expiryHeight }]
     vtxos: vtxos.map((v) => ({
       id: v.id, bytes: v.bytes, keyIndex: v.keyIndex,
       amountSat: v.amountSat, expiryHeight: v.expiryHeight,
     })),
     keys,
+    nextKeyIndex: POUCH_CHANGE_BASE,
     // service keys for the connections the SW may answer for, so it can
     // decrypt requests and sign replies without the wallet
     connections: (connections || []).map((c) => ({

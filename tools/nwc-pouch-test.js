@@ -33,7 +33,10 @@ const pouch = buildPouch({
 });
 check('pouch carries both vtxos', pouch.vtxos.length === 2);
 check('pouch balance sums', pouchBalance(pouch) === 7000, String(pouchBalance(pouch)));
-check('one key per vtxo index', Object.keys(pouch.keys).sort().join() === '0,1');
+// the worker can't derive, so the pouch ships a fixed key window covering
+// funding indices and the worker's change/refund allocations
+check('full key window shipped', Object.keys(pouch.keys).length === 50 && pouch.keys['0'] && pouch.keys['49']);
+check('change base inside the window', pouch.nextKeyIndex === 20);
 const blob = JSON.stringify(pouch);
 check('NO seed/mnemonic in the pouch', !/mnemonic|seed|xprv/i.test(blob));
 // the exported keys must actually correspond to the pouch pubkeys

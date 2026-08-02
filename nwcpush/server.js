@@ -20,7 +20,20 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { SimplePool } from 'nostr-tools/pool';
+import { verifyEvent } from 'nostr-tools/pure';
 import webpush from 'web-push';
+
+// crude per-IP publish limiter: 20/min is far above a wallet's real reply rate
+const pubRate = new Map();
+function rateOk(ip) {
+  const now = Date.now();
+  const arr = (pubRate.get(ip) || []).filter((t) => t > now - 60_000);
+  if (arr.length >= 20) return false;
+  arr.push(now);
+  pubRate.set(ip, arr);
+  if (pubRate.size > 500) for (const [k, v] of pubRate) { if (!v.some((t) => t > now - 60_000)) pubRate.delete(k); }
+  return true;
+}
 
 const CFG = JSON.parse(readFileSync(process.env.NWCPUSH_CONFIG
   || join(import.meta.dir, 'config.json'), 'utf8'));
@@ -86,16 +99,45 @@ function resubscribe() {
     {
       onevent: (ev) => {
         const target = ev.tags?.find((t) => t[0] === 'p')?.[1];
-        if (target) wake(target, ev.id).catch(() => {});
+        if (target) { noteRequest(ev.id); wake(target, ev.id, ev).catch(() => {}); }
+      },
+    },
+  );
+  // Track replies for the requests we forwarded, so an auto-answering worker
+  // can ask "was this already answered by an open device elsewhere?" before
+  // it pays. Only e-tags of requests we have seen are recorded.
+  try { answeredSub?.close(); } catch {}
+  answeredSub = pool.subscribeMany(
+    RELAYS,
+    { kinds: [RES_KIND], since: Math.floor(Date.now() / 1000) },
+    {
+      onevent: (ev) => {
+        for (const t of ev.tags || []) {
+          if (t[0] === 'e' && recentReqs.has(t[1])) answeredIds.set(t[1], Date.now());
+        }
       },
     },
   );
   log(`subscribed for ${pks.length} service pubkey(s) on ${RELAYS.length} relays`);
 }
 
+// requests we pushed recently, and which of them got a reply
+const RES_KIND = 23195;
+let answeredSub = null;
+const recentReqs = new Map();  // request event id -> ts
+const answeredIds = new Map(); // request event id -> ts a 23195 e-tagged it
+function noteRequest(id) {
+  recentReqs.set(id, Date.now());
+  if (recentReqs.size > 2000) {
+    const cut = Date.now() - 300_000;
+    for (const [k, t] of recentReqs) if (t < cut) recentReqs.delete(k);
+    for (const [k, t] of answeredIds) if (t < cut) answeredIds.delete(k);
+  }
+}
+
 // De-dupe: the same event arrives from several relays.
 const recentlyWoken = new Map();
-async function wake(servicePk, eventId) {
+async function wake(servicePk, eventId, ev) {
   const key = servicePk + ':' + eventId;
   if (recentlyWoken.has(key)) return;
   recentlyWoken.set(key, Date.now());
@@ -106,9 +148,16 @@ async function wake(servicePk, eventId) {
 
   const targets = regs[servicePk] || [];
   if (!targets.length) return;
-  // The payload carries no request content — only enough for the service
-  // worker to know which connection to go look at.
-  const payload = JSON.stringify({ type: 'nwc', servicePubkey: servicePk });
+  // The payload carries the (still encrypted, still client-signed) request
+  // event so an auto-answering service worker can act on it without holding
+  // a relay socket. Web Push payloads cap around 4KB — an oversized event is
+  // omitted and the worker falls back to waking the user.
+  const clean = ev && {
+    id: ev.id, pubkey: ev.pubkey, created_at: ev.created_at,
+    kind: ev.kind, tags: ev.tags, content: ev.content, sig: ev.sig,
+  };
+  let payload = JSON.stringify({ type: 'nwc', servicePubkey: servicePk, event: clean });
+  if (payload.length > 3800) payload = JSON.stringify({ type: 'nwc', servicePubkey: servicePk });
   let ok = 0;
   for (const r of targets) {
     try {
@@ -158,6 +207,32 @@ const server = Bun.serve({
 
     // The browser needs this to create a PushSubscription.
     if (url.pathname === '/vapid') return json({ publicKey: CFG.vapid.publicKey });
+
+    // Publish-back for the auto-answering service worker: it cannot hold a
+    // relay socket, so it hands us its (encrypted, service-key-signed) reply.
+    // Strictly kind 23195, size-capped, signature-verified, rate-limited —
+    // this is a reply pipe, not an open relay proxy.
+    if (url.pathname === '/publish' && req.method === 'POST') {
+      const ip = req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || 'local';
+      if (!rateOk(ip)) return json({ error: 'rate limited' }, 429);
+      const body = await req.json().catch(() => null);
+      const ev = body?.event;
+      if (!ev || ev.kind !== RES_KIND) return json({ error: 'kind 23195 events only' }, 400);
+      if (JSON.stringify(ev).length > 4096) return json({ error: 'event too large' }, 400);
+      if (!verifyEvent(ev)) return json({ error: 'bad signature' }, 400);
+      const eTag = (ev.tags || []).find((t) => t[0] === 'e')?.[1];
+      try { await Promise.allSettled(pool.publish(RELAYS, ev)); } catch {}
+      if (eTag) answeredIds.set(eTag, Date.now());
+      log(`published a reply for request ${(eTag || '?').slice(0, 12)}`);
+      return json({ ok: true });
+    }
+
+    // Was a request we pushed already answered by someone? Lets a worker
+    // avoid double-paying (or shouting an error over) another device's reply.
+    if (url.pathname === '/answered') {
+      const id = url.searchParams.get('event') || '';
+      return json({ answered: answeredIds.has(id) });
+    }
 
     // A device registers its push endpoint plus the wallet-service pubkeys it
     // wants woken for. Re-post periodically to stay alive.

@@ -7,6 +7,7 @@ import { HDKey } from '@scure/bip32';
 import { hex, base32nopad, bech32 } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import { ArkManager } from '../ark/manager.js';
+import { pouchKey, loadPouch, savePouch, POUCH_CHANGE_BASE } from '../nwc-pouch.js';
 import { boardFee } from '../ark/board.js';
 import { maybeBolt11, lnSendFee } from '../ark/lightning.js';
 import { decodeVtxo, getVtxoStatus, VTXO_STATE_SPENT, concatBytes } from '../ark/proto.js';
@@ -528,6 +529,28 @@ export function arkFeature(ctx) {
     });
     mgr._save();
     return res;
+  }
+
+  // An ephemeral manager over the POUCH's chain-6 keys — used to empty the
+  // pouch and to refund worker-initiated swaps (their refund pubkeys are
+  // pouch keys, which the main manager cannot sign for). State persists back
+  // into the pouch record so the service worker sees the same coin set.
+  async function pouchManager(pouch) {
+    const cfg = getArkConfig();
+    const account6 = { deriveChild: () => ({ deriveChild: (i) => ({ privateKey: hex.decode(pouch.keys[String(i)] || pouch.keys['0']) }) }) };
+    const storage = {
+      load: () => pouch.mgr || {
+        v: 1, serverPubkey: pouch.ark.serverPubkey || null, mailboxCheckpoint: 0,
+        nextKeyIndex: pouch.nextKeyIndex || POUCH_CHANGE_BASE,
+        vtxos: (pouch.vtxos || []).map((v) => ({ ...v, state: v.state || 'spendable' })),
+        actions: [], movements: [],
+      },
+      save: (s) => { pouch.mgr = s; savePouch(wallet._cacheKey(), pouch).catch(() => {}); },
+    };
+    return new ArkManager({
+      account: account6, storage,
+      arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(),
+    }).init();
   }
 
   // Ask the bridge to hand an unpaid HTLC back, and take ownership of it.
@@ -1676,11 +1699,96 @@ export function arkFeature(ctx) {
       return { invoice: a.invoice, paymentHash: a.paymentHash, amountSat };
     },
     arkMovements() { const s = arkStateNow(); return s ? (s.movements || []) : []; },
-    // endpoints + server identity for the NWC pouch record
+    // endpoints + server identity + bridge for the NWC pouch record
     arkPouchContext() {
       const cfg = getArkConfig();
       if (!cfg || !ark || !ark.info) return null;
-      return { arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(), serverPubkey: ark.info.serverPubkey };
+      return {
+        arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(),
+        serverPubkey: ark.info.serverPubkey, bridge: getBridgeConfig(),
+      };
+    },
+    // Move sats INTO the pouch: an arkoor self-send to a chain-6 key whose
+    // signed recipient bytes we keep directly — no address, no mailbox.
+    async arkPouchFund(amountSat) {
+      const pouch = await loadPouch(wallet._cacheKey());
+      if (!pouch) throw new Error('enable background answering first');
+      const mgr = await connectArk();
+      const idx = (pouch.fundSeq || 0) % POUCH_CHANGE_BASE;
+      const dest = pouchKey(wallet.account(), idx);
+      const out = await mgr.sendToPubkey(hex.encode(dest.pubkey), amountSat);
+      pouch.fundSeq = (pouch.fundSeq || 0) + 1;
+      const add = out.vtxos.map((v) => ({ ...v, keyIndex: idx, state: 'spendable' }));
+      pouch.vtxos = [...(pouch.vtxos || []), ...add];
+      if (pouch.mgr) pouch.mgr.vtxos = [...(pouch.mgr.vtxos || []), ...add.map((v) => ({ ...v }))];
+      pouch.updated = Date.now();
+      await savePouch(wallet._cacheKey(), pouch);
+      return add.reduce((n, v) => n + v.amountSat, 0);
+    },
+    // Everything back to the main wallet (ordinary arkoor sends to our own
+    // ark address, so they arrive like any receive).
+    async arkPouchEmpty() {
+      const pouch = await loadPouch(wallet._cacheKey());
+      if (!pouch) return 0;
+      const pm = await pouchManager(pouch);
+      const mgr = await connectArk();
+      const dest = mgr.address();
+      let moved = 0;
+      for (let guard = 0; guard < 30; guard++) {
+        const v = (pm.state.vtxos || []).find((x) => x.state === 'spendable');
+        if (!v) break;
+        await pm.send(dest, v.amountSat); // full amount: no change stays behind
+        moved += v.amountSat;
+      }
+      pouch.vtxos = (pm.state.vtxos || []).filter((x) => x.state === 'spendable');
+      pouch.mgr = pm.state;
+      pouch.updated = Date.now();
+      await savePouch(wallet._cacheKey(), pouch);
+      return moved;
+    },
+    async arkPouchBalance() {
+      const pouch = await loadPouch(wallet._cacheKey());
+      if (!pouch) return 0;
+      const vs = (pouch.mgr && pouch.mgr.vtxos) || pouch.vtxos || [];
+      return vs.filter((v) => (v.state || 'spendable') === 'spendable').reduce((n, v) => n + (v.amountSat || 0), 0);
+    },
+    // Recover worker-initiated swaps: finished ones become history, dead ones
+    // are refunded with the POUCH's own keys (the refund pubkey is chain 6 —
+    // the main manager cannot sign for it).
+    async arkPouchRecover() {
+      const pouch = await loadPouch(wallet._cacheKey());
+      if (!pouch || !(pouch.swaps || []).some((r) => ['submitted', 'refundable'].includes(r.step))) return;
+      const pm = await pouchManager(pouch);
+      for (const rec of pouch.swaps) {
+        if (!['submitted', 'refundable'].includes(rec.step)) continue;
+        try {
+          const st = await fetch(`${rec.bridgeUrl}/swap?paymentHash=${rec.paymentHash}`).then((r) => r.json());
+          if (st.step === 'done' && st.preimage) { rec.step = 'done'; rec.preimage = st.preimage; continue; }
+        } catch {}
+        try {
+          const r = await fetch(`${rec.bridgeUrl}/refund`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ paymentHash: rec.paymentHash }),
+          });
+          const out = await r.json();
+          if (!r.ok || out.error) throw new Error(out.error || 'refund failed');
+          await pm.acceptHtlcRefund({ vtxoBytesList: out.refundVtxos, refundIndex: rec.refundIndex });
+          rec.step = 'refunded';
+        } catch {}
+      }
+      pouch.mgr = pm.state;
+      await savePouch(wallet._cacheKey(), pouch);
+    },
+    // Pouch payments become ordinary history lines once the app opens.
+    async arkPouchNoteSpends(spends) {
+      const mgr = await connectArk();
+      for (const s of spends) {
+        mgr._movement({
+          type: 'ln-send', amountSat: s.amountSat, status: 'complete',
+          detail: `via pouch · fee ${s.feeSat || 0} sat`, invoice: s.invoice || '', preimage: s.preimage || '',
+        });
+      }
+      mgr._save();
     },
     // An npub pasted into Send becomes an ark zap (needs the nostr seam from
     // the sync feature and a connected-able ark). A bolt11 is handled here

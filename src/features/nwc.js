@@ -30,7 +30,7 @@ import {
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { getNetwork } from '../api.js';
-import { buildPouch, savePouch, clearPouch, pouchKey } from '../nwc-pouch.js';
+import { buildPouch, loadPouch, savePouch, clearPouch, pouchKey } from '../nwc-pouch.js';
 import { maybeBolt11 } from '../ark/lightning.js';
 
 const REQ_KIND = 23194;
@@ -496,18 +496,53 @@ export function nwcFeature(ctx) {
     try { await clearPouch(wallet._cacheKey()); } catch {}
   }
 
-  // Mirror just enough for a future worker-side responder: the connections'
-  // service keys and the ASP endpoints. No pouch coins are moved here — the
-  // funding UI comes with the spend path.
+  // (Re)write the pouch record the worker answers from: connections' service
+  // keys, ASP + bridge endpoints, the chain-6 key window — while PRESERVING
+  // anything the pouch already holds (its coins, the worker's spend log and
+  // manager state), which a rebuild must never wipe.
   async function writePouch() {
     if (!load().background) return;
     const cfg = hook('arkPouchContext');
     if (!cfg) return;
     try {
-      await savePouch(wallet._cacheKey(), buildPouch({
-        ...cfg, vtxos: [], account: wallet.account(), connections: conns(),
-      }));
+      const prev = await loadPouch(wallet._cacheKey());
+      const fresh = buildPouch({
+        ...cfg, vtxos: prev?.vtxos || [], account: wallet.account(), connections: conns(),
+      });
+      if (prev) {
+        fresh.mgr = prev.mgr;
+        fresh.spends = prev.spends;
+        fresh.swaps = prev.swaps;
+        fresh.fundSeq = prev.fundSeq;
+        if (prev.mgr?.nextKeyIndex) fresh.nextKeyIndex = prev.mgr.nextKeyIndex;
+      }
+      await savePouch(wallet._cacheKey(), fresh);
+      pouchSat = await hook('arkPouchBalance');
     } catch (e) { console.warn('nwc: could not write pouch', e.message); }
+  }
+
+  // When the app opens after the worker has been answering: absorb its spends
+  // into the budgets and history, and rescue any swap it left hanging.
+  let pouchSat = null; // cached for the (synchronous) settings card
+  async function reconcilePouch() {
+    try {
+      if (!load().background) return;
+      await hook('arkPouchRecover');
+      const pouch = await loadPouch(wallet._cacheKey());
+      if (!pouch) return;
+      const fresh = (pouch.spends || []).filter((s) => !s.absorbed);
+      if (fresh.length) {
+        for (const s of fresh) {
+          const c = conns().find((x) => x.id === s.connId);
+          if (c) recordSpend(c, (s.amountSat || 0) + (s.feeSat || 0));
+          s.absorbed = true;
+        }
+        await hook('arkPouchNoteSpends', fresh);
+        await savePouch(wallet._cacheKey(), pouch);
+      }
+      pouchSat = await hook('arkPouchBalance');
+      render();
+    } catch (e) { console.warn('nwc: pouch reconcile failed', e.message); }
   }
 
   // An open window handles the request itself; the worker just nudges it.
@@ -580,10 +615,41 @@ export function nwcFeature(ctx) {
             h('button', { class: 'btn-sm', onClick: async () => {
               try {
                 if (load().background) { await disableBackground(); toast(t('nwcBackgroundOff')); }
-                else { await enableBackground(); toast(t('nwcBackgroundOn')); }
+                else { await enableBackground(); await reconcilePouch(); toast(t('nwcBackgroundOn')); }
               } catch (e) { toast(e.message); }
               render();
             } }, load().background ? t('nwcOn') : t('nwcOff')))
+        : null,
+      list.length && load().background
+        ? h('div', { class: 'col', style: 'gap:6px' },
+            h('div', { class: 'row between' },
+              h('span', { class: 'small' }, t('nwcPouch')),
+              h('span', { class: 'small' }, pouchSat == null ? '…' : fmtAmount(pouchSat))),
+            h('p', { class: 'small faint', style: 'margin:0' }, t('nwcPouchDesc')),
+            h('div', { class: 'row gap6' },
+              h('input', { type: 'number', min: '1', placeholder: t('nwcPouchAmount'), value: ui.nwcPouchAmt || '',
+                style: 'flex:1', onInput: (e) => { ui.nwcPouchAmt = e.target.value; } }),
+              h('button', { class: 'btn-sm', onClick: async () => {
+                const sat = parseInt(ui.nwcPouchAmt, 10);
+                if (!sat) return;
+                try {
+                  const moved = await hook('arkPouchFund', sat);
+                  ui.nwcPouchAmt = '';
+                  pouchSat = await hook('arkPouchBalance');
+                  toast(t('nwcPouchFunded', { sats: fmtAmount(moved) }));
+                } catch (e) { toast(e.message); }
+                render();
+              } }, t('nwcPouchFund')),
+              pouchSat > 0
+                ? h('button', { class: 'btn-ghost btn-sm', onClick: async () => {
+                    try {
+                      const moved = await hook('arkPouchEmpty');
+                      pouchSat = await hook('arkPouchBalance');
+                      toast(t('nwcPouchEmptied', { sats: fmtAmount(moved) }));
+                    } catch (e) { toast(e.message); }
+                    render();
+                  } }, t('nwcPouchEmpty'))
+                : null))
         : null,
       st
         ? h('div', { class: 'col', style: 'gap:6px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:8px' },
@@ -611,7 +677,7 @@ export function nwcFeature(ctx) {
 
   return {
     id: 'nwc',
-    init() { listen(); startWatchdog(); refreshRegistration(); },
+    init() { listen(); startWatchdog(); refreshRegistration(); reconcilePouch(); },
     stop() { stop(); if (watchdog) { clearInterval(watchdog); watchdog = null; } },
     settingsCards() { return [nwcCard()]; },
   };
