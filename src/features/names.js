@@ -66,6 +66,9 @@ export function namesFeature(ctx) {
     if (!uri) throw new Error(t('namesNeedArk'));
     const j = await post('/register', 'POST', {
       name, uri, domain: DOMAIN,
+      // lets the address take Lightning payments from LNURL-only wallets:
+      // the registrar asks this key for an invoice before minting its own
+      ...(hook('nwcOfferPubkey') ? { offerPk: hook('nwcOfferPubkey') } : {}),
       // when the login identity claims its own npub name, it nominates the
       // wallet key to keep the record updated afterwards
       ...(manager ? { manager } : {}),

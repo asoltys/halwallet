@@ -17,7 +17,9 @@
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { verifyEvent } from 'nostr-tools/pure';
+import { verifyEvent, finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import * as nip44 from 'nostr-tools/nip44';
+import { SimplePool } from 'nostr-tools/pool';
 import { npubEncode } from 'nostr-tools/nip19';
 import { createHash } from 'node:crypto';
 import { HDKey } from '@scure/bip32';
@@ -33,6 +35,7 @@ const CFG = JSON.parse(readFileSync(process.env.NAMES_CONFIG
 //     that forwards settled offer payments to the name's ark address }
 
 const DOMAIN = CFG.domain || 'coinos.io'; // the default domain for claims
+const PUBLIC_BASE = CFG.publicBase || 'https://names.coinos.io';
 const DOMAINS = CFG.domains || { [DOMAIN]: { zoneId: CFG.zoneId } };
 const STATE = CFG.stateFile || join(import.meta.dir, 'data', 'names.json');
 const TTL = 300;                 // record TTL: BIP-353 wallets cache by this
@@ -104,6 +107,62 @@ async function cfDelete(domain, recordId) {
 // between LN settle and the ark send. The float must be topped up by the
 // operator; LN income accrues on the node as the offset.
 
+// ---------------------------------------------------------------------------
+// LNURL-pay: the same address, payable by wallets that have never heard of
+// DNS payment instructions (which is most of them).
+//
+// Two ways to produce the invoice, preferring the one that touches no funds:
+//   1. ASK THE RECIPIENT. If their wallet published a CLINK offer key we send
+//      it a kind-21001 request over nostr; their wallet (or its service
+//      worker) mints an invoice against their own balance and we just hand it
+//      back. Nothing passes through us.
+//   2. MINT HERE. Otherwise our node issues the invoice and the settle
+//      forwarder pushes the money on to their address, exactly like the
+//      BOLT 12 offer path — custodial for the seconds in between.
+const OFFER_KIND = 21001;
+const LNURL_RELAYS = ['wss://relay.coinos.io', 'wss://relay.damus.io', 'wss://nos.lol'];
+const pool = new SimplePool();
+
+// Our own nostr identity: used to ask recipients for invoices, and to sign
+// NIP-57 zap receipts for payments we mint ourselves.
+if (!state.serviceSk) { state.serviceSk = Buffer.from(generateSecretKey()).toString('hex'); persist(); }
+const SERVICE_SK = Uint8Array.from(Buffer.from(state.serviceSk, 'hex'));
+const SERVICE_PK = getPublicKey(SERVICE_SK);
+
+const lnurlMeta = (address) => JSON.stringify([
+  ['text/plain', `Paying ${address}`],
+  ['text/identifier', address],
+]);
+
+// Ask the recipient's own wallet for an invoice (CLINK offer, kind 21001).
+function requestInvoiceFromWallet(offerPk, { amountSat, description, zap }) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; try { sub.close(); } catch {} resolve(v); } };
+    const key = nip44.getConversationKey(SERVICE_SK, offerPk);
+    const payload = { offer: 'zap_default', amount_sats: amountSat };
+    if (description) payload.description = description.slice(0, 100);
+    if (zap) payload.zap = zap;
+    const req = finalizeEvent({
+      kind: OFFER_KIND, created_at: Math.floor(Date.now() / 1000),
+      tags: [['p', offerPk], ['clink_version', '1']],
+      content: nip44.encrypt(JSON.stringify(payload), key),
+    }, SERVICE_SK);
+    const sub = pool.subscribeMany(LNURL_RELAYS,
+      { kinds: [OFFER_KIND], '#e': [req.id], since: Math.floor(Date.now() / 1000) - 5 },
+      {
+        onevent: (ev) => {
+          try {
+            const body = JSON.parse(nip44.decrypt(ev.content, key));
+            if (body.bolt11) return finish(body.bolt11);
+          } catch {}
+        },
+      });
+    Promise.allSettled(pool.publish(LNURL_RELAYS, req)).catch(() => {});
+    setTimeout(() => finish(null), 6000); // wallets that aren't listening
+  });
+}
+
 const ln = CFG.ln ? lnBackend(CFG.ln) : null;
 let fwd = null; // the float ark wallet
 if (CFG.forwarder?.mnemonic) {
@@ -140,6 +199,26 @@ async function forward(name, sat) {
   log(`forwarded ${sat} sat to ${name}`);
 }
 
+// NIP-57: a zap we invoiced is only "a zap" once we publish the receipt,
+// signed by the key our LNURL response advertises.
+async function publishZapReceipt(pending, inv) {
+  try {
+    const zapReq = JSON.parse(pending.zap);
+    const tags = [
+      ...zapReq.tags.filter((t) => t[0] === 'p' || t[0] === 'e' || t[0] === 'a'),
+      ['P', zapReq.pubkey],
+      ['bolt11', pending.bolt11],
+      ['description', pending.zap],
+    ];
+    if (inv.payment_preimage) tags.push(['preimage', inv.payment_preimage]);
+    const receipt = finalizeEvent({ kind: 9735, created_at: Math.floor(Date.now() / 1000), tags, content: '' }, SERVICE_SK);
+    const relayTag = zapReq.tags.find((t) => t[0] === 'relays');
+    const relays = [...new Set([...(relayTag ? relayTag.slice(1) : []), ...LNURL_RELAYS])].slice(0, 8);
+    await Promise.allSettled(pool.publish(relays, receipt));
+    log(`published a zap receipt for ${pending.key}`);
+  } catch (e) { log('zap receipt failed: ' + e.message); }
+}
+
 async function settleLoop() {
   if (!ln || !fwd) return;
   state.lastPayIndex = state.lastPayIndex || 0;
@@ -154,10 +233,18 @@ async function settleLoop() {
     state.lastPayIndex = inv.pay_index || state.lastPayIndex;
     persist();
     const offerId = inv.local_offer_id;
-    const name = offerId && Object.keys(state.names).find((n) => state.names[n].offerId === offerId);
+    let name = offerId && Object.keys(state.names).find((n) => state.names[n].offerId === offerId);
+    // LNURL invoices we minted: recorded against their payment hash
+    const pending = state.invoices && state.invoices[inv.payment_hash];
+    if (!name && pending) name = pending.key;
     if (!name) continue; // not one of ours (e.g. the ASP's own invoices)
     const sat = Math.floor((inv.amount_received_msat?.msat ?? inv.amount_received_msat ?? 0) / 1000);
     if (!sat) continue;
+    if (pending) {
+      if (pending.zap) publishZapReceipt(pending, inv).catch(() => {});
+      delete state.invoices[inv.payment_hash];
+      persist();
+    }
     try {
       await forward(name, sat);
     } catch (e) {
@@ -294,6 +381,70 @@ Bun.serve({
       return json({ name, domain, uri: r.uri });
     }
 
+    // --- LNURL-pay (LUD-06/16, NIP-57 zaps) ------------------------------
+    const lm = url.pathname.match(/^\/(?:\.well-known\/lnurlp|lnurlp)\/([a-z0-9._-]{1,30})$/i);
+    if (lm && req.method === 'GET') {
+      const name = lm[1].toLowerCase();
+      const domain = (url.searchParams.get('domain') || DOMAIN).toLowerCase();
+      const rec = state.names[`${name}@${domain}`];
+      if (!rec) return json({ status: 'ERROR', reason: 'unknown address' }, 404);
+      const address = `${name}@${domain}`;
+      return json({
+        tag: 'payRequest',
+        callback: `${PUBLIC_BASE}/lnurlp/${name}/cb?domain=${encodeURIComponent(domain)}`,
+        minSendable: 1000,
+        maxSendable: 500000000,
+        metadata: lnurlMeta(address),
+        commentAllowed: 200,
+        allowsNostr: true,
+        nostrPubkey: SERVICE_PK,
+      });
+    }
+
+    const cb = url.pathname.match(/^\/lnurlp\/([a-z0-9._-]{1,30})\/cb$/i);
+    if (cb && req.method === 'GET') {
+      const name = cb[1].toLowerCase();
+      const domain = (url.searchParams.get('domain') || DOMAIN).toLowerCase();
+      const key = `${name}@${domain}`;
+      const rec = state.names[key];
+      if (!rec) return json({ status: 'ERROR', reason: 'unknown address' }, 404);
+      const msat = parseInt(url.searchParams.get('amount') || '0', 10);
+      if (!msat || msat < 1000) return json({ status: 'ERROR', reason: 'amount too small' }, 400);
+      const sat = Math.floor(msat / 1000);
+      const zap = url.searchParams.get('nostr') || null;
+      const comment = (url.searchParams.get('comment') || '').slice(0, 200);
+
+      // 1. the recipient's own wallet, if it is listening
+      if (rec.offerPk) {
+        const pr = await requestInvoiceFromWallet(rec.offerPk, { amountSat: sat, description: comment, zap });
+        if (pr) { log(`lnurl ${key}: recipient minted ${sat} sat`); return json({ pr, routes: [] }); }
+      }
+      // 2. our node, forwarded on settle
+      if (!ln || !fwd) return json({ status: 'ERROR', reason: 'recipient is offline' }, 503);
+      try {
+        const description = zap || lnurlMeta(key);
+        const inv = await ln.call('invoice', {
+          amount_msat: msat,
+          label: `lnurl-${key}-${Date.now()}`,
+          description,
+          deschashonly: true, // LUD-06: the invoice carries sha256(metadata)
+          expiry: 900,
+        });
+        state.invoices = state.invoices || {};
+        state.invoices[inv.payment_hash] = { key, zap, bolt11: inv.bolt11, ts: Date.now() };
+        // forget invoices nobody paid
+        for (const [h, v] of Object.entries(state.invoices)) {
+          if (Date.now() - v.ts > 3600_000) delete state.invoices[h];
+        }
+        persist();
+        log(`lnurl ${key}: issued ${sat} sat (forwarding on settle)`);
+        return json({ pr: inv.bolt11, routes: [] });
+      } catch (e) {
+        log('lnurl invoice failed: ' + e.message);
+        return json({ status: 'ERROR', reason: 'could not create an invoice' }, 500);
+      }
+    }
+
     if (url.pathname === '/register' && req.method === 'POST') {
       if (!rateOk(ip)) return json({ error: 'rate limited' }, 429);
       const bodyText = await req.text();
@@ -338,6 +489,8 @@ Bun.serve({
         manager: (claim.manager && /^[0-9a-f]{64}$/.test(claim.manager) && auth.pubkey !== claim.manager)
           ? claim.manager : existing?.manager,
         uri: published, recordId, updated: Date.now(), domain,
+        // the wallet's CLINK offer key, so LNURL can ask it for invoices
+        offerPk: (claim.offerPk && /^[0-9a-f]{64}$/.test(claim.offerPk)) ? claim.offerPk : existing?.offerPk,
         offerId: offer?.offerId, bolt12: offer?.bolt12,
       };
       persist();

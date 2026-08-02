@@ -762,6 +762,7 @@ export function nwcFeature(ctx) {
 
   return {
     id: 'nwc',
+    nwcOfferPubkey() { return (hook('arkReady') && !wallet.watchOnly) ? offerKeys().pk : null; },
     nwcOfferString() { return hook('arkReady') && !wallet.watchOnly ? offerString() : null; },
     init() { listen(); startWatchdog(); refreshRegistration(); reconcileBg(); },
     stop() { stop(); if (watchdog) { clearInterval(watchdog); watchdog = null; } },
