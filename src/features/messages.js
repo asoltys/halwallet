@@ -42,7 +42,6 @@ const COMMUNITY = {
 };
 
 const EPOCH = 0;
-const CHAT_ICON = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 8.5 8.5z"/></svg>';
 const DM_RELAYS = ['wss://relay.coinos.io', 'wss://nos.lol'];
 const APP_BASE = 'https://v3.coinos.io';
 const CACHE_MAX = 50; // messages kept per channel / per DM thread in feature state
@@ -1250,27 +1249,14 @@ export function messagesFeature(ctx) {
     id: 'messages',
     // Chat lives behind a header button and takes over the whole screen —
     // no balance card, no tabs; each view carries its own way back.
-    headerButtons() {
-      return [h('button', {
-        class: 'btn-sm', title: t('tabMessages'),
-        onClick: () => { ui.chatOpen = true; render(); },
-      }, h('span', { html: CHAT_ICON }))];
-    },
-    // Rightmost in the header, after the wallet selector.
-    headerAvatar() {
-      const me = myPubkeys()[0];
-      if (!me) return null;
-      return h('button', {
-        class: 'header-avatar', title: t('profEdit'),
-        onClick: () => openProfile(me),
-      }, avatar(me, 'chat-avatar header-ava', false));
-    },
+    // The bare avatar node for the app header's identity menu.
+    headerAvatar(pk) { return avatar(pk, 'chat-avatar header-ava', false); },
     screenView() {
       if (ui.screen !== 'wallet') return null;
       if (ui.profilePk) return profileScreen();
       if (!ui.chatOpen) return null;
       return h('div', { class: 'col', style: 'gap:16px' },
-        ctx.brandHeader(false),
+        ctx.brandHeader(true),
         messagesTab());
     },
     // Anyone (ark's history, other features) can open a profile or render a

@@ -400,3 +400,6 @@ hr.divider { margin: 16px 0; }
 .copy-ico:hover { color: var(--ink); }
 .settings-nav { text-align: left; font-weight: 600; padding: 14px 16px; position: relative; }
 .settings-nav::after { content: '›'; position: absolute; right: 16px; color: var(--faint); font-weight: 400; }
+.avatar-menu-wrap { position: relative; display: inline-flex; }
+.menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.avatar-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 41; min-width: 170px; }
