@@ -833,6 +833,16 @@ export function messagesFeature(ctx) {
     const pk = ui.profilePk;
     const mine = isMe(pk);
     const full = fullProfiles.get(pk);
+    // Your own profile IS the editor — the form appears prefilled as soon as
+    // the published kind 0 arrives, no Edit step.
+    if (mine && !ui.profEdit && full !== undefined) {
+      ui.profEdit = {
+        name: full.display_name || full.name || '',
+        about: full.about || '',
+        picture: full.picture || '',
+        lud16: full.lud16 || (hook('namesAddress') || ''),
+      };
+    }
     const name = displayName(pk);
     const npub = npubOf(pk) || pk;
     const field = (label, key, ph = '') => h('label', { class: 'field' },
@@ -861,38 +871,28 @@ export function messagesFeature(ctx) {
               field(t('profAbout'), 'about'),
               field(t('profPicture'), 'picture', 'https://…'),
               field(t('profLud16'), 'lud16', 'you@coinos.io'),
-              h('div', { class: 'row gap6' },
-                h('button', { class: 'btn-ghost grow', onClick: () => { ui.profEdit = null; render(); } }, t('cancel')),
-                h('button', { class: 'btn-primary grow', disabled: ui.profSaving, onClick: saveProfile },
-                  ui.profSaving ? h('span', { class: 'spinner sm' }) : t('save'))))
-          : h('div', { class: 'row gap6 wrap' },
-              mine ? null : h('button', { class: 'btn-primary grow', onClick: () => {
-                const peer = pk;
-                ui.profilePk = null;
-                ui.chatOpen = true;
-                ui.msgView = 'dm';
-                ui.msgPeer = peer;
-                ui.msgStick = true;
-                render();
-              } }, t('msgDmsTitle')),
-              mine ? null : h('button', { class: 'grow', onClick: () => {
-                const npubStr = npubOf(pk);
-                ui.profilePk = null;
-                ui.chatOpen = false;
-                ui.tab = 'send';
-                render();
-                hook('matchSendText', npubStr);
-              } }, t('profPay')),
-              mine ? h('button', { class: 'btn-primary grow', onClick: () => {
-                const f = fullProfiles.get(pk) || {};
-                ui.profEdit = {
-                  name: f.display_name || f.name || '',
-                  about: f.about || '',
-                  picture: f.picture || '',
-                  lud16: f.lud16 || (hook('namesAddress') || ''),
-                };
-                render();
-              } }, t('profEdit')) : null)));
+              h('button', { class: 'btn-primary btn-block', disabled: ui.profSaving, onClick: saveProfile },
+                ui.profSaving ? h('span', { class: 'spinner sm' }) : t('save')))
+          : mine
+            ? null // the editor renders above once the kind 0 loads
+            : h('div', { class: 'row gap6 wrap' },
+                h('button', { class: 'btn-primary grow', onClick: () => {
+                  const peer = pk;
+                  ui.profilePk = null;
+                  ui.chatOpen = true;
+                  ui.msgView = 'dm';
+                  ui.msgPeer = peer;
+                  ui.msgStick = true;
+                  render();
+                } }, t('msgDmsTitle')),
+                h('button', { class: 'grow', onClick: () => {
+                  const npubStr = npubOf(pk);
+                  ui.profilePk = null;
+                  ui.chatOpen = false;
+                  ui.tab = 'send';
+                  render();
+                  hook('matchSendText', npubStr);
+                } }, t('profPay')))));
   }
 
   const backBtn = (onClick) => h('button', { class: 'iconbtn chat-back', onClick }, '‹');
@@ -1245,16 +1245,19 @@ export function messagesFeature(ctx) {
     // Chat lives behind a header button and takes over the whole screen —
     // no balance card, no tabs; each view carries its own way back.
     headerButtons() {
-      const btns = [h('button', {
+      return [h('button', {
         class: 'btn-sm', title: t('tabMessages'),
         onClick: () => { ui.chatOpen = true; render(); },
       }, h('span', { html: CHAT_ICON }))];
+    },
+    // Rightmost in the header, after the wallet selector.
+    headerAvatar() {
       const me = myPubkeys()[0];
-      if (me) btns.push(h('button', {
+      if (!me) return null;
+      return h('button', {
         class: 'header-avatar', title: t('profEdit'),
         onClick: () => openProfile(me),
-      }, avatar(me, 'chat-avatar header-ava', false)));
-      return btns;
+      }, avatar(me, 'chat-avatar header-ava', false));
     },
     screenView() {
       if (ui.screen !== 'wallet') return null;

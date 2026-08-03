@@ -1354,7 +1354,8 @@ function brandHeader(withLock) {
       ? h('div', { class: 'row gap6' },
           ...featureAll('headerButtons'),
           h('button', { class: 'btn-sm', onClick: () => { ui.screen = 'accounts'; render(); } },
-            acc ? acc.label : t('accounts')))
+            acc ? acc.label : t('accounts')),
+          featureHook('headerAvatar'))
       : null
   );
 }
