@@ -269,6 +269,55 @@ function nodeAtPath(path) {
   return n || null;
 }
 
+// ---- one-shot animation gating -------------------------------------------
+// The renderer rebuilds the whole DOM on every render, so a CSS mount
+// animation would replay on every background repaint (balance ticks, chat
+// bursts). These helpers answer "did this change since the last render?" —
+// things animate only in the render where they actually happened.
+const _uiSeen = new Map();
+function uiChanged(key, val) {
+  const prev = _uiSeen.get(key);
+  _uiSeen.set(key, val);
+  return prev !== val;
+}
+// A background render can land mid-animation and rebuild the node without
+// its one-shot class, killing the motion. animWindow answers "how far into
+// the animation started by this change are we?" — callers re-apply the class
+// with a negative animation-delay so a rebuild RESUMES the animation.
+const _animAt = new Map();
+function animWindow(key, val, durMs) {
+  if (uiChanged(key, val)) _animAt.set(key, performance.now());
+  const dt = performance.now() - (_animAt.get(key) ?? -1e9);
+  return dt < durMs ? dt : -1;
+}
+function applyAnim(el, cls, dt) {
+  if (dt < 0 || !el || !el.classList) return;
+  el.classList.add(cls);
+  el.style.animationDelay = -Math.round(dt) + 'ms';
+}
+
+// A balance that counts to its new value instead of teleporting, with a green
+// breath when money arrived. Keyed so background renders don't re-animate.
+const _amtLast = new Map();
+function animatedAmount(key, sat) {
+  const prev = _amtLast.get(key);
+  _amtLast.set(key, sat);
+  const el = h('span', {}, fmtAmount(sat));
+  if (prev !== undefined && prev !== sat) {
+    const from = prev, to = sat, t0 = performance.now(), dur = 550;
+    const step = (t) => {
+      if (!el.isConnected) return; // a newer render owns the number now
+      const p = Math.min(1, (t - t0) / dur);
+      const e = 1 - Math.pow(1 - p, 3);
+      el.textContent = fmtAmount(Math.round(from + (to - from) * e));
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+    if (to > from) el.classList.add('amt-flash');
+  }
+  return el;
+}
+
 function render() {
   // A direct render subsumes any coalesced one queued by a background emit, so
   // drop the pending frame (a user action must not trigger a second rebuild).
@@ -294,6 +343,11 @@ function render() {
           : ui.screen === 'howItWorks'
             ? howItWorksScreen()
             : unlockScreen());
+  // Navigation animates; background repaints must not. The key is every
+  // ui field that decides which page is on screen.
+  const navKey = [ui.screen, ui.tab, ui.chatOpen, ui.msgView, ui.msgPeer, ui.msgCommunity,
+    ui.profilePk, ui.settingsPage, ui.addrScan, ui.arkExitPage, ui.txDetail, ui.giftMode, ui.claimStep].join('|');
+  applyAnim(screen, 'anim-page', animWindow('nav', navKey, 340));
   root.replaceChildren(screen, footer());
   if (fpath) {
     const el = nodeAtPath(fpath);
@@ -1357,15 +1411,15 @@ function avatarMenu() {
   }, label);
   return h('span', { class: 'avatar-menu-wrap' },
     h('button', { class: 'header-avatar', onClick: () => { ui.avatarMenu = !ui.avatarMenu; render(); } }, node),
-    ui.avatarMenu
+    (() => { const dt = animWindow('avmenu', !!ui.avatarMenu, 220); return ui.avatarMenu
       ? h('span', {},
           h('div', { class: 'menu-backdrop', onClick: () => { ui.avatarMenu = false; render(); } }),
-          h('div', { class: 'icon-select-menu avatar-menu' },
+          (() => { const m = h('div', { class: 'icon-select-menu avatar-menu' },
             me ? item(t('profEdit'), () => featureHook('showProfile', me)) : null,
             item(t('tabSettings'), () => { ui.chatOpen = false; ui.profilePk = null; ui.screen = 'wallet'; ui.tab = 'settings'; ui.settingsPage = null; }),
             me ? item(t('msgDmsTitle'), () => { ui.profilePk = null; ui.chatOpen = true; }) : null,
-            item(t('logout'), () => lock())))
-      : null);
+            item(t('logout'), () => lock())); applyAnim(m, 'anim-menu', dt); return m; })())
+      : null; })());
 }
 
 function brandHeader(withLock) {
@@ -2024,7 +2078,7 @@ function balanceCard() {
       : h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' }, t('balance')),
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
       firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,
-      fmtAmount(sel === 'spending' ? spending : saving), ' ', unitTag('unit')),
+      animatedAmount('bal:' + sel, sel === 'spending' ? spending : saving), ' ', unitTag('unit')),
     hasArk || pending > 0 || featLines.length
       ? h(
           'div',
@@ -2032,7 +2086,7 @@ function balanceCard() {
           hasArk
             ? h('div', {},
                 h('div', { class: 'k' }, sel === 'spending' ? t('savingLabel') : t('spendingLabel')),
-                h('div', { class: 'v' }, fmtAmount(sel === 'spending' ? saving : spending), ' ', unitTag()))
+                h('div', { class: 'v' }, animatedAmount('bal2:' + sel, sel === 'spending' ? saving : spending), ' ', unitTag()))
             : null,
           pending > 0
             ? h('div', {}, h('div', { class: 'k' }, t('pending')), h('div', { class: 'v pending' }, fmtAmount(pending), ' ', unitTag()))
@@ -2045,7 +2099,14 @@ function balanceCard() {
     ...featureAll('balanceActions').map((a2) =>
       h('button', { class: 'btn-sm', style: 'margin-top:10px', onClick: a2.onClick }, a2.label)),
     // A feature can unfold UI right on the card (ark's inline move panel).
-    featureHook('balanceExtra')
+    (() => {
+      const dt = animWindow('unfold', !!ui.arkMoveOpen, 300);
+      const extra = featureHook('balanceExtra');
+      if (!extra) return null;
+      const w = h('div', {}, extra);
+      applyAnim(w, 'anim-unfold', dt);
+      return w;
+    })()
   );
 }
 
