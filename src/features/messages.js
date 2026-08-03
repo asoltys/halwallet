@@ -48,7 +48,7 @@ const APP_BASE = 'https://v3.coinos.io';
 const CACHE_MAX = 50; // messages kept per channel / per DM thread in feature state
 
 export function messagesFeature(ctx) {
-  const { h, ui, render, wallet, toast, hook, copyBtn } = ctx;
+  const { h, ui, render, wallet, toast, hook } = ctx;
 
   // ---- persisted state ----------------------------------------------------
 
@@ -864,8 +864,13 @@ export function messagesFeature(ctx) {
         full === undefined
           ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }))
           : full.about ? h('p', { class: 'small', style: 'margin:0;white-space:pre-wrap' }, String(full.about).slice(0, 1000)) : null,
-        h('div', { class: 'addr-box break', style: 'font-size:11px' }, npub),
-        copyBtn(npub, t('copyKey')),
+        h('div', { class: 'addr-box break npub-box', style: 'font-size:11px' },
+          h('span', { class: 'grow', style: 'min-width:0' }, npub),
+          h('button', {
+            class: 'copy-ico', title: t('copy'),
+            onClick: async () => { try { await navigator.clipboard.writeText(npub); toast(t('copied')); } catch {} },
+            html: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+          })),
         ui.profEdit
           ? h('div', { class: 'col', style: 'gap:8px' },
               field(t('profName'), 'name'),
