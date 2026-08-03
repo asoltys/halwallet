@@ -48,7 +48,7 @@ const spendableSat = (rec) =>
 
 // The worker can't derive keys — the mirror carries them per chain:
 // 3 = coins/change, 4/0 = mailbox, 5 = receive preimages.
-function shimAccount(rec) {
+export function shimAccount(rec) {
   const byChain = (chain, i) => {
     const k = chain === 5 ? rec.keys5?.[String(i)]
       : chain === 4 ? rec.key4
@@ -59,7 +59,7 @@ function shimAccount(rec) {
   return { deriveChild: (chain) => ({ deriveChild: (i) => ({ privateKey: byChain(chain, i) }) }) };
 }
 
-async function bgManager(rec, walletKey, saveFn) {
+export async function bgManager(rec, walletKey, saveFn) {
   const storage = {
     load: () => rec.mgr,
     save: (s) => { rec.mgr = s; saveFn(walletKey, rec).catch(() => {}); },

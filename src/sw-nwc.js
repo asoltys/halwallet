@@ -5,6 +5,7 @@
 // when it can't.
 
 import { respondFromBg } from './nwc-respond.js';
+import { bgAutoWithdraw } from './bg-autowithdraw.js';
 
 const NOTIFIER = 'https://nwcpush.coinos.io';
 
@@ -17,6 +18,13 @@ self.addEventListener('push', (e) => {
     e.waitUntil((async () => {
       const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       if (clients.some((c) => c.visibilityState === 'visible')) return;
+      // Money landing is exactly when a forwarding rule wants to run, and this
+      // wake-up is the only moment the worker gets. Failures are recorded in
+      // the mirror; the notification still goes out either way.
+      if (data.reason === 'payment') {
+        try { await bgAutoWithdraw({ log: (m) => console.log('[sw-aw]', m) }); }
+        catch (err) { console.warn('[sw-aw] failed:', err && err.message); }
+      }
       const T = {
         payment: ['Payment received', data.amountSat ? `+${Number(data.amountSat).toLocaleString()} sats — open coinos to see it.` : 'Open coinos to see it.'],
         dm: ['New message', 'You have a new private message.'],
@@ -41,6 +49,8 @@ self.addEventListener('push', (e) => {
       for (const c of clients) c.postMessage({ type: 'nwc-wake', servicePubkey: data.servicePubkey });
       return;
     }
+    // an NWC wake-up may also have moved money in; check the rule after
+    setTimeout(() => { bgAutoWithdraw({ log: (m) => console.log('[sw-aw]', m) }).catch(() => {}); }, 0);
     let handled = false;
     try {
       handled = await respondFromBg(data, {

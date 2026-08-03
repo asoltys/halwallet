@@ -478,16 +478,22 @@ export function arkFeature(ctx) {
   // full manager state plus the chain-3 keys for its live coins and a window
   // of upcoming change indices (the worker cannot derive). nwc.js decides
   // WHEN to mirror (background answering on) and supplies the connections.
+  // connections/offer belong to the nwc feature; when it isn't the caller
+  // (an auto-withdraw setting changed, say) carry forward what's mirrored
+  // rather than blanking someone's wallet connections.
   async function writeBgMirror(connections, offer) {
     const cfg = getArkConfig();
     if (!cfg || !ark || !ark.info || !ark.state) return;
     const prev = await loadBg(wallet._cacheKey());
+    if (connections === undefined) connections = (prev && prev.connections) || [];
+    if (offer === undefined) offer = (prev && prev.offer) || null;
     const rec = buildBg({
       ark: { arkUrl: cfg.ark, esploraUrl: cfg.esplora, network: getNetwork(), serverPubkey: ark.info.serverPubkey },
       mgrState: ark.state,
       keyFor: (chain, i) => hex.encode(ark.account.deriveChild(chain).deriveChild(i).privateKey),
       connections,
       offer,
+      autowithdraw: await awMirror(prev),
     });
     if (prev) rec.spends = prev.spends; // the worker's log survives rewrites
     await saveBg(wallet._cacheKey(), rec);
@@ -500,6 +506,7 @@ export function arkFeature(ctx) {
   async function mergeBgWorkerState(mgr) {
     const rec = await loadBg(wallet._cacheKey());
     if (!rec) return;
+    absorbBgAutoWithdraw(rec);
     if (rec.v < 3) {
       await sweepLegacyPouch(rec).catch((e) => console.warn('ark: pouch sweep failed', e.message));
       return;
@@ -1127,6 +1134,43 @@ export function arkFeature(ctx) {
     await mgr.payLnInvoice(invoice, { amountSat });
   }
 
+  // What the service worker gets: the setting plus a destination it can pay
+  // without a relay. Resolution can fail (DNS down, profile missing) — then we
+  // keep whatever we mirrored last rather than dropping the feature.
+  async function awMirror(prev) {
+    const st = awState();
+    if (!st.on || !st.dest) return null;
+    const prevAw = prev && prev.autowithdraw;
+    let target = prevAw && prevAw.dest === st.dest ? prevAw.target : null;
+    try {
+      const r = await awResolve(st.dest);
+      target = { kind: r.kind, address: r.address };
+      if (r.kind === 'lnaddr' || r.kind === 'lnurl') {
+        const zt = parseZapTarget(r.address);
+        if (zt && zt.url) target.url = zt.url; else target = null;
+      } else if (r.kind === 'onchain') {
+        target.spkHex = hex.encode(btc.OutScript.encode(btc.Address(wallet.netCfg.net).decode(r.address)));
+      }
+    } catch {}
+    if (!target) return null;
+    return {
+      on: true, dest: st.dest, target,
+      threshold: Number(st.threshold) || 0,
+      keep: Math.max(0, Number(st.keep) || 0),
+      failedAt: st.failedAt || 0,
+    };
+  }
+
+  // What the worker did while we were closed becomes the app's state again.
+  function absorbBgAutoWithdraw(rec) {
+    const bg = rec && rec.autowithdraw;
+    if (!bg) return;
+    const st = awState();
+    if (!st.on) return;
+    if ((bg.lastAt || 0) > (st.lastAt || 0)) awSave({ ...st, lastAt: bg.lastAt, lastSat: bg.lastSat, failedAt: 0, error: '' });
+    else if ((bg.failedAt || 0) > (st.failedAt || 0)) awSave({ ...st, failedAt: bg.failedAt, error: bg.error || '' });
+  }
+
   let awBusy = false;
   async function maybeAutoWithdraw(mgr) {
     const st = awState();
@@ -1172,6 +1216,7 @@ export function arkFeature(ctx) {
       }
       ui.awError = '';
       awSave({ ...st, on, dest, threshold, keep, failedAt: 0, error: '' });
+      writeBgMirror().catch(() => {}); // the worker needs the new destination
       toast(on ? t('awOn') : t('awOff'));
       render();
     };

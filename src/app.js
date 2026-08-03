@@ -2107,7 +2107,8 @@ function onboardScreen() {
       h('button', { class: 'btn-block', style: 'padding:14px', onClick: () => { o.step = 'username'; render(); } },
         o.wentToLegacy ? t('onbLegacyDone') : t('onbLegacyNo')),
       ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
-      h('button', { class: 'linklike small', onClick: () => { o.step = 'nostr'; render(); } }, t('back')),
+      // No Back: the wallet exists by now, so the nostr question behind us
+      // would just bounce straight back here. Both choices lead forward.
     ]);
   }
   if (o.step === 'welcome') {

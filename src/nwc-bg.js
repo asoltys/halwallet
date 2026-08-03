@@ -84,7 +84,7 @@ export const BG_KEY_LOOKAHEAD = 25;
 // module). Chain 3 covers coins + change, chain 4/0 the mailbox, chain 5 a
 // window of receive preimages — everything the worker needs to pay AND to
 // mint invoices while the app is closed.
-export function buildBg({ ark, mgrState, keyFor, connections, offer }) {
+export function buildBg({ ark, mgrState, keyFor, connections, offer, autowithdraw }) {
   const keys = {};
   const idx = new Set((mgrState.vtxos || []).filter((v) => v.state !== 'spent').map((v) => v.keyIndex));
   for (let i = 0; i < BG_KEY_LOOKAHEAD; i++) idx.add((mgrState.nextKeyIndex || 1) + i);
@@ -104,6 +104,9 @@ export function buildBg({ ark, mgrState, keyFor, connections, offer }) {
     keys5,
     key4: keyFor(4, 0),
     offer: offer || null, // { sk, pk } — the CLINK offer service keypair
+    // { on, threshold, keep, target: { kind, address, url?, spkHex? } } — the
+    // destination is resolved by the app, so the worker never needs a relay
+    autowithdraw: autowithdraw || null,
     connections: (connections || []).map((c) => ({
       id: c.id, servicePk: c.servicePk, serviceSk: c.serviceSk, clientPk: c.clientPk,
       maxSat: c.maxSat, dailySat: c.dailySat,

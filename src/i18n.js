@@ -510,7 +510,7 @@ const STR = {
     onbNostrNo: 'No — create my wallet',
     onbSigninTitle: 'Sign in with Nostr',
     onbLegacyTitle: 'Do you have an account on coinos.io?',
-    onbLegacyBody: 'The original coinos. We can move your balance over and bring your username with you — your old account gets renamed and stops receiving.',
+    onbLegacyBody: 'The original coinos. We can move your balance over and point your username here — your old account keeps working, it just stops receiving payments.',
     onbLegacyGo: 'Move my coinos.io account',
     onbLegacyNoAddr: "Your payment address isn't ready yet — try again in a moment.",
     onbLegacyDone: "I'm done — continue",
