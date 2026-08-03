@@ -17,7 +17,6 @@ import {
   getNetwork, setNetwork, getArkProviderId, getArkConfig,
 } from '../api.js';
 import { t } from '../i18n.js';
-import { qrSvg } from '../qr.js';
 import { shortAddr, shortTxid, timeAgo, ARK_ICON, ARK_MARK } from '../format.js';
 
 // t?ark1… bech32m — an Ark address for this or another ASP.
@@ -731,49 +730,6 @@ export function arkFeature(ctx) {
     ui.arkBusy = null; render();
   }
 
-  // Lightning-receive block on the Ark receive pane: amount form -> invoice QR.
-  function arkLnReceiveSection() {
-    if (!ark || !ark.info || !ark.info.htlcExpiryDelta) return null; // server without lightning
-    const s = arkStateNow();
-    let rec = ui.arkLnRecvId ? ((s && s.actions) || []).find((a) => a.id === ui.arkLnRecvId) : null;
-    if (rec && ['done', 'failed'].includes(rec.step)) {
-      // settled (celebration takes over) or dead — reset to the form
-      if (rec.step === 'failed' && rec.error && rec.error !== 'canceled') ui.arkError = rec.error;
-      ui.arkLnRecvId = null;
-      ui.arkLnRecvAmt = '';
-      rec = null;
-    }
-    const divider = { class: 'col', style: 'width:100%;gap:8px;border-top:1px solid var(--border,rgba(128,128,128,.2));padding-top:14px' };
-    if (rec) {
-      let svg = null;
-      try { svg = qrSvg(rec.invoice.toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }); } catch {}
-      return h('div', divider,
-        h('div', { class: 'small muted', style: 'text-align:center' }, t('lnReceiveAwaiting')),
-        svg ? h('div', { style: 'align-self:center', html: svg }) : null,
-        h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, rec.invoice),
-        h('div', { class: 'row gap6', style: 'justify-content:center' }, copyBtn(rec.invoice, t('copyInvoice'))),
-        h('div', { class: 'row gap6', style: 'align-items:center;justify-content:center' },
-          h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('lnReceiveWatching'))),
-        rec.step === 'awaiting'
-          ? h('button', { class: 'btn-ghost btn-block', onClick: async () => {
-              stopArkLnPoll(rec.id);
-              try { await ark.cancelLnInvoice(rec.id); } catch {}
-              ui.arkLnRecvId = null; ui.arkLnRecvAmt = ''; render();
-            } }, t('arkLnCancelInvoice'))
-          : null);
-    }
-    return h('div', divider,
-      h('div', { class: 'small muted', style: 'text-align:center' }, t('arkLnInvoiceIntro')),
-      h('div', { class: 'input-group' },
-        h('input', {
-          type: 'number', inputmode: 'numeric', min: '0',
-          placeholder: t('amountSatsLabel'),
-          value: ui.arkLnRecvAmt || '',
-          onInput: (e) => { ui.arkLnRecvAmt = e.target.value; render(); },
-        }),
-        h('button', { class: 'btn-sm', disabled: !!ui.arkBusy || !parseInt(ui.arkLnRecvAmt || '', 10), onClick: doArkLnInvoice },
-          ui.arkBusy === 'lninvoice' ? h('span', { class: 'spinner sm' }) : '⚡ ' + t('lnCreateInvoice'))));
-  }
 
   function arkHistoryItem(m) {
     const incoming = !['send', 'offboard', 'exit', 'ln-send'].includes(m.type);
@@ -1425,36 +1381,6 @@ export function arkFeature(ctx) {
       ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null);
   }
 
-  // The Ark receive pane: connect-on-demand, then address + board form.
-  function arkReceivePane(seg) {
-  if (true) {
-      if (!ark) {
-        connectArk().catch(() => {});
-        return h(
-          'div',
-          { class: 'card col', style: 'align-items:center;gap:14px' },
-          seg,
-          ui.arkError
-            ? h('div', { class: 'notice err', style: 'width:100%' }, ui.arkError)
-            : h('div', { class: 'row gap6', style: 'align-items:center;padding:24px 0' },
-                h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting')))
-        );
-      }
-      const arkAddr = ark.address();
-      return h(
-        'div',
-        { class: 'card col', style: 'align-items:center;gap:14px' },
-        seg,
-        h('p', { class: 'small muted', style: 'margin:0;text-align:center' }, t('arkReceiveIntro')),
-        h('div', { html: qrSvg(arkAddr) }),
-        h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, arkAddr),
-        copyBtn(arkAddr, t('copyAddress')),
-        // Lightning receive straight into the ark balance (ASP-native swap)
-        arkLnReceiveSection()
-      );
-    }
-    throw new Error('unreachable');
-  }
 
   // "Payment received!" takeover for unseen Ark receives.
   function arkCelebration() {
@@ -1595,10 +1521,6 @@ export function arkFeature(ctx) {
     init() { initArk(); },
     stop() { stopArk(); },
     screenView() { return ui.arkExitPage ? arkExitPage() : null; },
-    receiveModes() {
-      if (!arkAvailable()) return [];
-      return [{ id: 'ark', label: t('receiveArkTab'), icon: ARK_MARK(18), render: (seg) => arkReceivePane(seg) }];
-    },
     receiveTakeover() {
       const offboarded = arkOffboardedScreen();
       if (offboarded) return offboarded;
