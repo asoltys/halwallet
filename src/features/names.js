@@ -298,6 +298,9 @@ export function namesFeature(ctx) {
         claimForm(false));
     }
     const addr = `${st.name}@${st.domain || DOMAIN}`;
+    // The offer section takes over the card when open: two payment codes on
+    // screen at once is a good way to have someone scan the wrong one.
+    if (ui.namesOfferOpen) return h('div', { class: 'card col', style: 'align-items:center;gap:14px' }, seg, offerSection());
     return h('div', { class: 'card col', style: 'align-items:center;gap:14px' },
       seg,
       h('div', { html: qrSvg(addr) }),
@@ -349,10 +352,9 @@ export function namesFeature(ctx) {
     }
     const offers = Array.isArray(ui.namesOffers) ? ui.namesOffers : [];
     return h('div', { class: 'col', style: 'gap:10px;width:100%' },
-      h('div', { class: 'divider' }),
       h('div', { class: 'row between', style: 'align-items:baseline' },
         h('strong', {}, t('namesOfferTitle')),
-        h('button', { class: 'linklike small', onClick: () => { ui.namesOfferOpen = false; render(); } }, t('hide'))),
+        h('button', { class: 'linklike small', onClick: () => { ui.namesOfferOpen = false; render(); } }, t('back'))),
       h('p', { class: 'small muted', style: 'margin:0' }, t('namesOfferDesc')),
       h('div', { class: 'row gap6' },
         h('input', {
