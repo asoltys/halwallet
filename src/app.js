@@ -2254,7 +2254,10 @@ function accountSel() {
   }
   return ui.account;
 }
-function setAccountSel(a) {
+let _accDir = null; // which way the balance face should slide in
+function setAccountSel(a, dir) {
+  if (ui.account === a) return;
+  _accDir = dir || (a === 'savings' ? 'left' : 'right');
   ui.account = a;
   try { localStorage.setItem(ACCOUNT_KEY, a); } catch {}
   render();
@@ -2276,36 +2279,39 @@ function balanceCard() {
   const saving = wallet.spendable;
   const hasArk = !!featureHook('arkReady');
   const sel = hasArk ? accountSel() : 'savings';
-  return h(
-    'div',
-    { class: 'card balance' },
-    // The account toggle IS the headline label: you're always "in" Spending
-    // or Savings, and everything (receive, gifts) follows. No total — the two
-    // are different kinds of money, and adding them up says nothing useful.
-    hasArk
-      ? h('div', { class: 'seg balance-seg' },
-          h('button', { class: sel === 'spending' ? 'active' : '', onClick: () => setAccountSel('spending') }, t('spendingLabel')),
-          h('button', { class: sel === 'savings' ? 'active' : '', onClick: () => setAccountSel('savings') }, t('savingLabel')))
-      : h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' }, t('balance')),
+  const isSpending = sel === 'spending';
+  // One balance at a time, full size: the card IS the account you're in, and
+  // everything (receive, gifts) follows it. Swipe or tap the dots to flip.
+  const dtAcc = animWindow('acct', sel, 300);
+  const face = h('div', { class: 'balance-face' },
+    h('div', { class: 'row between', style: 'align-items:center' },
+      h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.06em' },
+        hasArk ? (isSpending ? t('spendingLabel') : t('savingLabel')) : t('balance')),
+      hasArk
+        ? h('div', { class: 'balance-dots' },
+            h('button', { class: 'bdot' + (isSpending ? ' on' : ''), title: t('spendingLabel'), onClick: () => setAccountSel('spending') }),
+            h('button', { class: 'bdot' + (!isSpending ? ' on' : ''), title: t('savingLabel'), onClick: () => setAccountSel('savings') }))
+        : null),
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
       firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,
-      animatedAmount('bal:' + sel, sel === 'spending' ? spending : saving), ' ', unitTag('unit')),
-    hasArk || pending > 0 || featLines.length
-      ? h(
-          'div',
-          { class: 'split' },
-          hasArk
-            ? h('div', {},
-                h('div', { class: 'k' }, sel === 'spending' ? t('savingLabel') : t('spendingLabel')),
-                h('div', { class: 'v' }, animatedAmount('bal2:' + sel, sel === 'spending' ? saving : spending), ' ', unitTag()))
-            : null,
+      animatedAmount('bal:' + sel, isSpending ? spending : saving), ' ', unitTag('unit')),
+    hasArk
+      ? h('div', { class: 'small muted balance-note' }, isSpending ? t('balanceNoteSpending') : t('balanceNoteSavings'))
+      : null,
+    pending > 0 || featLines.length
+      ? h('div', { class: 'split' },
           pending > 0
             ? h('div', {}, h('div', { class: 'k' }, t('pending')), h('div', { class: 'v pending' }, fmtAmount(pending), ' ', unitTag()))
             : null,
           ...featLines.map((l) =>
-            h('div', {}, h('div', { class: 'k' }, l.label), h('div', { class: 'v' }, fmtAmount(l.sat), ' ', unitTag())))
-        )
-      : null,
+            h('div', {}, h('div', { class: 'k' }, l.label), h('div', { class: 'v' }, fmtAmount(l.sat), ' ', unitTag()))))
+      : null);
+  applyAnim(face, 'anim-tab-' + (_accDir || 'left'), dtAcc);
+  _accDir = null;
+  return h(
+    'div',
+    { class: 'card balance' },
+    face,
     // "Move money" and friends: the only door between the two balances.
     ...featureAll('balanceActions').map((a2) =>
       h('button', { class: 'btn-sm', style: 'margin-top:10px', onClick: a2.onClick }, a2.label)),
@@ -3387,11 +3393,18 @@ applyDir();
 // inside chat, profiles, takeovers, or the (offline-forced) settings tab.
 (() => {
   const ORDER = ['receive', 'send', 'history'];
-  let sx = 0, sy = 0, t0 = 0, live = false;
+  let sx = 0, sy = 0, t0 = 0, live = false, onBalance = false, swallowClick = false;
+  window.addEventListener('click', (e) => {
+    if (!swallowClick) return;
+    swallowClick = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
   window.addEventListener('touchstart', (e) => {
     live = e.touches.length === 1 && ui.screen === 'wallet' && !ui.chatOpen && !ui.profilePk
       && !ui.arkExitPage && ORDER.includes(ui.tab);
     if (!live) return;
+    onBalance = !!(e.target.closest && e.target.closest('.balance'));
     sx = e.touches[0].clientX;
     sy = e.touches[0].clientY;
     t0 = Date.now();
@@ -3403,6 +3416,17 @@ applyDir();
     const t = e.changedTouches[0];
     const dx = t.clientX - sx, dy = t.clientY - sy;
     if (Date.now() - t0 > 600 || Math.abs(dx) < 60 || Math.abs(dx) < 1.8 * Math.abs(dy)) return;
+    // A touch sequence still fires a compatibility click at the release
+    // point; after a swipe that would ALSO press whatever is under the
+    // finger. Swallow exactly one click.
+    swallowClick = true;
+    setTimeout(() => { swallowClick = false; }, 400);
+    // a swipe that began on the balance card flips the account instead
+    if (onBalance) {
+      const want = dx < 0 ? 'savings' : 'spending';
+      if (featureHook('arkReady')) setAccountSel(want, dx < 0 ? 'left' : 'right');
+      return;
+    }
     const next = ORDER[ORDER.indexOf(ui.tab) + (dx < 0 ? 1 : -1)];
     if (!next) return;
     _swipeDir = dx < 0 ? 'left' : 'right';

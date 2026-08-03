@@ -140,6 +140,8 @@ const STR = {
     moveToSavingBtn: 'Move to Savings',
     spendingLabel: 'Spending',
     savingLabel: 'Savings',
+    balanceNoteSpending: 'Instant · free to send',
+    balanceNoteSavings: 'On-chain · mining fees apply',
     movingLabel: 'Moving…',
     balance: 'Balance',
     pending: 'Pending',

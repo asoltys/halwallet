@@ -387,7 +387,6 @@ hr.divider { margin: 16px 0; }
 .balance-move { gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); text-align: left; }
 .balance-move .seg { display: flex; width: 100%; }
 .balance-move .seg button { flex: 1; }
-.balance-seg { display: inline-flex; margin-bottom: 6px; }
 .send-suggest { max-height: 260px; overflow-y: auto; }
 .clickable { cursor: pointer; }
 .profile-avatar { width: 64px; height: 64px; font-size: 18px; }
@@ -513,3 +512,10 @@ body::after {
 @keyframes mark-float { 50% { transform: translateY(-6px); } }
 @media (prefers-reduced-motion: reduce) { .onb-mark { animation: none; } }
 .onb-addr { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+/* balance card: one account at a time, dots to flip */
+.balance-face { min-height: 118px; }
+.balance-note { margin-top: 2px; }
+.balance-dots { display: flex; gap: 7px; align-items: center; }
+.bdot { width: 8px; height: 8px; padding: 0; border-radius: 50%; border: 0; background: var(--line-strong); cursor: pointer; transition: background .18s, transform .18s; }
+.bdot:hover { transform: scale(1.25); background: var(--muted); }
+.bdot.on { background: var(--accent); transform: scale(1.15); }
