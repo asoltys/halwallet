@@ -2006,7 +2006,7 @@ function shouldOnboard() {
   return !ui.onbSkip && accounts.length === 0 && !hasVault();
 }
 
-const PUNK_PICKS = [7, 14, 21, 3, 33, 40, 47, 55, 61, 26, 12, 50];
+const PUNK_PICKS = [7, 14, 21, 3, 33, 40, 47, 36, 61, 26, 12, 50];
 const punkImg = (n) => `https://coinos.io/api/public/punks/${n}.webp`;
 
 async function onbUpload(file) {
@@ -2093,6 +2093,7 @@ function onboardScreen() {
             class: 'onb-punk' + (sel === punkImg(n) ? ' sel' : ''),
             src: punkImg(n), alt: '',
             onClick: () => { o.avatar = punkImg(n); render(); },
+            onError: (e) => { e.target.remove(); }, // a 502'd punk removes itself
           }))),
       h('div', { class: 'row gap6' },
         h('button', { class: 'btn-block grow', disabled: ui.onbBusy, onClick: () => document.getElementById('onb-file')?.click() }, t('onbUpload')),
