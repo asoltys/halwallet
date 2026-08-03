@@ -930,19 +930,27 @@ export function messagesFeature(ctx) {
         type: 'text', placeholder: ph, value: ui.profEdit[key],
         onInput: (ev) => { ui.profEdit[key] = ev.target.value; },
       }));
+    // A lightning address worth showing: not an npub-shaped machine address
+    // (npub1…@some.relay duplicates the npub below) and not the same string
+    // as the nip05 already on screen.
+    const nip05 = full && full.nip05 ? String(full.nip05).replace(/^_@/, '') : null;
+    const lud16 = full && full.lud16 ? String(full.lud16) : null;
+    const showLud = lud16 && !/^npub1/i.test(lud16) && lud16 !== nip05;
+    // an about of "~" or a lone character is noise, not a bio
+    const about = full && typeof full.about === 'string' ? full.about.trim() : '';
+    const showAbout = about.length > 1;
     return h('div', { class: 'col', style: 'gap:16px' },
       ctx.brandHeader(false),
       h('div', { class: 'card col', style: 'gap:12px' },
         h('div', { class: 'row gap6', style: 'align-items:center' },
-          backBtn(() => { ui.profilePk = null; ui.profEdit = null; render(); }),
           avatar(pk, 'chat-avatar profile-avatar', false),
           h('div', { class: 'col grow', style: 'min-width:0;gap:2px' },
             h('div', { class: 'chat-title' }, name),
-            full && full.nip05 ? h('div', { class: 'muted small' }, String(full.nip05).replace(/^_@/, '')) : null,
-            full && full.lud16 ? h('div', { class: 'muted small' }, '⚡ ' + full.lud16) : null)),
+            nip05 ? h('div', { class: 'muted small break' }, nip05) : null,
+            showLud ? h('div', { class: 'muted small break' }, '⚡ ' + lud16) : null)),
         full === undefined
           ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }))
-          : full.about ? h('p', { class: 'small', style: 'margin:0;white-space:pre-wrap' }, String(full.about).slice(0, 1000)) : null,
+          : showAbout ? h('p', { class: 'small', style: 'margin:0;white-space:pre-wrap' }, about.slice(0, 1000)) : null,
         h('div', { class: 'addr-box break npub-box', style: 'font-size:11px' },
           h('span', { class: 'grow', style: 'min-width:0' }, npub),
           h('button', {
@@ -977,7 +985,8 @@ export function messagesFeature(ctx) {
                   ui.tab = 'send';
                   render();
                   hook('matchSendText', npubStr);
-                } }, t('profPay')))));
+                } }, t('profPay')))),
+      h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.profilePk = null; ui.profEdit = null; render(); } }, t('back')));
   }
 
   const backBtn = (onClick) => h('button', { class: 'iconbtn chat-back', onClick }, '‹');
