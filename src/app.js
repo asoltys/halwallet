@@ -2050,23 +2050,35 @@ function onboardScreen() {
   const title = (txt) => h('h2', { class: 'onb-title' }, txt);
 
   if (o.step === 'legacy') {
-    const addr = featureHook('namesAddress');
-    const url = addr
-      ? `https://coinos.io/migrate?to=${encodeURIComponent(addr)}&back=${encodeURIComponent(location.origin + '/')}`
-      : null;
+    // The migrate link carries this wallet's payment address, which the
+    // background claim may still be minting. Don't make the user watch that:
+    // show the finished page and wait (on the button) only if they tap
+    // before it lands.
+    const goLegacy = async () => {
+      let addr = featureHook('namesAddress');
+      if (!addr) {
+        o.legacyBusy = true;
+        render();
+        for (let i = 0; i < 40 && !addr; i++) {
+          await new Promise((r) => setTimeout(r, 500));
+          addr = featureHook('namesAddress');
+        }
+        o.legacyBusy = false;
+        if (!addr) { ui.onbError = t('onbLegacyNoAddr'); render(); return; }
+      }
+      o.wentToLegacy = true;
+      location.href = `https://coinos.io/migrate?to=${encodeURIComponent(addr)}&back=${encodeURIComponent(location.origin + '/')}`;
+    };
     return page([
       title(t('onbLegacyTitle')),
       h('p', { class: 'muted', style: 'margin:0' }, t('onbLegacyBody')),
-      url
-        ? h('a', {
-            class: 'btn btn-primary btn-block', href: url,
-            style: 'text-align:center;display:block;text-decoration:none;padding:14px',
-            onClick: () => { o.wentToLegacy = true; },
-          }, t('onbLegacyGo'))
-        : h('div', { class: 'row gap6', style: 'align-items:center' },
-            h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('onbNameWait'))),
+      h('button', {
+        class: 'btn-primary btn-block', style: 'padding:14px',
+        disabled: !!o.legacyBusy, onClick: goLegacy,
+      }, o.legacyBusy ? h('span', { class: 'spinner sm' }) : t('onbLegacyGo')),
       h('button', { class: 'btn-block', style: 'padding:14px', onClick: () => { o.step = 'username'; render(); } },
         o.wentToLegacy ? t('onbLegacyDone') : t('onbLegacyNo')),
+      ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
       h('button', { class: 'linklike small', onClick: () => { o.step = 'nostr'; render(); } }, t('back')),
     ]);
   }

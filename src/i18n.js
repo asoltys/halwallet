@@ -496,6 +496,7 @@ const STR = {
     onbLegacyTitle: 'Do you have an account on coinos.io?',
     onbLegacyBody: 'The original coinos. We can move your balance over and bring your username with you — your old account gets renamed and stops receiving.',
     onbLegacyGo: 'Move my coinos.io account',
+    onbLegacyNoAddr: "Your payment address isn't ready yet — try again in a moment.",
     onbLegacyDone: "I'm done — continue",
     onbLegacyNo: "No, I'm new here",
     migrateClaimed: 'Welcome back — {name} is yours here now.',
