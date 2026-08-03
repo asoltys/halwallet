@@ -17,6 +17,7 @@ import {
   getNetwork, setNetwork, getArkProviderId, getArkConfig,
 } from '../api.js';
 import { t } from '../i18n.js';
+import { resolveBip353, parsePaymentName, parseBip21 as parseBip21Uri } from '../bip353.js';
 import { shortAddr, shortTxid, timeAgo, ARK_ICON, ARK_MARK } from '../format.js';
 
 // t?ark1… bech32m — an Ark address for this or another ASP.
@@ -889,6 +890,67 @@ export function arkFeature(ctx) {
   }
 
   // Resolve an npub to a same-network ark address via their announcement.
+  // Paying a PERSON (an npub): resolve every way they can be paid and take
+  // the best — ark over lightning over on-chain.
+  //   1. their ark address: the kind-10037 advert, or an ark= instruction in
+  //      BIP-353 (their coinos name via the registrar, or their nip05 name's
+  //      own DNS record — a bare domain nip05 is the BIP-353 "_" user)
+  //   2. lightning: profile lud16/lud06, via the zap flow
+  //   3. an on-chain address from the BIP-353 record
+  const NAMES_REGISTRAR = 'https://names.coinos.io';
+  function startNpubPay(pk, npub) {
+    const z = (ui.arkZap = { npub, pk, amount: '', comment: '', status: 'lookup' });
+    ui.sendError = '';
+    render();
+    const live = () => ui.arkZap === z;
+    (async () => {
+      connectArk().catch(() => {});
+      // 1a. ark advert
+      const adv = await lookupArkZapTarget(pk).catch(() => ({ status: 'noark' }));
+      if (!live()) return;
+      if (adv.status === 'ready') { Object.assign(z, adv); render(); return; }
+      if (adv.status === 'wrongnet') { Object.assign(z, adv); render(); return; }
+      // 1b. BIP-353 with an ark instruction; remember on-chain as last resort
+      const uris = [];
+      try {
+        const j = await (await fetch(`${NAMES_REGISTRAR}/pubkey/${pk}`)).json();
+        if (j && j.uri) uris.push(j.uri);
+      } catch {}
+      const profile = wallet.nostrProfile ? await wallet.nostrProfile(pk).catch(() => null) : null;
+      if (!live()) return;
+      if (profile && typeof profile.nip05 === 'string' && profile.nip05.trim()) {
+        const nip05 = profile.nip05.trim().toLowerCase();
+        const parsed = parsePaymentName(nip05.includes('@') ? nip05 : '_@' + nip05);
+        if (parsed) {
+          try { const uri = await resolveBip353(parsed.name, parsed.domain); if (uri) uris.push(uri); } catch {}
+        }
+      }
+      if (!live()) return;
+      let onchain = null;
+      for (const uri of uris) {
+        const dec = parseBip21Uri(uri);
+        if (!dec) continue;
+        const arkAddr = dec.params && dec.params.ark;
+        if (arkAddr && isArkAddress(arkAddr)) { Object.assign(z, { status: 'ready', address: arkAddr }); render(); return; }
+        if (dec.onchain && !onchain) onchain = dec.onchain;
+      }
+      // 2. lightning via the zap flow (connect first — canLnPay needs it)
+      if (profile && (profile.lud16 || profile.lud06)) {
+        await connectArk().catch(() => {});
+        if (!live()) return;
+        if (ctx.hook('canLnZap')) { ctx.hook('lnZapNpub', pk, npub); return; }
+      }
+      // 3. on-chain fallback
+      if (onchain) {
+        ui.arkZap = null;
+        ui.send.recipients[0].address = onchain;
+        render();
+        return;
+      }
+      if (live()) { z.status = 'noark'; render(); }
+    })().catch((e) => { if (live()) { z.status = 'noark'; ui.sendError = e.message; render(); } });
+  }
+
   async function lookupArkZapTarget(pk) {
     const events = await wallet.nostrFetch({ kinds: [ARK_INFO_KIND], authors: [pk] }, 6000);
     const ev = (events || []).sort((a, b) => b.created_at - a.created_at)[0];
@@ -1560,6 +1622,10 @@ export function arkFeature(ctx) {
     // swaps feature's delegation (its matcher runs first) or directly in
     // builds without the swaps feature.
     startArkLnPay(invoice, meta) { return startArkLnPay(invoice, meta); },
+    // The zaps feature's generic Lightning seams (once served by the retired
+    // swaps feature): the ASP pays invoices natively over ark.
+    canLnPay() { return arkAvailable() && !wallet.watchOnly && !!(ark && ark.info); },
+    startLnPay(invoice, meta) { return startArkLnPay(invoice, meta); },
     // ---- headless seam for the NWC wallet service ----
     arkPayInvoice(invoice, opts) { return payInvoiceHeadless(invoice, opts); },
     arkSpendableSat() { const b = arkBalance(); return b ? b.spendableSat : 0; },
@@ -1605,12 +1671,7 @@ export function arkFeature(ctx) {
       if (maybeBolt11(inv)) return startArkLnPay(inv);
       const pk = npubToHex(text);
       if (!pk || !arkAvailable() || !wallet.nostrFetch) return false;
-      ui.arkZap = { npub: String(text).trim(), pk, amount: '', comment: '', status: 'lookup' };
-      ui.sendError = '';
-      render();
-      Promise.all([connectArk(), lookupArkZapTarget(pk)])
-        .then(([, res]) => { if (ui.arkZap && ui.arkZap.pk === pk) { Object.assign(ui.arkZap, res); render(); } })
-        .catch((e) => { if (ui.arkZap && ui.arkZap.pk === pk) { ui.arkZap.status = 'noark'; ui.sendError = e.message; render(); } });
+      startNpubPay(pk, String(text).trim());
       return true;
     },
     historyEntries() {

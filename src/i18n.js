@@ -445,7 +445,7 @@ const STR = {
     arkExitNoBalance: 'Nothing in Spending to move.',
     arkZapTitle: 'Send a zap',
     arkZapLookup: 'Looking them up…',
-    arkZapNoArk: 'This nostr user can’t receive instant payments yet.',
+    arkZapNoArk: 'No way to pay this account was found — no Ark address, Lightning address, or payment record.',
     arkZapHint: 'Instant and free, with a zap receipt on nostr.',
     arkZapCommentPh: 'Comment (optional)',
     arkZapBtn: 'Zap',

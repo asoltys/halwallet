@@ -95,7 +95,7 @@ export async function searchRecipients(qRaw) {
         try {
           const m = JSON.parse(e.content);
           profileCache.set(e.pubkey, { name: m.display_name || m.name || null, picture: m.picture || null });
-          add(e.pubkey, { name: m.display_name || m.name, picture: m.picture, address: typeof m.nip05 === 'string' ? m.nip05.replace(/^_@/, '') : undefined }, pri);
+          add(e.pubkey, { name: m.display_name || m.name, picture: m.picture, nip05: typeof m.nip05 === 'string' ? m.nip05.replace(/^_@/, '') : undefined }, pri);
         } catch {}
       };
       const primal = await primalSearch(q);
@@ -108,7 +108,7 @@ export async function searchRecipients(qRaw) {
 
   // Within a source, a name that actually contains the query outranks the
   // search relay's looser relevance matches.
-  const score = (r) => ((r.name || '').toLowerCase().includes(q) || (r.address || '').toLowerCase().includes(q)) ? 0 : 1;
+  const score = (r) => ((r.name || '').toLowerCase().includes(q) || (r.address || r.nip05 || '').toLowerCase().includes(q)) ? 0 : 1;
   const rows = [...out.values()].sort((a, b) => a.pri - b.pri || score(a) - score(b)).slice(0, MAX_RESULTS);
   await fillProfiles(rows).catch(() => {});
   if (queryCache.size > 200) queryCache.clear();
@@ -147,5 +147,5 @@ export function resultRows(h, rows, onPick) {
         : h('div', { class: 'chat-avatar fallback' }, (r.name || npubOf(r.pk) || '??').slice(0, 2)),
       h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
         h('div', { class: 'chat-name' }, r.name || (npubOf(r.pk) || '').slice(0, 14) + '…'),
-        h('div', { class: 'muted small chat-preview' }, r.address || (npubOf(r.pk) || '').slice(0, 24) + '…'))));
+        h('div', { class: 'muted small chat-preview' }, r.address || r.nip05 || (npubOf(r.pk) || '').slice(0, 24) + '…'))));
 }
