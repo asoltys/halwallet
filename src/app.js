@@ -2324,6 +2324,8 @@ function setAccountSel(a, dir) {
   render();
 }
 
+const SWAP_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>';
+
 function balanceCard() {
   // Dim + spin until this network has data (cache, Nostr state, or a scan has
   // populated balances once). `scanning` alone misses the window between
@@ -2348,10 +2350,15 @@ function balanceCard() {
     h('div', { class: 'row between', style: 'align-items:center' },
       h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.06em' },
         hasArk ? (isSpending ? t('spendingLabel') : t('savingLabel')) : t('balance')),
+      // Swiping only helps on touch, and dots are an indicator rather than a
+      // target — so the switch is a real button that names where it goes.
       hasArk
-        ? h('div', { class: 'balance-dots' },
-            h('button', { class: 'bdot' + (isSpending ? ' on' : ''), title: t('spendingLabel'), onClick: () => setAccountSel('spending') }),
-            h('button', { class: 'bdot' + (!isSpending ? ' on' : ''), title: t('savingLabel'), onClick: () => setAccountSel('savings') }))
+        ? h('button', {
+            class: 'balance-switch',
+            onClick: () => setAccountSel(isSpending ? 'savings' : 'spending', isSpending ? 'left' : 'right'),
+          },
+            h('span', { html: SWAP_ICON }),
+            h('span', { class: 'bsw-label' }, isSpending ? t('savingLabel') : t('spendingLabel')))
         : null),
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
       firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,

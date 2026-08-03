@@ -515,10 +515,6 @@ body::after {
 /* balance card: one account at a time, dots to flip */
 .balance-face { min-height: 96px; }
 .balance-note { margin-top: 2px; }
-.balance-dots { display: flex; gap: 7px; align-items: center; }
-.bdot { width: 8px; height: 8px; padding: 0; border-radius: 50%; border: 0; background: var(--line-strong); cursor: pointer; transition: background .18s, transform .18s; }
-.bdot:hover { transform: scale(1.25); background: var(--muted); }
-.bdot.on { background: var(--accent); transform: scale(1.15); }
 /* amount input with an inline Max affordance */
 .amt-field { position: relative; display: flex; flex: 1; min-width: 0; }
 .amt-field input { width: 100%; padding-right: 52px; }
@@ -531,3 +527,12 @@ body::after {
 /* recipient chip: large variant for pay/zap screens */
 .zap-chip.lg { gap: 8px; padding: 4px 12px 4px 4px; font-weight: 600; }
 .chat-avatar.chip-lg { width: 30px; height: 30px; font-size: 11px; flex-shrink: 0; }
+/* the clickable way to change account (swiping only helps on touch) */
+.balance-switch {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 6px 12px; font-size: 13px; font-weight: 600;
+  color: var(--muted); background: var(--surface2);
+  border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+}
+.balance-switch:hover { color: var(--ink); border-color: var(--line-strong); }
+.balance-switch svg { opacity: .75; }
