@@ -167,7 +167,6 @@
   "giftRevokeConfirm": "Revogar este presente agora? Isso devolve a moeda à sua carteira e desativa o link.",
   "giftReclaimedTag": "ainda resgatável",
   "giftMinNote": "Mínimo {n} com as taxas atuais, para superar a poeira ao ser resgatado.",
-  "accounts": "Contas",
   "addWallet": "Adicionar carteira",
   "lockAll": "Bloquear tudo",
   "watchOnly": "Somente leitura",

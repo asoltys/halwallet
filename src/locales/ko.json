@@ -167,7 +167,6 @@
   "giftRevokeConfirm": "이 선물을 지금 취소할까요? 코인이 지갑으로 돌아가고 링크가 비활성화됩니다.",
   "giftReclaimedTag": "아직 청구 가능",
   "giftMinNote": "현재 수수료 기준 최소 {n}, 청구 시 더스트를 넘도록.",
-  "accounts": "계정",
   "addWallet": "지갑 추가",
   "lockAll": "모두 잠그기",
   "watchOnly": "조회 전용",

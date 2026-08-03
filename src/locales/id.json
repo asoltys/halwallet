@@ -167,7 +167,6 @@
   "giftRevokeConfirm": "Cabut hadiah ini sekarang? Ini mengembalikan koin ke dompet Anda dan menonaktifkan tautannya.",
   "giftReclaimedTag": "masih bisa diklaim",
   "giftMinNote": "Minimal {n} pada biaya saat ini, agar melampaui dust saat diklaim.",
-  "accounts": "Akun",
   "addWallet": "Tambah dompet",
   "lockAll": "Kunci semua",
   "watchOnly": "Hanya pantau",

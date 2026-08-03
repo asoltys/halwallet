@@ -167,7 +167,6 @@
   "giftRevokeConfirm": "立即撤销此礼物？这会将这笔币退回你的钱包并使链接失效。",
   "giftReclaimedTag": "仍可领取",
   "giftMinNote": "按当前手续费至少 {n}，以便领取时高于尘埃。",
-  "accounts": "账户",
   "addWallet": "添加钱包",
   "lockAll": "全部锁定",
   "watchOnly": "仅查看",

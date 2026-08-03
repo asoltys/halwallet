@@ -167,7 +167,6 @@
   "giftRevokeConfirm": "このギフトを今すぐ取り消しますか？コインがウォレットに戻り、リンクが無効になります。",
   "giftReclaimedTag": "まだ請求可能",
   "giftMinNote": "現在の手数料で最低 {n}。請求時にダストを上回ります。",
-  "accounts": "アカウント",
   "addWallet": "ウォレットを追加",
   "lockAll": "すべてロック",
   "watchOnly": "ウォッチ専用",

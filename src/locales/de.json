@@ -167,7 +167,6 @@
   "giftRevokeConfirm": "Dieses Geschenk jetzt widerrufen? Die Münze geht zurück in deine Wallet und der Link wird deaktiviert.",
   "giftReclaimedTag": "noch einlösbar",
   "giftMinNote": "Mindestens {n} bei aktuellen Gebühren, damit es beim Einlösen über dem Dust-Limit liegt.",
-  "accounts": "Konten",
   "addWallet": "Wallet hinzufügen",
   "lockAll": "Alle sperren",
   "watchOnly": "Nur-Lesen",

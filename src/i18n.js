@@ -36,7 +36,7 @@ const STR = {
     appTitle: 'coinos',
     home: 'Home',
     logout: 'Logout',
-    accounts: 'Accounts',
+    accounts: 'Wallets',
     addWallet: 'Add wallet',
     clearAll: 'Clear all',
     clearAllWarn: '⚠ This removes every wallet from this device. Any wallet whose recovery phrase or key you have not backed up will be lost for good.',
