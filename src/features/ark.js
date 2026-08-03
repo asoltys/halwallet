@@ -1285,13 +1285,37 @@ export function arkFeature(ctx) {
 
   // Offboard the whole ark balance back into this wallet's own on-chain
   // receive address — the mirror image of boarding.
-  async function doArkOffboard() {
+  // Offboard `amountSat` (or everything when omitted). An offboard moves
+  // whole vtxos — no change — so a partial amount first mints an exact-amount
+  // vtxo via a self-send (regtest-verified: the mailbox delivers self-sends),
+  // then exits just that one. The number the user typed is the number that
+  // leaves Spending; fees come off what arrives in Savings.
+  async function doArkOffboard(amountSat) {
     ui.arkBusy = 'offboard'; ui.arkError = ''; render();
     try {
       const mgr = await connectArk();
+      const spendables = () => mgr.state.vtxos.filter((v) => v.state === 'spendable');
+      const total = spendables().reduce((n, v) => n + v.amountSat, 0);
+      let ids; // undefined = all spendable vtxos
+      if (amountSat && amountSat < total) {
+        let target = spendables().find((v) => v.amountSat === amountSat);
+        if (!target) {
+          const before = new Set(spendables().map((v) => v.id));
+          await mgr.send(mgr.address(), amountSat);
+          for (let i = 0; i < 30 && !target; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            await mgr.sync().catch(() => {});
+            target = spendables().find((v) => v.amountSat === amountSat && !before.has(v.id));
+          }
+          if (!target) throw new Error(t('arkSplitTimeout'));
+        }
+        ids = [target.id];
+      }
       const address = wallet.freshReceive().address;
       const spk = btc.OutScript.encode(btc.Address(wallet.netCfg.net).decode(address));
-      const action = await mgr.startOffboard(spk, address);
+      const action = await mgr.startOffboard(spk, address, ids);
+      ui.arkOffboardAmt = '';
+      ui.arkMoveOpen = false;
       ui.arkOffboarded = { txid: action.txid, netSat: action.netSat, feeSat: action.feeSat };
       wallet.scan().catch(() => {}); // surface the incoming pending tx promptly
     } catch (e) {
@@ -1373,10 +1397,31 @@ export function arkFeature(ctx) {
         : h('div', { class: 'col', style: 'gap:8px' },
             h('p', { class: 'small muted', style: 'margin:0' }, t('moveToSavingDesc')),
             // no "X sats in Spending" line — the balance sits right above on this card
-            h('button', {
-              class: 'btn-block', disabled: !b || !b.spendableSat,
-              onClick: () => { ui.arkMoveOpen = false; ui.arkExitPage = true; ui.arkError = ''; render(); },
-            }, t('moveToSavingBtn'))),
+            (() => {
+              const spendable = b ? b.spendableSat : 0;
+              const sats = parseInt((ui.arkOffboardAmt || '').trim(), 10) || 0;
+              const valid = sats > 0 && sats <= spendable;
+              return h('div', { class: 'col', style: 'gap:8px' },
+                h('div', { class: 'input-group' },
+                  h('input', {
+                    type: 'number', inputmode: 'numeric', min: '0',
+                    placeholder: t('arkOffboardAmtPlaceholder'),
+                    value: ui.arkOffboardAmt || '',
+                    onInput: (e) => { ui.arkOffboardAmt = e.target.value; render(); },
+                  }),
+                  h('button', { class: 'btn-ghost', onClick: () => { ui.arkOffboardAmt = String(spendable); render(); } }, t('max')),
+                  h('button', {
+                    class: 'btn-primary', disabled: !!ui.arkBusy || !valid,
+                    onClick: () => doArkOffboard(sats),
+                  }, ui.arkBusy === 'offboard' ? h('span', { class: 'spinner sm' }) : t('moveToSavingBtn'))),
+                ui.arkBusy === 'offboard' && sats < spendable
+                  ? h('div', { class: 'small muted', style: 'text-align:center' }, t('arkSplitting'))
+                  : null,
+                h('button', {
+                  class: 'linklike small', style: 'align-self:center',
+                  onClick: () => { ui.arkMoveOpen = false; ui.arkExitPage = true; ui.arkError = ''; render(); },
+                }, t('arkUniTitle')));
+            })()),
       ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null);
   }
 
@@ -1528,7 +1573,7 @@ export function arkFeature(ctx) {
         h('h4', { style: 'margin:0' }, t('arkCoopTitle')),
         h('p', { class: 'small muted', style: 'margin:0' }, t('arkCoopDesc')),
         spendable > 0
-          ? h('button', { class: 'btn-primary btn-block', disabled: !!ui.arkBusy, onClick: doArkOffboard },
+          ? h('button', { class: 'btn-primary btn-block', disabled: !!ui.arkBusy, onClick: () => doArkOffboard() },
               ui.arkBusy === 'offboard' ? h('span', { class: 'spinner sm' }) : t('arkOffboardBtn', { n: fmtAmount(spendable) + ' ' + unitLabel() }))
           : h('div', { class: 'small faint' }, t('arkExitNoBalance'))),
       // unilateral

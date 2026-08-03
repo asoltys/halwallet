@@ -363,13 +363,19 @@ export class ArkManager {
     return action;
   }
 
-  // ---- offboard (collaborative exit: all spendable vtxos -> one on-chain output) ----
-  async startOffboard(spk, address) {
+  // ---- offboard (collaborative exit: spendable vtxos -> one on-chain output) ----
+  // Whole vtxos only — there is no change on this path. Default is everything
+  // spendable; vtxoIds selects a subset (the feature splits an exact-amount
+  // vtxo first via a self-send when the user asks for a partial move).
+  async startOffboard(spk, address, vtxoIds) {
     if (this.pendingActions().some((a) => a.type === 'offboard')) {
       throw new Error('an offboard is already in progress');
     }
-    const inputs = this.state.vtxos.filter((v) => v.state === 'spendable');
+    const inputs = vtxoIds
+      ? vtxoIds.map((id) => this._vtxo(id))
+      : this.state.vtxos.filter((v) => v.state === 'spendable');
     if (!inputs.length) throw new Error('no spendable ark balance');
+    if (inputs.some((v) => !v || v.state !== 'spendable')) throw new Error('vtxo not spendable');
     if (this.info.maxOffboardInputs && inputs.length > this.info.maxOffboardInputs) {
       throw new Error(`too many coins for one offboard (${inputs.length}) — refresh/consolidate first`);
     }
