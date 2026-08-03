@@ -310,6 +310,8 @@ export function namesFeature(ctx) {
     namesAdoptIdentity(signer, npub) { return adoptIdentity(signer, npub); },
     // the claimed payment address, for anyone prefilling a lightning address
     namesAddress() { const st = load(); return st.name ? `${st.name}@${st.domain || DOMAIN}` : null; },
+    // the onboarding wizard renders the same claim form on its username step
+    namesClaimForm() { return claimForm(true); },
     stop() { clearTimeout(retryTimer); clearTimeout(deadline); deadline = null; },
     receiveModes() {
       if (!available()) return [];

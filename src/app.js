@@ -348,7 +348,7 @@ function render() {
           ? vaultScreen()
           : ui.screen === 'howItWorks'
             ? howItWorksScreen()
-            : unlockScreen());
+            : shouldOnboard() ? onboardScreen() : unlockScreen());
   // Navigation animates; background repaints must not. The key is every
   // ui field that decides which page is on screen.
   const navKey = [ui.screen, ui.tab === 'settings', ui.chatOpen, ui.msgView, ui.msgPeer, ui.msgCommunity,
@@ -1996,7 +1996,175 @@ function vaultScreen() {
   );
 }
 
+// ================================================================ onboarding
+// First visit on a fresh device: a full-screen wizard — welcome, nostr
+// yes/no (sign in or silently mint a wallet), username, avatar, confetti —
+// then a three-stop coach-mark tour of the home screen. One time only.
+const ONBOARDED_KEY = 'btc-wallet-onboarded';
+function shouldOnboard() {
+  try { if (localStorage.getItem(ONBOARDED_KEY)) return false; } catch {}
+  return !ui.onbSkip && accounts.length === 0 && !hasVault();
+}
+
+const PUNK_PICKS = [7, 14, 21, 3, 33, 40, 47, 55, 61, 26, 12, 50];
+const punkImg = (n) => `https://coinos.io/api/public/punks/${n}.webp`;
+
+async function onbUpload(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('https://nostr.build/api/v2/upload/files', { method: 'POST', body: fd });
+  const j = await r.json();
+  const url = j?.data?.[0]?.url;
+  if (!url) throw new Error(t('onbUploadFailed'));
+  return url;
+}
+
+function onboardScreen() {
+  ui.onb ||= { step: 'welcome' };
+  const o = ui.onb;
+  // steps that were waiting on something advance the moment it exists
+  if ((o.step === 'nostr' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()) {
+    o.step = 'username';
+    o.enterAddr = featureHook('namesAddress') || null;
+  }
+  if (o.step === 'username') {
+    const addr = featureHook('namesAddress');
+    if (o.enterAddr === undefined) o.enterAddr = addr || null;
+    // Only a real (custom) name advances by itself — the background
+    // auto-claim of the npub-shaped default just makes the Keep button
+    // appear. A restored login whose custom name recovers skips ahead too.
+    if (addr && addr !== o.enterAddr && !/^npub1/.test(addr)) o.step = 'avatar';
+  }
+  const page = (kids) => h('div', { class: 'col onb', style: 'gap:20px' }, ...kids);
+  const title = (txt) => h('h2', { class: 'onb-title' }, txt);
+
+  if (o.step === 'welcome') {
+    return page([
+      h('div', { class: 'onb-hero' }, brandHeader(false)),
+      title(t('onbWelcomeTitle')),
+      h('p', { class: 'muted', style: 'margin:0;font-size:16px' }, t('onbWelcomeBody')),
+      h('button', { class: 'btn-primary btn-block', style: 'font-size:17px;padding:14px', onClick: () => { o.step = 'nostr'; render(); } }, t('onbStart')),
+      h('button', { class: 'linklike small', onClick: () => { ui.onbSkip = true; ui.onb = null; render(); } }, t('onbHaveWallet')),
+    ]);
+  }
+  if (o.step === 'nostr') {
+    return page([
+      title(t('onbNostrTitle')),
+      h('p', { class: 'muted', style: 'margin:0' }, t('onbNostrBody')),
+      h('button', { class: 'btn-primary btn-block', style: 'padding:14px', onClick: () => {
+        o.step = 'signin';
+        ui.nostrLoginOpen = true;
+        render();
+      } }, t('onbNostrYes')),
+      h('button', { class: 'btn-block', style: 'padding:14px', disabled: ui.onbBusy, onClick: async () => {
+        ui.onbBusy = true; render();
+        try { await enterWallet(newMnemonic(), '', { generated: true }); } catch (e) { ui.onbError = e.message; }
+        ui.onbBusy = false; render();
+      } }, ui.onbBusy ? h('span', { class: 'spinner sm' }) : t('onbNostrNo')),
+      ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
+      h('button', { class: 'linklike small', onClick: () => { o.step = 'welcome'; render(); } }, t('back')),
+    ]);
+  }
+  if (o.step === 'signin') {
+    return page([
+      title(t('onbSigninTitle')),
+      featureHook('unlockExtra') || h('div', { class: 'notice err' }, 'nostr login unavailable'),
+      h('button', { class: 'linklike small', onClick: () => { o.step = 'nostr'; render(); } }, t('back')),
+    ]);
+  }
+  if (o.step === 'username') {
+    const addr = featureHook('namesAddress');
+    return page([
+      title(t('onbNameTitle')),
+      h('p', { class: 'muted', style: 'margin:0' }, t('onbNameBody')),
+      featureHook('namesClaimForm') || h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('onbNameWait'))),
+      addr ? h('button', { class: 'btn-block', onClick: () => { o.step = 'avatar'; render(); } }, t('onbKeepName', { addr })) : null,
+    ]);
+  }
+  if (o.step === 'avatar') {
+    const me = (featureHook('nostrLoginIdentity') || {}).pubkey || (wallet.nostrPubkey && wallet.nostrPubkey());
+    const sel = o.avatar;
+    return page([
+      title(t('onbAvatarTitle')),
+      h('p', { class: 'muted', style: 'margin:0' }, t('onbAvatarBody')),
+      h('div', { class: 'onb-punks' },
+        ...PUNK_PICKS.map((n) =>
+          h('img', {
+            class: 'onb-punk' + (sel === punkImg(n) ? ' sel' : ''),
+            src: punkImg(n), alt: '',
+            onClick: () => { o.avatar = punkImg(n); render(); },
+          }))),
+      h('div', { class: 'row gap6' },
+        h('button', { class: 'btn-block grow', disabled: ui.onbBusy, onClick: () => document.getElementById('onb-file')?.click() }, t('onbUpload')),
+        h('input', { type: 'file', id: 'onb-file', accept: 'image/*', style: 'display:none', onChange: async (e) => {
+          const f = e.target.files && e.target.files[0];
+          if (!f) return;
+          ui.onbBusy = true; ui.onbError = ''; render();
+          try { o.avatar = await onbUpload(f); } catch (err) { ui.onbError = err.message; }
+          ui.onbBusy = false; render();
+        } })),
+      o.avatar ? h('img', { class: 'onb-preview', src: o.avatar, alt: '' }) : null,
+      ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
+      h('button', { class: 'btn-primary btn-block', style: 'padding:14px', disabled: ui.onbBusy, onClick: async () => {
+        ui.onbBusy = true; ui.onbError = ''; render();
+        try {
+          const addr = featureHook('namesAddress');
+          const fields = { name: addr ? addr.split('@')[0] : undefined, picture: o.avatar || undefined };
+          if (fields.name || fields.picture) await featureHook('publishProfile', fields);
+          o.step = 'success';
+        } catch (e) { ui.onbError = e.message; }
+        ui.onbBusy = false; render();
+      } }, ui.onbBusy ? h('span', { class: 'spinner sm' }) : (o.avatar ? t('onbContinue') : t('onbSkipAvatar'))),
+    ]);
+  }
+  // success
+  return page([
+    h('div', { class: 'onb-confetti' }, ...Array.from({ length: 18 }, () => h('i'))),
+    h('div', { class: 'check-badge', style: 'align-self:center' }, '✓'),
+    title(t('onbDoneTitle')),
+    h('p', { class: 'muted', style: 'margin:0;text-align:center' }, t('onbDoneBody')),
+    h('button', { class: 'btn-primary btn-block', style: 'padding:14px', onClick: () => {
+      try { localStorage.setItem(ONBOARDED_KEY, '1'); } catch {}
+      ui.onb = null;
+      ui.tour = 0;
+      ui.tab = 'receive';
+      render();
+    } }, t('onbEnter')),
+  ]);
+}
+
+// ---- the coach-mark tour: three stops, measured against the live DOM ----
+const TOUR = [
+  { sel: '.header-avatar', key: 'tourAvatar' },
+  { sel: '.balance-seg', key: 'tourBalance' },
+  { sel: '.tabs', key: 'tourTabs' },
+];
+function tourOverlay() {
+  const step = TOUR[ui.tour];
+  if (!step) return null;
+  const card = h('div', { class: 'tour-card' },
+    h('div', {}, t(step.key)),
+    h('div', { class: 'row gap6', style: 'justify-content:flex-end;margin-top:10px' },
+      h('button', { class: 'btn-sm', onClick: () => { ui.tour = null; render(); } }, t('tourSkip')),
+      h('button', { class: 'btn-sm btn-primary', onClick: () => {
+        ui.tour = ui.tour + 1 < TOUR.length ? ui.tour + 1 : null;
+        render();
+      } }, ui.tour + 1 < TOUR.length ? t('tourNext') : t('done'))));
+  const ring = h('div', { class: 'tour-ring' });
+  const wrap = h('div', { class: 'tour-overlay' }, ring, card);
+  requestAnimationFrame(() => {
+    const el = document.querySelector(step.sel);
+    if (!el || !wrap.isConnected) return;
+    const r = el.getBoundingClientRect();
+    ring.style.cssText = `top:${r.top - 6}px;left:${r.left - 6}px;width:${r.width + 12}px;height:${r.height + 12}px`;
+    const below = r.bottom + 12;
+    card.style.top = (below + 180 < innerHeight ? below : Math.max(12, r.top - 130)) + 'px';
+  });
+  return wrap;
+}
+
 function walletScreen() {
+  if (ui.onb) return onboardScreen();
   // A feature can hold the wallet behind a required onboarding step (picking
   // a username). Imported wallets skip it once their name is recovered.
   const ob = featureHook('onboardingView');
@@ -2038,7 +2206,8 @@ function walletScreen() {
     h('div', { class: 'mt16' }, balanceCard()),
     ui.offlineFallback && wallet.offline ? offlineBanner() : null,
     tabsBar(),
-    pane
+    pane,
+    ui.tour != null ? tourOverlay() : null
   );
 }
 

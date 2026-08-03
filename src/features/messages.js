@@ -1356,6 +1356,28 @@ export function messagesFeature(ctx) {
     // Anyone (ark's history, other features) can open a profile or render a
     // small clickable identity chip.
     showProfile(pk) { openProfile(pk); return true; },
+    // Publish (merge) kind-0 fields for the current identity — the onboarding
+    // wizard sets name + picture through this.
+    async publishProfile(fields) {
+      const id = await identity();
+      if (!id) throw new Error(t('msgNoIdentity'));
+      const evs = await queryOn([...new Set([...PROFILE_RELAYS, ...DM_RELAYS])], { kinds: [0], authors: [id.pubkey] }, 3000);
+      const newest = evs.sort((a, b) => b.created_at - a.created_at)[0];
+      let base = {};
+      try { base = newest ? JSON.parse(newest.content) : {}; } catch {}
+      const merged = { ...base };
+      for (const [k, v] of Object.entries(fields || {})) {
+        if (v) merged[k] = v;
+      }
+      if (merged.name) merged.display_name = merged.name;
+      const partial = { kind: 0, content: JSON.stringify(merged), tags: [], created_at: Math.floor(Date.now() / 1000) };
+      const evt = id.signer instanceof Uint8Array ? finalizeEvent(partial, id.signer) : await id.signer.signEvent(partial);
+      const ok = await publishOn([...new Set([...PROFILE_RELAYS, ...DM_RELAYS])], evt);
+      if (!ok) throw new Error(t('msgSendFailed'));
+      fullProfiles.set(id.pubkey, merged);
+      profiles.set(id.pubkey, { name: merged.name || null, picture: merged.picture || null, t: Date.now() });
+      return true;
+    },
     profileChip(pk) {
       return h('span', {
         class: 'zap-chip',
