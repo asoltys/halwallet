@@ -463,6 +463,8 @@ const STR = {
     arkUniDesc: 'Your escape hatch: claim the money yourself without anyone’s help. Takes about a day and costs mining fees, but works even if the server disappears.',
     arkExitNoBalance: 'Nothing in Spending to move.',
     arkZapTitle: 'Send a zap',
+    zapTitle: 'Send a zap',
+    zapFinding: 'Finding the best way to pay them…',
     arkZapLookup: 'Looking them up…',
     arkZapNoArk: 'No way to pay this account was found — no Ark address, Lightning address, or payment record.',
     arkZapHint: 'Instant and free, with a zap receipt on nostr.',

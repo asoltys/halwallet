@@ -929,6 +929,20 @@ export function arkFeature(ctx) {
     })().catch((e) => { if (live()) { z.status = 'noark'; ui.sendError = e.message; render(); } });
   }
 
+  // shared by the ark and lightning zap flows (see zaps.js for the twin)
+  function zapSkeleton(pk, fallback) {
+    return h('div', { class: 'card col', style: 'gap:12px' },
+      h('h3', {}, '⚡ ' + t('zapTitle')),
+      (pk && ctx.hook('profileChip', pk, 'lg'))
+        || h('div', { class: 'small muted break' }, fallback || ''),
+      h('div', { class: 'row gap6', style: 'align-items:center;padding:6px 0' },
+        h('span', { class: 'spinner sm' }),
+        h('span', { class: 'small muted' }, t('zapFinding'))),
+      h('button', { class: 'btn-ghost btn-block', onClick: () => {
+        ui.arkZap = null; ui.zap = null; ui.sendError = ''; ui.send = blankSend(); render();
+      } }, t('back')));
+  }
+
   async function lookupArkZapTarget(pk) {
     const events = await wallet.nostrFetch({ kinds: [ARK_INFO_KIND], authors: [pk] }, 6000);
     const ev = (events || []).sort((a, b) => b.created_at - a.created_at)[0];
@@ -967,8 +981,10 @@ export function arkFeature(ctx) {
   }
 
   function arkZapView() {
-    // the npub lookup is a background step — no takeover card for it
-    if (ui.arkZap && ui.arkZap.status === 'lookup') return null;
+    // While resolving, show the SHAPE of the card that's coming — same
+    // title, same recipient chip, a spinner where the form will be. The
+    // screen fills in rather than being replaced.
+    if (ui.arkZap && ui.arkZap.status === 'lookup') return zapSkeleton(ui.arkZap.pk, ui.arkZap.npub);
     if (ui.arkZapped) {
       return h('div', {
         class: 'card col',
@@ -983,7 +999,7 @@ export function arkFeature(ctx) {
     const z = ui.arkZap;
     if (!z) return null;
     return h('div', { class: 'card col', style: 'gap:12px' },
-      h('h3', {}, '⚡ ' + t('arkZapTitle')),
+      h('h3', {}, '⚡ ' + t('zapTitle')),
       ctx.hook('profileChip', z.pk, 'lg') || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.npub),
       z.status === 'lookup' ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkZapLookup'))) : null,
       z.status === 'noark' ? h('div', { class: 'notice err' }, t('arkZapNoArk')) : null,
@@ -1636,7 +1652,6 @@ export function arkFeature(ctx) {
     // swaps feature): the ASP pays invoices natively over ark.
     canLnPay() { return arkAvailable() && !wallet.watchOnly && !!(ark && ark.info); },
     lnSpendableSat() { const b = arkBalance(); return b ? b.spendableSat : 0; },
-    resolvingNote() { return ui.arkZap && ui.arkZap.status === 'lookup' ? t('arkZapLookup') : null; },
     startLnPay(invoice, meta) { return startArkLnPay(invoice, meta); },
     // ---- headless seam for the NWC wallet service ----
     arkPayInvoice(invoice, opts) { return payInvoiceHeadless(invoice, opts); },

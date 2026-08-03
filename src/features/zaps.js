@@ -93,7 +93,17 @@ export function zapsFeature(ctx) {
     // Resolution is a background step, not a screen: the send form stays put
     // and shows one inline line (resolvingNote below) until we can render
     // something the user can act on.
-    if (z.status === 'resolving') return null;
+    if (z.status === 'resolving') {
+      // twin of ark's skeleton: identical shape, so the handoff is invisible
+      return h('div', { class: 'card col', style: 'gap:12px' },
+        h('h3', {}, '⚡ ' + t('zapTitle')),
+        (z.target && z.target.pk && hook('profileChip', z.target.pk, 'lg'))
+          || h('div', { class: 'small muted break' }, z.name || z.address || ''),
+        h('div', { class: 'row gap6', style: 'align-items:center;padding:6px 0' },
+          h('span', { class: 'spinner sm' }),
+          h('span', { class: 'small muted' }, t('zapFinding'))),
+        h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back')));
+    }
     if (z.status === 'invoicing') {
       return h('div', { class: 'card col', style: 'align-items:center;gap:14px;padding:32px 14px' },
         h('span', { class: 'spinner' }),
@@ -101,7 +111,7 @@ export function zapsFeature(ctx) {
     }
     if (z.status === 'error') {
       return h('div', { class: 'card col', style: 'gap:12px' },
-        h('h3', {}, '⚡ ' + t('lnZapTitle')),
+        h('h3', {}, '⚡ ' + t('zapTitle')),
         (z.target && z.target.pk && hook('profileChip', z.target.pk, 'lg')) || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.name || ''),
         h('div', { class: 'notice err' }, z.error || t('lnZapFailed')),
         h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back')));
@@ -118,13 +128,13 @@ export function zapsFeature(ctx) {
     const commentOk = p.allowsNostr || p.commentAllowed > 0;
     if (broke) {
       return h('div', { class: 'card col', style: 'gap:12px' },
-        h('h3', {}, '⚡ ' + t('lnZapTitle')),
+        h('h3', {}, '⚡ ' + t('zapTitle')),
         (z.target && z.target.pk && hook('profileChip', z.target.pk, 'lg')) || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.name || z.address || ''),
         h('div', { class: 'notice info' }, t('zapNoBalance')),
         h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back')));
     }
     return h('div', { class: 'card col', style: 'gap:12px' },
-      h('h3', {}, '⚡ ' + t('lnZapTitle')),
+      h('h3', {}, '⚡ ' + t('zapTitle')),
       (z.target && z.target.pk && hook('profileChip', z.target.pk, 'lg')) || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.name || z.address || ''),
       h('div', { class: 'col gap6' },
         h('div', { class: 'input-group' },
@@ -186,7 +196,6 @@ export function zapsFeature(ctx) {
     // True when an npub can be zapped over Lightning from this build/wallet —
     // ark's "no Ark address" screen checks this before offering the fallback.
     canLnZap() { return canPay() && !!wallet.nostrProfile; },
-    resolvingNote() { return ui.zap && ui.zap.status === 'resolving' ? t('lnZapResolving') : null; },
     // Ark's "no Ark address published" screen offers a Lightning fallback,
     // which lands here with the recipient's pubkey.
     lnZapNpub(pk, npub) {
