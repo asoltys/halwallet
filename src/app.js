@@ -1744,7 +1744,7 @@ function accountsScreen() {
                 class: 'linklike', style: 'text-align:left;flex:1;font-size:15px;' + (isActive ? 'font-weight:600' : ''),
                 onClick: () => { if (isActive) { ui.screen = 'wallet'; render(); } else switchAccount(a.id); },
               }, (isActive ? '● ' : '○ ') + a.label + tag),
-              h('button', { class: 'btn-sm wallet-row-btn', title: t('walletSettings'), onClick: () => openAccountSettings(a.id) }, '⚙'),
+              h('button', { class: 'btn-sm wallet-row-btn', title: t('walletSettings'), onClick: () => openAccountSettings(a.id), html: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>' }),
               h('button', { class: 'btn-sm wallet-row-btn', title: t('remove'), onClick: () => { ui.confirmRemove = a.id; render(); } }, '✕')
             ),
             a.type === 'full'
