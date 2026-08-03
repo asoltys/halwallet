@@ -467,10 +467,11 @@ body::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .anim-page, .anim-menu, .anim-unfold, .anim-slide-left, .anim-slide-right, .amt-flash, .check-badge, .balance::before { animation: none !important; }
+  .anim-page, .anim-menu, .anim-unfold, .anim-tab-left, .anim-tab-right, .amt-flash, .check-badge, .balance::before { animation: none !important; }
   *, *::before, *::after { transition-duration: .01ms !important; }
 }
-@keyframes slide-in-left { from { opacity: 0; transform: translateX(30px); } }
-@keyframes slide-in-right { from { opacity: 0; transform: translateX(-30px); } }
-.anim-slide-left { animation: slide-in-left .28s cubic-bezier(.16, .84, .3, 1) both; }
-.anim-slide-right { animation: slide-in-right .28s cubic-bezier(.16, .84, .3, 1) both; }
+/* tab carousel: only the content pane moves, with a soft cross-fade */
+@keyframes tab-in-left { from { opacity: .2; transform: translateX(26px); } }
+@keyframes tab-in-right { from { opacity: .2; transform: translateX(-26px); } }
+.anim-tab-left { animation: tab-in-left .26s cubic-bezier(.25, .8, .35, 1) both; }
+.anim-tab-right { animation: tab-in-right .26s cubic-bezier(.25, .8, .35, 1) both; }

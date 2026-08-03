@@ -132,7 +132,7 @@ export function nostrConnect({ relays = ['wss://relay.coinos.io', 'wss://nos.lol
     name: 'coinos',
     url: 'https://v3.coinos.io',
     perms: ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'],
-  });
+  }) + '&callbackUrl=' + encodeURIComponent('https://v3.coinos.io/');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('signer connect timed out')), timeoutMs);
   const ready = (async () => {

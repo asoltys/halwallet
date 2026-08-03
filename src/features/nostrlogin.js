@@ -241,6 +241,10 @@ export function nostrLoginFeature(ctx) {
     // The nostr identity this session is logged in as, for features that
     // should speak as the user (the payment address defaults to this npub).
     nostrLoginIdentity() {
+      // A just-connected signer counts immediately — the persisted link lands
+      // only after the wallet opens, and the header avatar shouldn't show the
+      // wallet key's face in the gap.
+      if (live) return { pubkey: live.pubkey, npub: npubOf(live.pubkey), signer: live };
       const st = load();
       if (!st.pubkey) return null;
       return { pubkey: st.pubkey, npub: npubOf(st.pubkey), signer: live };

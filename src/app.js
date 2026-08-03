@@ -285,8 +285,11 @@ function uiChanged(key, val) {
 // the animation started by this change are we?" — callers re-apply the class
 // with a negative animation-delay so a rebuild RESUMES the animation.
 let _navAt = -1e9;
-let _navCls = 'anim-page';
 let _swipeDir = null; // set by the swipe handler just before render
+// tab switches carousel just the content pane, not the whole page
+let _tabAt = -1e9;
+let _tabCls = 'anim-tab-left';
+let _prevTabIdx = 0;
 const _animAt = new Map();
 function animWindow(key, val, durMs) {
   if (uiChanged(key, val)) _animAt.set(key, performance.now());
@@ -348,14 +351,10 @@ function render() {
             : unlockScreen());
   // Navigation animates; background repaints must not. The key is every
   // ui field that decides which page is on screen.
-  const navKey = [ui.screen, ui.tab, ui.chatOpen, ui.msgView, ui.msgPeer, ui.msgCommunity,
+  const navKey = [ui.screen, ui.tab === 'settings', ui.chatOpen, ui.msgView, ui.msgPeer, ui.msgCommunity,
     ui.profilePk, ui.settingsPage, ui.addrScan, ui.arkExitPage, ui.txDetail, ui.giftMode, ui.claimStep].join('|');
-  if (uiChanged('nav', navKey)) {
-    _navAt = performance.now();
-    _navCls = _swipeDir ? 'anim-slide-' + _swipeDir : 'anim-page';
-  }
-  _swipeDir = null;
-  applyAnim(screen, _navCls, (performance.now() - _navAt) < 340 ? performance.now() - _navAt : -1);
+  if (uiChanged('nav', navKey)) _navAt = performance.now();
+  applyAnim(screen, 'anim-page', (performance.now() - _navAt) < 340 ? performance.now() - _navAt : -1);
   root.replaceChildren(screen, footer());
   if (fpath) {
     const el = nodeAtPath(fpath);
@@ -2017,6 +2016,21 @@ function walletScreen() {
       h('div', { class: 'mt16' }, tabContent())
     );
   }
+  // Tab changes slide the content pane sideways like a carousel — swipe
+  // direction when a gesture caused it, index order for taps. The balance
+  // card and tab strip stay planted.
+  const TAB_ORDER = ['receive', 'send', 'history'];
+  if (uiChanged('tabnav', ui.tab)) {
+    const idx = TAB_ORDER.indexOf(ui.tab);
+    _tabCls = 'anim-tab-' + (_swipeDir || (idx >= 0 && idx < _prevTabIdx ? 'right' : 'left'));
+    _tabAt = performance.now();
+    if (idx >= 0) _prevTabIdx = idx;
+  }
+  _swipeDir = null;
+  const pane = h('div', { class: 'tab-pane' }, tabContent());
+  const tabDt = performance.now() - _tabAt;
+  // skip the pane slide while a full-page entrance is already running
+  if (performance.now() - _navAt > 400) applyAnim(pane, _tabCls, tabDt < 300 ? tabDt : -1);
   return h(
     'div',
     { class: 'col', style: 'gap:0' },
@@ -2024,7 +2038,7 @@ function walletScreen() {
     h('div', { class: 'mt16' }, balanceCard()),
     ui.offlineFallback && wallet.offline ? offlineBanner() : null,
     tabsBar(),
-    tabContent()
+    pane
   );
 }
 
