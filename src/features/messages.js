@@ -23,7 +23,7 @@ import {
   communityId, parseInviteLink, makeInviteLink, makeInviteBundleEvent, openInviteBundle,
 } from '../concord.js';
 import { makeDM, unwrapDM, wrapDM } from '../dm.js';
-import { makeSearcher, resultRows } from '../recipient-search.js';
+import { makeSearcher, resultRows, fallbackAvatar } from '../recipient-search.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { t } from '../i18n.js';
 
@@ -107,7 +107,7 @@ export function messagesFeature(ctx) {
     if (repaintTimer) return;
     repaintTimer = setTimeout(() => {
       repaintTimer = null;
-      if (ui.screen === 'wallet' && ui.chatOpen) render();
+      if (ui.screen === 'wallet') render();
     }, 80);
   };
 
@@ -358,6 +358,25 @@ export function messagesFeature(ctx) {
     ui.msgNewName = '';
     ui.msgHomePanel = null;
     render();
+  }
+
+  // A new channel is one owner-signed ChannelMetadata edition (CORD-03 §2);
+  // the control-plane fold picks it up and every member's switcher grows.
+  async function createChannel(room, name) {
+    name = (name || '').trim().slice(0, 64);
+    if (!name) return;
+    const id = await identity();
+    if (!id || id.pubkey !== room.jm.owner) { toast(t('msgOwnerOnly')); return; }
+    const chId = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+    const edition = {
+      ...makeEdition({ vsk: 2, eid: chId, version: 1, content: JSON.stringify({ name: name.replace(/^#/, ''), private: false }) }, Date.now()),
+      pubkey: id.pubkey,
+    };
+    const wrap = await wrapRumor(edition, id.signer, room.control, { plaintext: true });
+    const ok = await publishOn(room.relays, wrap);
+    if (!ok) { toast(t('msgSendFailed')); return; }
+    ui.msgNewChannel = '';
+    toast('#' + name.replace(/^#/, ''));
   }
 
   // ---- invites ------------------------------------------------------------
@@ -746,13 +765,15 @@ export function messagesFeature(ctx) {
   };
 
   const avatar = (pk, cls = 'chat-avatar', clickable = true) => {
-    const attrs = clickable
-      ? { class: cls + ' clickable', onClick: (e) => { e.stopPropagation(); openProfile(pk); } }
-      : { class: cls };
     const p = profileOf(pk);
-    return p && p.picture
-      ? h('img', { ...attrs, src: p.picture, alt: '' })
-      : h('div', { ...attrs, class: attrs.class + ' fallback' }, displayName(pk).slice(0, 2));
+    const node = p && p.picture
+      ? h('img', { class: cls, src: p.picture, alt: '' })
+      : fallbackAvatar(h, pk, p && p.name, cls);
+    if (clickable) {
+      node.classList.add('clickable');
+      node.addEventListener('click', (e) => { e.stopPropagation(); openProfile(pk); });
+    }
+    return node;
   };
 
   // ---- profiles: view + own kind-0 editor ---------------------------------
@@ -925,12 +946,9 @@ export function messagesFeature(ctx) {
     const kids = [];
 
     // Chat takes the whole screen, so home carries the way back to the wallet.
-    const me = myPubkeys()[0];
-    kids.push(h('div', { class: 'row between', style: 'align-items:center' },
-      h('div', { class: 'row gap6', style: 'align-items:center' },
-        backBtn(() => { ui.chatOpen = false; render(); }),
-        h('h3', { style: 'margin:0' }, t('tabMessages'))),
-      me ? avatar(me) : null));
+    kids.push(h('div', { class: 'row gap6', style: 'align-items:center' },
+      backBtn(() => { ui.chatOpen = false; render(); }),
+      h('h3', { style: 'margin:0' }, t('tabMessages'))));
 
     if (pendingLink) kids.push(linkInviteCard());
     for (const [rid, inv] of pendingDirect) kids.push(directInviteCard(rid, inv));
@@ -1162,6 +1180,15 @@ export function messagesFeature(ctx) {
           class: 'btn-sm',
           onClick: () => { sendDirectInvite(room, ui.msgInviteTo); ui.msgInviteTo = ''; render(); },
         }, t('msgSend'))),
+      // owners can add channels (an owner-signed control edition)
+      myPubkeys().includes(room.jm.owner)
+        ? h('div', { class: 'row gap6' },
+            h('input', {
+              class: 'grow', type: 'text', placeholder: t('msgChannelPlaceholder'), maxlength: '64',
+              value: ui.msgNewChannel || '', onInput: (e) => { ui.msgNewChannel = e.target.value; },
+            }),
+            h('button', { class: 'btn-sm', onClick: () => createChannel(room, ui.msgNewChannel) }, t('msgCreate')))
+        : null,
       // leaving discards the keys on this identity — two taps, default community exempt
       builtin ? null : h('div', { class: 'row' },
         h('button', {
@@ -1218,10 +1245,16 @@ export function messagesFeature(ctx) {
     // Chat lives behind a header button and takes over the whole screen —
     // no balance card, no tabs; each view carries its own way back.
     headerButtons() {
-      return [h('button', {
+      const btns = [h('button', {
         class: 'btn-sm', title: t('tabMessages'),
         onClick: () => { ui.chatOpen = true; render(); },
       }, h('span', { html: CHAT_ICON }))];
+      const me = myPubkeys()[0];
+      if (me) btns.push(h('button', {
+        class: 'header-avatar', title: t('profEdit'),
+        onClick: () => openProfile(me),
+      }, avatar(me, 'chat-avatar header-ava', false)));
+      return btns;
     },
     screenView() {
       if (ui.screen !== 'wallet') return null;

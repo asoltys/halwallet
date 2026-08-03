@@ -169,6 +169,8 @@ const STR = {
     msgOpen: 'Open',
     msgNpubPlaceholder: 'npub…',
     msgSearchPlaceholder: 'Name or npub…',
+    msgChannelPlaceholder: 'New channel name',
+    msgOwnerOnly: 'Only the community owner can do that',
     profEdit: 'Edit profile',
     profPay: '⚡ Pay',
     profName: 'Name',

@@ -10,6 +10,17 @@
 
 import { queryOn, parseNostrPubkey, npubOf, PROFILE_RELAYS } from './nostr.js';
 
+// coinos punks: the deterministic default avatar — same formula the coinos
+// app uses (last byte of the pubkey picks one of 64). Initials show through
+// if the image can't load (offline).
+export const punkUrl = (pk) =>
+  `https://coinos.io/api/public/punks/${Math.floor((parseInt(pk.slice(-2), 16) / 256) * 64) + 1}.webp`;
+
+export const fallbackAvatar = (h, pk, name, cls) =>
+  h('div', { class: cls + ' fallback' },
+    h('img', { class: 'punk', src: punkUrl(pk), alt: '', onError: (e) => { e.target.style.display = 'none'; } }),
+    (name || npubOf(pk) || '??').slice(0, 2));
+
 const REGISTRAR = 'https://names.coinos.io';
 const SEARCH_RELAYS = ['wss://search.nos.today', 'wss://relay.nostr.band'];
 const PRIMAL_CACHE = 'wss://cache2.primal.net/v1';
@@ -144,7 +155,7 @@ export function resultRows(h, rows, onPick) {
     h('div', { class: 'item chat-thread-row', onClick: () => onPick(r) },
       r.picture
         ? h('img', { class: 'chat-avatar', src: r.picture, alt: '' })
-        : h('div', { class: 'chat-avatar fallback' }, (r.name || npubOf(r.pk) || '??').slice(0, 2)),
+        : fallbackAvatar(h, r.pk, r.name, 'chat-avatar'),
       h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
         h('div', { class: 'chat-name' }, r.name || (npubOf(r.pk) || '').slice(0, 14) + '…'),
         h('div', { class: 'muted small chat-preview' }, r.address || r.nip05 || (npubOf(r.pk) || '').slice(0, 24) + '…'))));
