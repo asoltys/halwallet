@@ -442,16 +442,6 @@ input[type=text], input[type=password], input[type=number], textarea, select { t
 .settings-nav::after { transition: transform .18s ease, color .18s; }
 .settings-nav:hover::after { transform: translateX(3px); color: var(--ink); }
 
-/* the one chromatic signature: a slow bitcoin-gold ribbon on the balance card */
-.balance { position: relative; overflow: hidden; }
-.balance::before {
-  content: ''; position: absolute; inset: 0 0 auto 0; height: 3px;
-  background: linear-gradient(90deg, #f7931a, #ffd166 30%, #f2a900 55%, #ffb84d 75%, #f7931a);
-  background-size: 200% 100%;
-  animation: ribbon 8s linear infinite;
-}
-@keyframes ribbon { to { background-position: -200% 0; } }
-
 /* atmosphere: a faint warm wash pooling at the top, plus film grain */
 body {
   background-image: radial-gradient(900px 420px at 50% -160px, var(--wash), transparent 70%);
@@ -466,7 +456,7 @@ body::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .anim-page, .anim-menu, .anim-unfold, .anim-tab-left, .anim-tab-right, .amt-flash, .check-badge, .balance::before { animation: none !important; }
+  .anim-page, .anim-menu, .anim-unfold, .anim-tab-left, .anim-tab-right, .amt-flash, .check-badge { animation: none !important; }
   *, *::before, *::after { transition-duration: .01ms !important; }
 }
 /* tab carousel: only the content pane moves, with a soft cross-fade */
