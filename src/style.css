@@ -525,3 +525,8 @@ body::after {
 }
 .balance-switch:hover { color: var(--ink); border-color: var(--line-strong); }
 .balance-switch svg { opacity: .75; }
+/* Move-money row: the action labels are long ("Move to Spending"), so let the
+   row wrap to two full-width lines rather than crushing the amount field. */
+.balance-move .input-group { flex-wrap: wrap; }
+.balance-move .amt-field { flex: 1 1 150px; }
+.balance-move .input-group > button { flex: 1 1 150px; }

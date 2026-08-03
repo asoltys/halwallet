@@ -424,7 +424,6 @@ const STR = {
     arkBoardHistory: 'Moved to Spending',
     arkVtxos: 'Coins (VTXOs)',
     arkPendingActions: '{n} operation(s) in progress',
-    arkBoardPlaceholder: 'Amount (min {n} sats)',
     arkBoardBtn: 'Move to Spending',
     arkBoardFeeNote: 'Fee {fee} sats — {net} sats will arrive in Spending.',
     arkBoardFeeLabel: 'Fee',

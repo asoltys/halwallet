@@ -1582,7 +1582,7 @@ export function arkFeature(ctx) {
       h('div', { class: 'input-group' },
         amountField({
           value: ui.arkBoardAmt,
-          placeholder: t('arkBoardPlaceholder', { n: minBoard.toLocaleString() }),
+          placeholder: t('arkOffboardAmtPlaceholder'), // the minimum is stated below
           onInput: (e) => { ui.arkBoardAmt = e.target.value; render(); },
           maxSat: canBoard ? wallet.spendable : 0,
           onMax: () => { ui.arkBoardAmt = String(maxBoardSat()); render(); },
