@@ -88,7 +88,14 @@ export class ArkManager {
 
   // ---- lifecycle ----
   async init() {
-    this.state = this.storage.load() || EMPTY_STATE();
+    const loaded = this.storage.load();
+    this.state = loaded || EMPTY_STATE();
+    // A wallet opening on a device for the first time (a fresh import, a new
+    // browser) is about to discover its whole history at once, and every
+    // movement it records gets stamped with the moment it was found — so
+    // without this, a week-old payment looks like it just arrived. Mark the
+    // first catch-up as history: only what turns up afterwards is news.
+    if (!loaded) this.state.baselinePending = true;
     // drop duplicate receive movements (same vtxo) left by the former
     // poll/stream race; the vtxo set itself was always deduped
     const seen = new Set();
@@ -211,10 +218,17 @@ export class ArkManager {
   // Read new mailbox messages, fully validate incoming vtxos, then push any
   // in-flight actions forward.
   async sync() {
+    const baselining = !!this.state.baselinePending;
     const mailbox = this._mailboxKey();
     const { messages } = await readMailbox(this.arkUrl, mailbox, this.state.mailboxCheckpoint);
     let changed = false;
     for (const m of messages) changed = (await this._processMailboxMessage(m)) || changed;
+    // Everything the first catch-up found is history, not news.
+    if (baselining) {
+      this.state.receiveAckTs = Date.now();
+      delete this.state.baselinePending;
+      changed = true;
+    }
     if (changed) this._save();
     await this.resumePending();
   }
