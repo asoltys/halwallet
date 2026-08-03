@@ -295,6 +295,8 @@ async function settleLoop() {
     persist();
     const offerId = inv.local_offer_id;
     let name = offerId && Object.keys(state.names).find((n) => state.names[n].offerId === offerId);
+    // custom offers (a memo'd bolt12 the user minted for e.g. a mining pool)
+    if (!name && offerId && state.offers && state.offers[offerId]) name = state.offers[offerId].key;
     // LNURL invoices we minted: recorded against their payment hash
     const pending = state.invoices && state.invoices[inv.payment_hash];
     if (!name && pending) name = pending.key;
@@ -438,6 +440,45 @@ Bun.serve({
         .slice(0, 10)
         .map(([key, r]) => ({ address: key, name: key.split('@')[0], pubkey: r.pubkey }));
       return json({ results });
+    }
+
+    // A user's own BOLT 12 offers with a custom memo — what a mining pool or
+    // payroll wants to send to. Settled payments ride the same forwarder as
+    // the name's default offer, so they land in the user's Spending balance.
+    if (url.pathname === '/offer' && (req.method === 'POST' || req.method === 'GET')) {
+      if (!rateOk(ip)) return json({ error: 'rate limited' }, 429);
+      const bodyText = req.method === 'POST' ? await req.text() : '';
+      const a = await checkNip98(req, url, bodyText);
+      if (a.error) return json({ error: a.error }, 401);
+      const key = Object.keys(state.names)
+        .find((k) => state.names[k].pubkey === a.pubkey || state.names[k].manager === a.pubkey);
+      if (!key) return json({ error: 'claim a name first' }, 400);
+      state.offers = state.offers || {};
+      if (req.method === 'GET') {
+        return json({ offers: Object.entries(state.offers)
+          .filter(([, o]) => o.key === key)
+          .map(([offerId, o]) => ({ offerId, memo: o.memo, bolt12: o.bolt12, created: o.created })) });
+      }
+      if (!ln) return json({ error: 'offers unavailable' }, 503);
+      let body;
+      try { body = JSON.parse(bodyText); } catch { return json({ error: 'bad body' }, 400); }
+      const memo = String(body.memo || '').slice(0, 120).trim();
+      const mine = Object.entries(state.offers).filter(([, o]) => o.key === key);
+      const dup = mine.find(([, o]) => o.memo === memo);
+      if (dup) return json({ ok: true, offerId: dup[0], memo, bolt12: dup[1].bolt12, existing: true });
+      if (mine.length >= 10) return json({ error: 'too many offers' }, 400);
+      let o;
+      try {
+        // `issuer` keeps two users' identical memos from collapsing onto one
+        // CLN offer (it dedupes by the offer's contents).
+        o = await ln.call('offer', { amount: 'any', description: memo || key, issuer: key });
+      } catch (e) {
+        return json({ error: e.message }, 500);
+      }
+      state.offers[o.offer_id] = { key, memo, bolt12: o.bolt12, created: Date.now() };
+      persist();
+      log(`offer for ${key}: ${memo ? JSON.stringify(memo) : '(no memo)'}`);
+      return json({ ok: true, offerId: o.offer_id, memo, bolt12: o.bolt12 });
     }
 
     // Availability / lookup. Public data (it's DNS).

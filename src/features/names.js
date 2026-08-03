@@ -40,10 +40,11 @@ export function namesFeature(ctx) {
 
   async function post(path, method, payload, signer) {
     const url = `${REGISTRAR}${path}`;
-    const body = JSON.stringify(payload);
+    const hasBody = method !== 'GET';
+    const body = hasBody ? JSON.stringify(payload) : '';
     const auth = await withTimeout(nip98Header(signer || walletSigner(), url, method, body), 12000, 'signing');
     const r = await withTimeout(fetch(url, {
-      method, headers: { 'content-type': 'application/json', authorization: auth }, body,
+      method, headers: { 'content-type': 'application/json', authorization: auth }, ...(hasBody ? { body } : {}),
     }), 12000, 'registrar');
     const j = await r.json().catch(() => ({}));
     if (!r.ok || j.error) throw new Error(j.error || `registrar refused (${r.status})`);
@@ -301,7 +302,79 @@ export function namesFeature(ctx) {
       seg,
       h('div', { html: qrSvg(addr) }),
       h('div', { class: 'addr-box', style: 'width:100%;text-align:center;font-size:16px' }, addr),
-      copyBtn(addr, t('namesCopy')));
+      copyBtn(addr, t('namesCopy')),
+      offerSection());
+  }
+
+  // ---- BOLT 12 offers with a memo ----------------------------------------
+  // A reusable offer some payers want instead of a lightning address (mining
+  // pools like Ocean pay to one, and the memo is how you label the payout).
+  // Settled offer payments ride the registrar's forwarder into Spending, the
+  // same path the address already uses.
+  async function loadOffers() {
+    if (ui.namesOffers) return;
+    ui.namesOffers = 'loading';
+    try {
+      const j = await post('/offer', 'GET');
+      ui.namesOffers = j.offers || [];
+    } catch (e) {
+      ui.namesOffers = [];
+      ui.namesOfferError = e.message;
+    }
+    render();
+  }
+
+  async function createOffer() {
+    const memo = (ui.namesOfferMemo || '').trim();
+    ui.namesOfferBusy = true; ui.namesOfferError = null; render();
+    try {
+      const j = await post('/offer', 'POST', { memo });
+      ui.namesOffers = [
+        ...(Array.isArray(ui.namesOffers) ? ui.namesOffers.filter((o) => o.offerId !== j.offerId) : []),
+        { offerId: j.offerId, memo: j.memo, bolt12: j.bolt12 },
+      ];
+      ui.namesOfferMemo = '';
+    } catch (e) {
+      ui.namesOfferError = e.message;
+    }
+    ui.namesOfferBusy = false; render();
+  }
+
+  function offerSection() {
+    if (!ui.namesOfferOpen) {
+      return h('button', {
+        class: 'linklike small',
+        onClick: () => { ui.namesOfferOpen = true; loadOffers(); render(); },
+      }, t('namesOfferOpen'));
+    }
+    const offers = Array.isArray(ui.namesOffers) ? ui.namesOffers : [];
+    return h('div', { class: 'col', style: 'gap:10px;width:100%' },
+      h('div', { class: 'divider' }),
+      h('div', { class: 'row between', style: 'align-items:baseline' },
+        h('strong', {}, t('namesOfferTitle')),
+        h('button', { class: 'linklike small', onClick: () => { ui.namesOfferOpen = false; render(); } }, t('hide'))),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('namesOfferDesc')),
+      h('div', { class: 'row gap6' },
+        h('input', {
+          type: 'text', class: 'grow', maxlength: '120',
+          placeholder: t('namesOfferMemoPh'),
+          value: ui.namesOfferMemo || '',
+          onInput: (e) => { ui.namesOfferMemo = e.target.value; },
+        }),
+        h('button', { class: 'btn-sm', disabled: !!ui.namesOfferBusy, onClick: createOffer },
+          ui.namesOfferBusy ? h('span', { class: 'spinner sm' }) : t('namesOfferCreate'))),
+      ui.namesOfferError ? h('div', { class: 'notice err small' }, ui.namesOfferError) : null,
+      ui.namesOffers === 'loading' ? h('span', { class: 'spinner sm' }) : null,
+      ...offers.map((o) =>
+        h('div', { class: 'col', style: 'gap:6px;width:100%' },
+          h('div', { class: 'small muted' }, o.memo || t('namesOfferNoMemo')),
+          h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, o.bolt12),
+          h('div', { class: 'row gap6' },
+            copyBtn(o.bolt12, t('copy')),
+            h('button', { class: 'btn-sm', onClick: () => { ui.namesOfferQr = ui.namesOfferQr === o.offerId ? null : o.offerId; render(); } }, t('namesOfferQr'))),
+          ui.namesOfferQr === o.offerId
+            ? h('div', { style: 'align-self:center', html: qrSvg(o.bolt12.toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }) })
+            : null)));
   }
 
   return {
