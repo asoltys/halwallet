@@ -405,3 +405,4 @@ hr.divider { margin: 16px 0; }
 .avatar-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 41; min-width: 170px; }
 .chat-avatar.fallback.loading { background: var(--surface2); }
 .wallet-row-btn { font-size: 19px; line-height: 1; padding: 8px 12px; }
+.chat-avatar.header-ava.fallback { align-items: center; justify-content: center; display: flex; color: var(--muted); }

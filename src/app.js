@@ -1344,8 +1344,13 @@ function lock() {
 // cache + punk fallback); without that feature there's no menu.
 function avatarMenu() {
   const me = (featureHook('nostrLoginIdentity') || {}).pubkey || (wallet.nostrPubkey && wallet.nostrPubkey());
-  const node = me && featureHook('headerAvatar', me);
-  if (!node) return null;
+  // No identity (watch-only wallet): the menu still exists — Settings and
+  // Logout don't need keys — behind a neutral face.
+  const node = (me && featureHook('headerAvatar', me))
+    || h('span', {
+      class: 'chat-avatar header-ava fallback',
+      html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    });
   const item = (label, fn) => h('button', {
     class: 'icon-select-item',
     onClick: () => { ui.avatarMenu = false; fn(); render(); },
@@ -1356,9 +1361,9 @@ function avatarMenu() {
       ? h('span', {},
           h('div', { class: 'menu-backdrop', onClick: () => { ui.avatarMenu = false; render(); } }),
           h('div', { class: 'icon-select-menu avatar-menu' },
-            item(t('profEdit'), () => featureHook('showProfile', me)),
+            me ? item(t('profEdit'), () => featureHook('showProfile', me)) : null,
             item(t('tabSettings'), () => { ui.chatOpen = false; ui.profilePk = null; ui.screen = 'wallet'; ui.tab = 'settings'; ui.settingsPage = null; }),
-            item(t('msgDmsTitle'), () => { ui.profilePk = null; ui.chatOpen = true; }),
+            me ? item(t('msgDmsTitle'), () => { ui.profilePk = null; ui.chatOpen = true; }) : null,
             item(t('logout'), () => lock())))
       : null);
 }
