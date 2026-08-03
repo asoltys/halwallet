@@ -263,6 +263,9 @@ if (import.meta.main) {
     .replace('{{NWC_WAKE_FALLBACK}}', nwcSw ? '' : SW_WAKE_ONLY);
   await Bun.write('dist/sw.js', nwcSw ? swBody + '\n' + await buildSwNwc() : swBody);
   for (const f of STATIC) await Bun.write('dist/' + f, Bun.file('static/' + f));
+  // default avatars, self-hosted since coinos.io's copies are half-broken
+  const { readdirSync } = await import('node:fs');
+  for (const f of readdirSync('static/punks')) await Bun.write('dist/punks/' + f, Bun.file('static/punks/' + f));
 
   const kb = (Buffer.byteLength(html) / 1024).toFixed(0);
   console.log(`✓ dist/index.html written (${kb} KB) — open it offline, no server needed`);

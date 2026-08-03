@@ -6,7 +6,7 @@
 
 import { Wallet, newMnemonic, isValidMnemonic, accountXpubFor, cacheKeyFor, utxoId, parseExtendedKey, xpubToZpub, encryptVault, decryptVault } from './wallet.js';
 import { qrSvg } from './qr.js';
-import { makeSearcher, resultRows, searchable } from './recipient-search.js';
+import { makeSearcher, resultRows, searchable, punkUrl } from './recipient-search.js';
 import { npubOf } from './nostr.js';
 import { scanQr } from './scan.js';
 import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS } from './api.js';
@@ -2007,7 +2007,7 @@ function shouldOnboard() {
 }
 
 const PUNK_PICKS = [7, 14, 21, 3, 33, 40, 47, 36, 61, 26, 12, 50];
-const punkImg = (n) => `https://coinos.io/api/public/punks/${n}.webp`;
+const punkImg = (n) => `punks/${n}.webp`;
 
 async function onbUpload(file) {
   const fd = new FormData();
@@ -2110,7 +2110,10 @@ function onboardScreen() {
         ui.onbBusy = true; ui.onbError = ''; render();
         try {
           const addr = featureHook('namesAddress');
-          const fields = { name: addr ? addr.split('@')[0] : undefined, picture: o.avatar || undefined };
+          // keeping the default still publishes it — their punk should be
+          // their face on every nostr client, not just here
+          const picture = o.avatar || (me ? 'https://v3.coinos.io/' + punkUrl(me) : undefined);
+          const fields = { name: addr ? addr.split('@')[0] : undefined, picture };
           if (fields.name || fields.picture) await featureHook('publishProfile', fields);
           o.step = 'success';
         } catch (e) { ui.onbError = e.message; }
@@ -2121,8 +2124,8 @@ function onboardScreen() {
   // success
   return page([
     h('div', { class: 'onb-confetti' }, ...Array.from({ length: 18 }, () => h('i'))),
-    h('div', { class: 'check-badge', style: 'align-self:center' }, '✓'),
-    title(t('onbDoneTitle')),
+    h('h2', { class: 'onb-title', style: 'text-align:center' }, t('onbDoneTitle')),
+    h('div', { class: 'check-badge onb-check' }, '✓'),
     h('p', { class: 'muted', style: 'margin:0;text-align:center' }, t('onbDoneBody')),
     h('button', { class: 'btn-primary btn-block', style: 'padding:14px', onClick: () => {
       try { localStorage.setItem(ONBOARDED_KEY, '1'); } catch {}

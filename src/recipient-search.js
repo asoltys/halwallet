@@ -13,8 +13,10 @@ import { queryOn, parseNostrPubkey, npubOf, PROFILE_RELAYS } from './nostr.js';
 // coinos punks: the deterministic default avatar — same formula the coinos
 // app uses (last byte of the pubkey picks one of 64). Initials show through
 // if the image can't load (offline).
+// Self-hosted (dist/punks) — coinos.io's own copies 502 for a third of the
+// set. Same deterministic formula the coinos app uses.
 export const punkUrl = (pk) =>
-  `https://coinos.io/api/public/punks/${Math.floor((parseInt(pk.slice(-2), 16) / 256) * 64) + 1}.webp`;
+  `punks/${Math.floor((parseInt(pk.slice(-2), 16) / 256) * 64) + 1}.webp`;
 
 export const fallbackAvatar = (h, pk, name, cls) =>
   h('div', { class: cls + ' fallback' },

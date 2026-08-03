@@ -506,3 +506,4 @@ body::after {
 .tour-overlay { background: transparent; }
 .tour-card { position: fixed; left: 50%; transform: translateX(-50%); width: min(90vw, 360px); background: var(--paper); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); z-index: 81; }
 @media (prefers-reduced-motion: reduce) { .onb-confetti i { animation: none; display: none; } }
+.onb-check { width: 96px; height: 96px; font-size: 52px; align-self: center; margin: 6px 0; }
