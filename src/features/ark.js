@@ -18,6 +18,7 @@ import {
 } from '../api.js';
 import { t } from '../i18n.js';
 import { resolveBip353, parsePaymentName, parseBip21 as parseBip21Uri } from '../bip353.js';
+import { parseZapTarget, fetchPayParams, requestInvoice } from '../lnurl.js';
 import { shortAddr, shortTxid, timeAgo, ARK_ICON, ARK_MARK } from '../format.js';
 
 // t?ark1… bech32m — an Ark address for this or another ASP.
@@ -344,7 +345,8 @@ export function arkFeature(ctx) {
       if (mgr.state && (mgr.state.vtxos || []).length) { try { wallet.saveCache(); } catch {} }
       const tick = () => mgr.sync().catch(() => {})
         .then(() => driveExits(mgr)).catch(() => {})
-        .then(() => { if (ark === mgr) return maybeAutoRefresh(mgr); }).catch(() => {});
+        .then(() => { if (ark === mgr) return maybeAutoRefresh(mgr); }).catch(() => {})
+        .then(() => { if (ark === mgr) return maybeAutoWithdraw(mgr); }).catch(() => {});
       tick();
       // Reconcile once on connect: a vtxo synced in from another device (or
       // one this device held while a spend happened elsewhere) is checked
@@ -1031,6 +1033,184 @@ export function arkFeature(ctx) {
           : null));
   }
 
+  // ---- auto-withdraw --------------------------------------------------------
+  // Forward Spending onward once it crosses a threshold. Same destinations the
+  // send form takes — an ark address, a payment name, a lightning address, an
+  // npub, or an on-chain address — resolved through the same paths, just
+  // without a human present. Deliberately conservative: one transfer at a
+  // time, never while another action is in flight, and a failure backs off
+  // instead of retrying in a loop.
+
+  const awState = () => wallet.loadFeatureState('autowithdraw', {});
+  const awSave = (v) => wallet.saveFeatureState('autowithdraw', v);
+
+  // What kind of destination is this, and can we pay it at all? Returns
+  // { kind, address } or null. Resolution that needs the network (BIP-353,
+  // LNURL, npub profiles) happens at send time, not here.
+  function awClassify(dest) {
+    const d = (dest || '').trim();
+    if (!d) return null;
+    if (isArkAddress(d)) return { kind: 'ark', address: d };
+    if (parsePaymentName(d)) return { kind: 'name', address: d };
+    if (npubToHex(d)) return { kind: 'npub', address: d };
+    if (/^lnurl1[ac-hj-np-z02-9]+$/i.test(d)) return { kind: 'lnurl', address: d };
+    try {
+      btc.Address(wallet.netCfg.net).decode(d);
+      return { kind: 'onchain', address: d };
+    } catch {}
+    return null;
+  }
+
+  // Turn any destination into something payable right now.
+  async function awResolve(dest) {
+    const c = awClassify(dest);
+    if (!c) throw new Error(t('awBadDest'));
+    if (c.kind === 'ark' || c.kind === 'onchain') return c;
+    // a payment name may carry an ark instruction (free) or fall back to LNURL
+    if (c.kind === 'name') {
+      const p = parsePaymentName(c.address);
+      const uri = await resolveBip353(p.name, p.domain).catch(() => null);
+      const dec = uri ? parseBip21Uri(uri) : null;
+      const arkAddr = dec && dec.params && dec.params.ark;
+      if (arkAddr && isArkAddress(arkAddr)) return { kind: 'ark', address: arkAddr };
+      if (dec && dec.onchain) return { kind: 'onchain', address: dec.onchain };
+      return { kind: 'lnaddr', address: c.address };
+    }
+    if (c.kind === 'npub') {
+      const pk = npubToHex(c.address);
+      const adv = await lookupArkZapTarget(pk).catch(() => null);
+      if (adv && adv.status === 'ready') return { kind: 'ark', address: adv.address };
+      const profile = wallet.nostrProfile ? await wallet.nostrProfile(pk).catch(() => null) : null;
+      if (profile && profile.lud16) return { kind: 'lnaddr', address: profile.lud16 };
+      throw new Error(t('awBadDest'));
+    }
+    return { kind: c.kind === 'lnurl' ? 'lnurl' : 'lnaddr', address: c.address };
+  }
+
+  async function awPay(target, amountSat) {
+    const mgr = await connectArk();
+    if (target.kind === 'ark') {
+      await mgr.send(target.address, amountSat);
+      return;
+    }
+    if (target.kind === 'onchain') {
+      const spk = btc.OutScript.encode(btc.Address(wallet.netCfg.net).decode(target.address));
+      // Offboarding moves whole vtxos, so carve out the exact amount first
+      // when we're not sending everything.
+      const spendables = () => mgr.state.vtxos.filter((v) => v.state === 'spendable');
+      const total = spendables().reduce((n, v) => n + v.amountSat, 0);
+      let ids;
+      if (amountSat < total) {
+        let exact = spendables().find((v) => v.amountSat === amountSat);
+        if (!exact) {
+          const before = new Set(spendables().map((v) => v.id));
+          await mgr.send(mgr.address(), amountSat);
+          for (let i = 0; i < 30 && !exact; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            await mgr.sync().catch(() => {});
+            exact = spendables().find((v) => v.amountSat === amountSat && !before.has(v.id));
+          }
+          if (!exact) throw new Error(t('arkSplitTimeout'));
+        }
+        ids = [exact.id];
+      }
+      await mgr.startOffboard(spk, target.address, ids);
+      return;
+    }
+    // lightning: ask their server for an invoice, pay it over ark
+    const zt = parseZapTarget(target.address);
+    if (!zt || !zt.url) throw new Error(t('awBadDest'));
+    const params = await fetchPayParams(zt.url);
+    const msat = amountSat * 1000;
+    if (msat < params.minSendable || msat > params.maxSendable) throw new Error(t('awOutOfRange'));
+    const invoice = await requestInvoice(params, { amountMsat: msat, lnurlBech32: zt.lnurlBech32 });
+    await mgr.payLnInvoice(invoice, { amountSat });
+  }
+
+  let awBusy = false;
+  async function maybeAutoWithdraw(mgr) {
+    const st = awState();
+    if (!st.on || !st.dest || wallet.watchOnly || awBusy) return;
+    if (Date.now() - (st.failedAt || 0) < 15 * 60_000) return; // backing off
+    if ((mgr.state.actions || []).some((a) => !['done', 'failed'].includes(a.step))) return;
+    const spendable = (mgr.state.vtxos || [])
+      .filter((v) => v.state === 'spendable').reduce((n, v) => n + v.amountSat, 0);
+    const threshold = Number(st.threshold) || 0;
+    const keep = Math.max(0, Number(st.keep) || 0);
+    if (!threshold || spendable < threshold) return;
+    const amount = spendable - keep;
+    if (amount < 330) return;
+    awBusy = true;
+    try {
+      const target = await awResolve(st.dest);
+      await awPay(target, amount);
+      const s2 = awState();
+      awSave({ ...s2, lastAt: Date.now(), lastSat: amount, failedAt: 0, error: '' });
+      toast(t('awSent', { n: fmtAmount(amount) + ' ' + unitLabel() }));
+      render();
+    } catch (e) {
+      const s2 = awState();
+      awSave({ ...s2, failedAt: Date.now(), error: e.message || String(e) });
+      console.warn('auto-withdraw failed:', e.message);
+    } finally {
+      awBusy = false;
+    }
+  }
+
+  function autoWithdrawCard() {
+    if (!arkAvailable() || wallet.watchOnly) return null;
+    const st = awState();
+    const draft = ui.awDraft || (ui.awDraft = { dest: st.dest || '', threshold: String(st.threshold || ''), keep: String(st.keep || '') });
+    const save = (on) => {
+      const dest = (draft.dest || '').trim();
+      const threshold = parseInt(String(draft.threshold).replace(/[^0-9]/g, ''), 10) || 0;
+      const keep = parseInt(String(draft.keep).replace(/[^0-9]/g, ''), 10) || 0;
+      if (on) {
+        if (!awClassify(dest)) { ui.awError = t('awBadDest'); render(); return; }
+        if (threshold < 1000) { ui.awError = t('awLowThreshold'); render(); return; }
+        if (keep >= threshold) { ui.awError = t('awKeepTooHigh'); render(); return; }
+      }
+      ui.awError = '';
+      awSave({ ...st, on, dest, threshold, keep, failedAt: 0, error: '' });
+      toast(on ? t('awOn') : t('awOff'));
+      render();
+    };
+    return h('div', { class: 'card col' },
+      h('h3', {}, t('awTitle')),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('awDesc')),
+      h('label', { class: 'field' },
+        h('span', { class: 'lab' }, t('awDest')),
+        h('input', {
+          type: 'text', class: 'mono-input', placeholder: t('awDestPh'),
+          autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
+          value: draft.dest,
+          onInput: (e) => { draft.dest = e.target.value; },
+        })),
+      h('div', { class: 'row gap6' },
+        h('label', { class: 'field grow' },
+          h('span', { class: 'lab' }, t('awThreshold')),
+          h('input', {
+            type: 'number', inputmode: 'numeric', min: '0', placeholder: '100000',
+            value: draft.threshold, onInput: (e) => { draft.threshold = e.target.value; },
+          })),
+        h('label', { class: 'field grow' },
+          h('span', { class: 'lab' }, t('awKeep')),
+          h('input', {
+            type: 'number', inputmode: 'numeric', min: '0', placeholder: '0',
+            value: draft.keep, onInput: (e) => { draft.keep = e.target.value; },
+          }))),
+      ui.awError ? h('div', { class: 'notice err small' }, ui.awError) : null,
+      st.on && st.error ? h('div', { class: 'notice err small' }, t('awLastError', { why: st.error })) : null,
+      st.lastAt
+        ? h('div', { class: 'small faint' }, t('awLast', { n: fmtAmount(st.lastSat || 0) + ' ' + unitLabel(), when: new Date(st.lastAt).toLocaleString() }))
+        : null,
+      st.on
+        ? h('div', { class: 'row gap6' },
+            h('button', { class: 'grow', onClick: () => save(true) }, t('save')),
+            h('button', { class: 'btn-ghost', onClick: () => save(false) }, t('awTurnOff')))
+        : h('button', { class: 'btn-primary btn-block', onClick: () => save(true) }, t('awTurnOn')));
+  }
+
   // ---- NWC bridge funding (PoC) --------------------------------------------
   // An external NWC wallet service (e.g. coinos) can bridge ark -> lightning:
   // a nostr client asks IT to pay_invoice, it asks US (kind 23196, funding
@@ -1652,6 +1832,7 @@ export function arkFeature(ctx) {
     // swaps feature): the ASP pays invoices natively over ark.
     canLnPay() { return arkAvailable() && !wallet.watchOnly && !!(ark && ark.info); },
     lnSpendableSat() { const b = arkBalance(); return b ? b.spendableSat : 0; },
+    settingsCards() { return [autoWithdrawCard()]; },
     startLnPay(invoice, meta) { return startArkLnPay(invoice, meta); },
     // ---- headless seam for the NWC wallet service ----
     arkPayInvoice(invoice, opts) { return payInvoiceHeadless(invoice, opts); },
