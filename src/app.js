@@ -1595,7 +1595,15 @@ function goHome() {
   // so the logo is always a way back to your wallet.
   if (activeAccount()) {
     ui.screen = 'wallet';
-    ui.chatOpen = false; // the logo always leads back to the wallet, chat included
+    // Home means home: clear every takeover a feature or subpage may hold —
+    // chat, profile, ark exit, settings subpages, the address rescan list.
+    ui.chatOpen = false;
+    ui.profilePk = null;
+    ui.profEdit = null;
+    ui.arkExitPage = null;
+    ui.settingsPage = null;
+    ui.addrScan = false;
+    ui.arkMoveOpen = false;
     ui.tab = wallet.offline ? 'settings' : 'receive';
     ui.draft = null;
     ui.sendResult = null;
