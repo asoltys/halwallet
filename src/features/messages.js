@@ -797,7 +797,7 @@ export function messagesFeature(ctx) {
     // ---- DMs
     kids.push(h('div', { class: 'row between', style: 'align-items:baseline' },
       h('h3', { style: 'margin:0' }, t('msgDmsTitle')),
-      h('button', { class: 'linklike', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'newdm' ? null : 'newdm'; render(); } }, t('msgNewDm'))));
+      h('button', { class: 'btn-sm', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'newdm' ? null : 'newdm'; render(); } }, t('msgNewDm'))));
     if (ui.msgHomePanel === 'newdm')
       kids.push(h('div', { class: 'row gap6' },
         h('input', {
@@ -835,8 +835,8 @@ export function messagesFeature(ctx) {
     kids.push(h('div', { class: 'row between mt16', style: 'align-items:baseline' },
       h('h3', { style: 'margin:0' }, t('msgCommunitiesTitle')),
       h('div', { class: 'row gap6' },
-        h('button', { class: 'linklike', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'join' ? null : 'join'; render(); } }, t('msgJoin')),
-        h('button', { class: 'linklike', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'create' ? null : 'create'; render(); } }, t('msgCreate')))));
+        h('button', { class: 'btn-sm', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'join' ? null : 'join'; render(); } }, t('msgJoin')),
+        h('button', { class: 'btn-sm', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'create' ? null : 'create'; render(); } }, t('msgCreate')))));
     if (ui.msgHomePanel === 'join')
       kids.push(h('div', { class: 'row gap6' },
         h('input', {
