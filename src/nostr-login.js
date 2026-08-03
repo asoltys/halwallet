@@ -38,7 +38,7 @@ import { entropyToMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english';
 import { getPublicKey, finalizeEvent, nip44 } from './nostr.js';
 import { SimplePool } from 'nostr-tools/pool';
-import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46';
+import { BunkerSigner, parseBunkerInput, createNostrConnectURI } from 'nostr-tools/nip46';
 import { generateSecretKey } from 'nostr-tools/pure';
 
 const SEED_DTAG = 'coinos:wallet:v1';
@@ -102,6 +102,10 @@ export async function bunkerSigner(uri, { onAuth } = {}) {
   });
   await signer.connect();
   const pubkey = await signer.getPublicKey();
+  return bunkerAdapter(signer, pubkey);
+}
+
+function bunkerAdapter(signer, pubkey) {
   return {
     kind: 'bunker', pubkey, label: 'remote signer',
     signEvent: (e) => signer.signEvent(e),
@@ -111,6 +115,33 @@ export async function bunkerSigner(uri, { onAuth } = {}) {
     decryptFrom: (peer, ct) => signer.nip44Decrypt(peer, ct),
     close: () => { try { signer.close(); } catch {} },
   };
+}
+
+// Client-initiated NIP-46: WE mint a nostrconnect:// URI; a signer app
+// (Amber, nsec.app, …) opens or scans it and connects back to us over the
+// relay — no bunker URL to copy. Returns the URI (render it as a deep link
+// and a QR), a promise that resolves to a signer adapter when the app
+// answers, and a cancel.
+export function nostrConnect({ relays = ['wss://relay.coinos.io', 'wss://nos.lol'], timeoutMs = 180_000 } = {}) {
+  const local = generateSecretKey();
+  const secret = hex.encode(crypto.getRandomValues(new Uint8Array(16)));
+  const uri = createNostrConnectURI({
+    clientPubkey: getPublicKey(local),
+    relays,
+    secret,
+    name: 'coinos',
+    url: 'https://v3.coinos.io',
+    perms: ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'],
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('signer connect timed out')), timeoutMs);
+  const ready = (async () => {
+    const signer = await BunkerSigner.fromURI(local, uri, {}, controller.signal);
+    const pubkey = await signer.getPublicKey();
+    return bunkerAdapter(signer, pubkey);
+  })();
+  ready.finally(() => clearTimeout(timer)).catch(() => {});
+  return { uri, ready, cancel: (reason) => controller.abort(reason || new Error('cancelled')) };
 }
 
 // A pasted key: signing happens locally, and the key is never persisted.
