@@ -376,7 +376,11 @@ async function takenByCoinosUser(domain, name) {
   if (domain !== 'coinos.io') return false;
   try {
     const r = await fetch(`https://coinos.io/api/users/${encodeURIComponent(name)}`);
-    return r.status === 200;
+    if (r.status !== 200) return false;
+    // A migrated account has handed its name over: the old site keeps the
+    // account and its history, but receiving belongs to us now.
+    const u = await r.json().catch(() => null);
+    return !(u && u.migrated);
   } catch { return true; } // can't verify → refuse rather than squat
 }
 
