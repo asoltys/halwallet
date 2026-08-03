@@ -791,6 +791,15 @@ export function arkFeature(ctx) {
       h('div', { class: incoming ? 'amount-pos' : 'amount-neg', style: 'font-size:20px' },
         (incoming ? '+' : '-') + fmtAmount(m.amountSat) + ' ' + unitLabel()),
       row(t('dateLabel'), new Date(m.ts).toLocaleString()),
+      (() => {
+        const pk = zapNoteFor(m);
+        const chip = pk ? ctx.hook('profileChip', pk) : null;
+        return chip
+          ? h('div', { class: 'row between', style: 'gap:12px;align-items:center' },
+              h('span', { class: 'small muted' }, t('recipient')),
+              chip)
+          : null;
+      })(),
       m.to ? row(t('arkPayTo'), shortAddr(m.to, 16, 12)) : null,
       m.vtxoId ? row(t('arkVtxoId'), shortTxid(m.vtxoId)) : null,
       m.detail ? row(t('detailsLabel'), m.detail) : null,
