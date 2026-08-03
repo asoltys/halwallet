@@ -86,6 +86,7 @@ export async function fetchNostrProfile(pubkeyHex, relays = PROFILE_RELAYS) {
     return {
       name: m.display_name || m.name || null,
       picture: m.picture || null,
+      about: typeof m.about === 'string' ? m.about : null,
       nip05: m.nip05 || null,
       // NIP-57/LUD-16/06: where to send a Lightning zap. lud16 is a
       // lightning address (name@domain); lud06 is a bech32 lnurl.

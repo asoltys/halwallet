@@ -15,6 +15,7 @@
 import {
   subscribeOn, publishOn, queryOn, fetchNostrProfile, fetchInboxRelays,
   npubOf, parseNostrPubkey, generateSecretKey, getPublicKey, finalizeEvent, nip44,
+  PROFILE_RELAYS,
 } from '../nostr.js';
 import {
   channelKey, controlKey, guestbookKey, openWrap, wrapRumor,
@@ -744,12 +745,134 @@ export function messagesFeature(ctx) {
         ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   };
 
-  const avatar = (pk, cls = 'chat-avatar') => {
+  const avatar = (pk, cls = 'chat-avatar', clickable = true) => {
+    const attrs = clickable
+      ? { class: cls + ' clickable', onClick: (e) => { e.stopPropagation(); openProfile(pk); } }
+      : { class: cls };
     const p = profileOf(pk);
     return p && p.picture
-      ? h('img', { class: cls, src: p.picture, alt: '' })
-      : h('div', { class: cls + ' fallback' }, displayName(pk).slice(0, 2));
+      ? h('img', { ...attrs, src: p.picture, alt: '' })
+      : h('div', { ...attrs, class: attrs.class + ' fallback' }, displayName(pk).slice(0, 2));
   };
+
+  // ---- profiles: view + own kind-0 editor ---------------------------------
+
+  const fullProfiles = new Map(); // pk -> { raw kind0 content object, fetched_at }
+  function openProfile(pk) {
+    ui.profilePk = pk;
+    ui.profEdit = null;
+    render();
+    if (!fullProfiles.has(pk)) {
+      queryOn([...new Set([...PROFILE_RELAYS, ...DM_RELAYS])], { kinds: [0], authors: [pk] }, 3500).then((evs) => {
+        const newest = evs.sort((a, b) => b.created_at - a.created_at)[0];
+        let m = {};
+        try { m = newest ? JSON.parse(newest.content) : {}; } catch {}
+        fullProfiles.set(pk, m);
+        profiles.set(pk, { name: m.display_name || m.name || null, picture: m.picture || null });
+        if (ui.profilePk === pk) render();
+      }).catch(() => fullProfiles.set(pk, {}));
+    }
+  }
+
+  async function saveProfile() {
+    const id = await identity();
+    if (!id) { toast(t('msgNoIdentity')); return; }
+    const e = ui.profEdit;
+    ui.profSaving = true;
+    render();
+    try {
+      // merge over the newest published kind 0 so unknown fields round-trip
+      const evs = await queryOn([...new Set([...PROFILE_RELAYS, ...DM_RELAYS])], { kinds: [0], authors: [id.pubkey] }, 3000);
+      const newest = evs.sort((a, b) => b.created_at - a.created_at)[0];
+      let base = {};
+      try { base = newest ? JSON.parse(newest.content) : {}; } catch {}
+      const merged = { ...base };
+      for (const [k, v] of [['name', e.name], ['about', e.about], ['picture', e.picture], ['lud16', e.lud16]]) {
+        if (v.trim()) merged[k] = v.trim();
+        else delete merged[k];
+      }
+      if (merged.name) merged.display_name = merged.name;
+      const partial = { kind: 0, content: JSON.stringify(merged), tags: [], created_at: Math.floor(Date.now() / 1000) };
+      const evt = id.signer instanceof Uint8Array ? finalizeEvent(partial, id.signer) : await id.signer.signEvent(partial);
+      const ok = await publishOn([...new Set([...PROFILE_RELAYS, ...DM_RELAYS])], evt);
+      if (!ok) throw new Error(t('msgSendFailed'));
+      fullProfiles.set(id.pubkey, merged);
+      profiles.set(id.pubkey, { name: merged.name || null, picture: merged.picture || null });
+      ui.profEdit = null;
+      toast(t('profSaved'));
+    } catch (err) {
+      toast(err.message || String(err));
+    } finally {
+      ui.profSaving = false;
+      render();
+    }
+  }
+
+  function profileScreen() {
+    const pk = ui.profilePk;
+    const mine = isMe(pk);
+    const full = fullProfiles.get(pk);
+    const name = displayName(pk);
+    const npub = npubOf(pk) || pk;
+    const field = (label, key, ph = '') => h('label', { class: 'field' },
+      h('span', { class: 'lab' }, label),
+      h('input', {
+        type: 'text', placeholder: ph, value: ui.profEdit[key],
+        onInput: (ev) => { ui.profEdit[key] = ev.target.value; },
+      }));
+    return h('div', { class: 'col', style: 'gap:16px' },
+      ctx.brandHeader(false),
+      h('div', { class: 'card col', style: 'gap:12px' },
+        h('div', { class: 'row gap6', style: 'align-items:center' },
+          backBtn(() => { ui.profilePk = null; ui.profEdit = null; render(); }),
+          avatar(pk, 'chat-avatar profile-avatar', false),
+          h('div', { class: 'col grow', style: 'min-width:0;gap:2px' },
+            h('div', { class: 'chat-title' }, name),
+            full && full.nip05 ? h('div', { class: 'muted small' }, String(full.nip05).replace(/^_@/, '')) : null,
+            full && full.lud16 ? h('div', { class: 'muted small' }, '⚡ ' + full.lud16) : null)),
+        full === undefined
+          ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }))
+          : full.about ? h('p', { class: 'small', style: 'margin:0;white-space:pre-wrap' }, String(full.about).slice(0, 1000)) : null,
+        h('div', { class: 'addr-box break', style: 'font-size:11px' }, npub),
+        ui.profEdit
+          ? h('div', { class: 'col', style: 'gap:8px' },
+              field(t('profName'), 'name'),
+              field(t('profAbout'), 'about'),
+              field(t('profPicture'), 'picture', 'https://…'),
+              field(t('profLud16'), 'lud16', 'you@coinos.io'),
+              h('div', { class: 'row gap6' },
+                h('button', { class: 'btn-ghost grow', onClick: () => { ui.profEdit = null; render(); } }, t('cancel')),
+                h('button', { class: 'btn-primary grow', disabled: ui.profSaving, onClick: saveProfile },
+                  ui.profSaving ? h('span', { class: 'spinner sm' }) : t('save'))))
+          : h('div', { class: 'row gap6 wrap' },
+              mine ? null : h('button', { class: 'btn-primary grow', onClick: () => {
+                const peer = pk;
+                ui.profilePk = null;
+                ui.chatOpen = true;
+                ui.msgView = 'dm';
+                ui.msgPeer = peer;
+                ui.msgStick = true;
+                render();
+              } }, t('msgDmsTitle')),
+              mine ? null : h('button', { class: 'grow', onClick: () => {
+                const npubStr = npubOf(pk);
+                ui.profilePk = null;
+                ui.chatOpen = false;
+                ui.tab = 'send';
+                render();
+                hook('matchSendText', npubStr);
+              } }, t('profPay')),
+              mine ? h('button', { class: 'btn-primary grow', onClick: () => {
+                const f = fullProfiles.get(pk) || {};
+                ui.profEdit = {
+                  name: f.display_name || f.name || '',
+                  about: f.about || '',
+                  picture: f.picture || '',
+                  lud16: f.lud16 || (hook('namesAddress') || ''),
+                };
+                render();
+              } }, t('profEdit')) : null)));
+  }
 
   const backBtn = (onClick) => h('button', { class: 'iconbtn chat-back', onClick }, '‹');
 
@@ -802,9 +925,12 @@ export function messagesFeature(ctx) {
     const kids = [];
 
     // Chat takes the whole screen, so home carries the way back to the wallet.
-    kids.push(h('div', { class: 'row gap6', style: 'align-items:center' },
-      backBtn(() => { ui.chatOpen = false; render(); }),
-      h('h3', { style: 'margin:0' }, t('tabMessages'))));
+    const me = myPubkeys()[0];
+    kids.push(h('div', { class: 'row between', style: 'align-items:center' },
+      h('div', { class: 'row gap6', style: 'align-items:center' },
+        backBtn(() => { ui.chatOpen = false; render(); }),
+        h('h3', { style: 'margin:0' }, t('tabMessages'))),
+      me ? avatar(me) : null));
 
     if (pendingLink) kids.push(linkInviteCard());
     for (const [rid, inv] of pendingDirect) kids.push(directInviteCard(rid, inv));
@@ -952,7 +1078,10 @@ export function messagesFeature(ctx) {
         grouped ? h('div', { class: 'chat-avatar spacer' }) : avatar(m.author),
         h('div', { class: 'chat-body' },
           grouped ? null : h('div', { class: 'chat-meta' },
-            h('span', { class: 'chat-name' + (m.author === room.jm.owner ? ' owner' : '') },
+            h('span', {
+              class: 'chat-name clickable' + (m.author === room.jm.owner ? ' owner' : ''),
+              onClick: () => openProfile(m.author),
+            },
               displayName(m.author),
               m.author === room.jm.owner ? h('span', { class: 'chat-badge' }, t('msgAdmin')) : null),
             h('span', { class: 'chat-time' }, timeLabel(tms))),
@@ -1056,7 +1185,7 @@ export function messagesFeature(ctx) {
       h('div', { class: 'row chat-head gap6', style: 'align-items:center' },
         backBtn(() => { ui.msgView = 'home'; render(); }),
         avatar(peer),
-        h('div', { class: 'col', style: 'gap:2px;min-width:0' },
+        h('div', { class: 'col clickable', style: 'gap:2px;min-width:0', onClick: () => openProfile(peer) },
           h('div', { class: 'chat-title' }, displayName(peer)),
           h('div', { class: 'muted small' }, t('msgDmEncrypted')))),
       h('div', {
@@ -1095,10 +1224,21 @@ export function messagesFeature(ctx) {
       }, h('span', { html: CHAT_ICON }))];
     },
     screenView() {
-      if (!ui.chatOpen || ui.screen !== 'wallet') return null;
+      if (ui.screen !== 'wallet') return null;
+      if (ui.profilePk) return profileScreen();
+      if (!ui.chatOpen) return null;
       return h('div', { class: 'col', style: 'gap:16px' },
         ctx.brandHeader(false),
         messagesTab());
+    },
+    // Anyone (ark's history, other features) can open a profile or render a
+    // small clickable identity chip.
+    showProfile(pk) { openProfile(pk); return true; },
+    profileChip(pk) {
+      return h('span', {
+        class: 'zap-chip',
+        onClick: (e) => { e.stopPropagation(); openProfile(pk); },
+      }, avatar(pk, 'chat-avatar mini', false), h('span', { class: 'small' }, displayName(pk)));
     },
     init() {
       if (urlInvite && !pendingLink) {

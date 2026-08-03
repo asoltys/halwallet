@@ -645,6 +645,7 @@ export function arkFeature(ctx) {
       const settle = (a) => {
         if (a.step === 'done') {
           ui.arkLnPaid = { amountSat: a.amountSat, meta: p.meta };
+          if (p.meta && p.meta.pk) noteZap('inv:' + p.invoice, p.meta.pk);
           ui.arkLnPay = null;
         } else if (ui.arkLnPay) {
           ui.arkLnPay.status = 'ready';
@@ -732,6 +733,22 @@ export function arkFeature(ctx) {
   }
 
 
+  // Who a zap went to, keyed by what the movement records (the ark address
+  // for direct zaps, the invoice for Lightning ones) — enough to put a face
+  // on history rows without touching the manager's movement schema.
+  const zapNotes = () => wallet.loadFeatureState('zapnotes', {});
+  function noteZap(key, pk) {
+    const s = zapNotes();
+    s[key] = pk;
+    const keys = Object.keys(s);
+    if (keys.length > 200) for (const k of keys.slice(0, keys.length - 200)) delete s[k];
+    wallet.saveFeatureState('zapnotes', s);
+  }
+  const zapNoteFor = (m) =>
+    m.type === 'send' && m.to ? zapNotes()['to:' + m.to]
+    : m.type === 'ln-send' && m.invoice ? zapNotes()['inv:' + m.invoice]
+    : null;
+
   function arkHistoryItem(m) {
     const incoming = !['send', 'offboard', 'exit', 'ln-send'].includes(m.type);
     const label = m.type === 'receive' ? t('received') : m.type === 'board' ? t('arkBoarded')
@@ -746,8 +763,9 @@ export function arkFeature(ctx) {
         ? h('div', { class: `ico ${incoming ? 'in' : 'out'}` }, '⚡')
         : h('div', { class: `ico ${incoming ? 'in' : 'out'}`, html: ARK_MARK(15) }),
       h('div', { class: 'grow' },
-        h('div', { class: 'row gap6' },
+        h('div', { class: 'row gap6', style: 'align-items:center' },
           label,
+          (() => { const pk = zapNoteFor(m); return pk ? ctx.hook('profileChip', pk) : null; })(),
           m.status !== 'complete' ? h('span', { class: 'tag pending' }, m.status) : null),
         h('div', { class: 'small faint' }, timeAgo(m.ts / 1000))),
       h('div', { style: 'text-align:right' },
@@ -973,6 +991,7 @@ export function arkFeature(ctx) {
       const action = mgr.state.actions.find((a) => a.id === actionId);
       if (!action || action.step === 'failed') throw new Error(action?.error || t('claimFailed'));
       const vtxoId = decodeVtxo(hex.decode((action.destBytesList || [action.destBytes])[0])).id;
+      noteZap('to:' + z.address, z.pk);
       // the receipt is best-effort: the sats are already delivered via mailbox
       await wallet.nostrPublish({
         kind: ARK_ZAP_KIND,

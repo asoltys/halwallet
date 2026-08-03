@@ -75,7 +75,7 @@ export function zapsFeature(ctx) {
         });
       }
       const invoice = await requestInvoice(p, { amountMsat: msat, zapRequest, lnurlBech32: z.target.lnurlBech32, comment: z.comment });
-      const meta = { name: z.name, address: z.address, comment: canZap ? z.comment : '', isZap: !!zapRequest };
+      const meta = { name: z.name, address: z.address, pk: z.target.pk || null, comment: canZap ? z.comment : '', isZap: !!zapRequest };
       ui.zap = null;
       // Hand the bolt11 to the swaps feature's pay flow (review → confirm).
       hook('startLnPay', invoice, meta);

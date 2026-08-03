@@ -308,6 +308,8 @@ export function namesFeature(ctx) {
     id: 'names',
     init() { checked = false; lastError = null; refresh(); },
     namesAdoptIdentity(signer, npub) { return adoptIdentity(signer, npub); },
+    // the claimed payment address, for anyone prefilling a lightning address
+    namesAddress() { const st = load(); return st.name ? `${st.name}@${st.domain || DOMAIN}` : null; },
     stop() { clearTimeout(retryTimer); clearTimeout(deadline); deadline = null; },
     receiveModes() {
       if (!available()) return [];
