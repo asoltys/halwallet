@@ -11,8 +11,31 @@
 import { queryOn, parseNostrPubkey, npubOf, PROFILE_RELAYS } from './nostr.js';
 
 const REGISTRAR = 'https://names.coinos.io';
-const SEARCH_RELAYS = ['wss://relay.nostr.band'];
+const SEARCH_RELAYS = ['wss://search.nos.today', 'wss://relay.nostr.band'];
+const PRIMAL_CACHE = 'wss://cache2.primal.net/v1';
 const MAX_RESULTS = 8;
+
+// Primal's public cache API has the best-ranked user search on nostr (it's
+// what the Primal client itself uses): a custom REQ that answers with plain
+// kind-0 events. Nonstandard, so the NIP-50 relays stay as fallback.
+function primalSearch(q, limit = MAX_RESULTS) {
+  return new Promise((resolve) => {
+    const rows = [];
+    let ws;
+    const finish = () => { clearTimeout(to); try { ws.close(); } catch {} resolve(rows); };
+    const to = setTimeout(finish, 3500);
+    try { ws = new WebSocket(PRIMAL_CACHE); } catch { clearTimeout(to); return resolve(rows); }
+    ws.onopen = () => ws.send(JSON.stringify(['REQ', 'rs', { cache: ['user_search', { query: q, limit }] }]));
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m[0] === 'EVENT' && m[2] && m[2].kind === 0) rows.push(m[2]);
+        if (m[0] === 'EOSE') finish();
+      } catch {}
+    };
+    ws.onerror = finish;
+  });
+}
 
 const profileCache = new Map(); // pk -> { name, picture }
 const queryCache = new Map(); // q -> rows
@@ -68,18 +91,25 @@ export async function searchRecipients(qRaw) {
       .then((j) => (j.results || []).forEach((r) => add(r.pubkey, { name: r.name, address: r.address }, 1))),
     (async () => {
       if (exact) return; // an npub needs no full-text search
-      const evs = await queryOn(SEARCH_RELAYS, { kinds: [0], search: q, limit: MAX_RESULTS }, 3500);
-      for (const e of evs) {
+      const noteKind0 = (e, pri) => {
         try {
           const m = JSON.parse(e.content);
           profileCache.set(e.pubkey, { name: m.display_name || m.name || null, picture: m.picture || null });
-          add(e.pubkey, { name: m.display_name || m.name, picture: m.picture, address: typeof m.nip05 === 'string' ? m.nip05.replace(/^_@/, '') : undefined }, 2);
+          add(e.pubkey, { name: m.display_name || m.name, picture: m.picture, address: typeof m.nip05 === 'string' ? m.nip05.replace(/^_@/, '') : undefined }, pri);
         } catch {}
-      }
+      };
+      const primal = await primalSearch(q);
+      for (const e of primal) noteKind0(e, 2);
+      if (primal.length) return; // fallback only when the cache is empty/down
+      const evs = await queryOn(SEARCH_RELAYS, { kinds: [0], search: q, limit: MAX_RESULTS }, 3500);
+      for (const e of evs) noteKind0(e, 3);
     })(),
   ]);
 
-  const rows = [...out.values()].sort((a, b) => a.pri - b.pri).slice(0, MAX_RESULTS);
+  // Within a source, a name that actually contains the query outranks the
+  // search relay's looser relevance matches.
+  const score = (r) => ((r.name || '').toLowerCase().includes(q) || (r.address || '').toLowerCase().includes(q)) ? 0 : 1;
+  const rows = [...out.values()].sort((a, b) => a.pri - b.pri || score(a) - score(b)).slice(0, MAX_RESULTS);
   await fillProfiles(rows).catch(() => {});
   if (queryCache.size > 200) queryCache.clear();
   queryCache.set(q, rows);
