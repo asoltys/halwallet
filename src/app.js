@@ -2812,6 +2812,13 @@ function recipientRow(s, r, i) {
       !single && h('button', { type: 'button', class: 'btn-sm', title: t('remove'), onClick: () => { s.recipients.splice(i, 1); render(); } }, '✕')
     ),
     check,
+    i === 0 ? (() => {
+      const note = featureHook('resolvingNote');
+      return note
+        ? h('div', { class: 'row gap6', style: 'align-items:center;padding:2px 0' },
+            h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, note))
+        : null;
+    })() : null,
     i === 0 && sendSearch.rows && sendSearch.rows.length && searchable(r.address)
       ? h('div', { class: 'list send-suggest' }, resultRows(h, sendSearch.rows, pickRecipient))
       : null,

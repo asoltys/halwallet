@@ -1387,11 +1387,13 @@ export function messagesFeature(ctx) {
       profiles.set(id.pubkey, { name: merged.name || null, picture: merged.picture || null, t: Date.now() });
       return true;
     },
-    profileChip(pk) {
+    profileChip(pk, size) {
+      const big = size === 'lg';
       return h('span', {
-        class: 'zap-chip',
+        class: 'zap-chip' + (big ? ' lg' : ''),
         onClick: (e) => { e.stopPropagation(); openProfile(pk); },
-      }, avatar(pk, 'chat-avatar mini', false), h('span', { class: 'small' }, displayName(pk)));
+      }, avatar(pk, 'chat-avatar ' + (big ? 'chip-lg' : 'mini'), false),
+        h('span', { class: big ? '' : 'small' }, displayName(pk)));
     },
     init() {
       if (urlInvite && !pendingLink) {

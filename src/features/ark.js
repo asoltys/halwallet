@@ -967,6 +967,8 @@ export function arkFeature(ctx) {
   }
 
   function arkZapView() {
+    // the npub lookup is a background step — no takeover card for it
+    if (ui.arkZap && ui.arkZap.status === 'lookup') return null;
     if (ui.arkZapped) {
       return h('div', {
         class: 'card col',
@@ -982,7 +984,7 @@ export function arkFeature(ctx) {
     if (!z) return null;
     return h('div', { class: 'card col', style: 'gap:12px' },
       h('h3', {}, '⚡ ' + t('arkZapTitle')),
-      ctx.hook('profileChip', z.pk) || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.npub),
+      ctx.hook('profileChip', z.pk, 'lg') || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.npub),
       z.status === 'lookup' ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkZapLookup'))) : null,
       z.status === 'noark' ? h('div', { class: 'notice err' }, t('arkZapNoArk')) : null,
       // No Ark address, but they may still take a Lightning zap — hand off to
@@ -1634,6 +1636,7 @@ export function arkFeature(ctx) {
     // swaps feature): the ASP pays invoices natively over ark.
     canLnPay() { return arkAvailable() && !wallet.watchOnly && !!(ark && ark.info); },
     lnSpendableSat() { const b = arkBalance(); return b ? b.spendableSat : 0; },
+    resolvingNote() { return ui.arkZap && ui.arkZap.status === 'lookup' ? t('arkZapLookup') : null; },
     startLnPay(invoice, meta) { return startArkLnPay(invoice, meta); },
     // ---- headless seam for the NWC wallet service ----
     arkPayInvoice(invoice, opts) { return payInvoiceHeadless(invoice, opts); },
