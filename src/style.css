@@ -398,3 +398,5 @@ hr.divider { margin: 16px 0; }
 .npub-box { display: flex; align-items: center; gap: 8px; }
 .copy-ico { flex-shrink: 0; background: none; border: none; padding: 2px; color: var(--muted); cursor: pointer; display: flex; }
 .copy-ico:hover { color: var(--ink); }
+.settings-nav { text-align: left; font-weight: 600; padding: 14px 16px; position: relative; }
+.settings-nav::after { content: '›'; position: absolute; right: 16px; color: var(--faint); font-weight: 400; }

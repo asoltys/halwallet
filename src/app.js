@@ -1419,21 +1419,31 @@ function addressScanView() {
   );
 }
 
+// Settings is a hub: the main page is nothing but doors, each subpage owns
+// one concern — Wallet (name/pubkey/seed), Payments (address + Spending),
+// Network (chain + data source), Nostr, Advanced (rarities).
 function settingsTab() {
   if (ui.addrScan && !wallet.offline) return addressScanView();
-  if (ui.settingsPage === 'advanced') return advancedSettingsView();
-  if (ui.settingsPage === 'nostr') return nostrSettingsView();
   const a = activeAccount();
+  const page = (kids) => h('div', { class: 'col', style: 'gap:16px' }, ...kids,
+    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = null; render(); } }, t('back')));
+  switch (ui.settingsPage) {
+    case 'wallet': return page(a ? [walletNameCard(a), pubkeyCard(a), recoveryCard(a)] : []);
+    case 'payments': return page(featureAll('settingsCards').reverse());
+    case 'network': return page([networkCard(), explorerCard()]);
+    case 'nostr': return nostrSettingsView();
+    case 'advanced': return advancedSettingsView();
+  }
+  const nav = (id, label) =>
+    h('button', { class: 'btn-block settings-nav', onClick: () => { ui.settingsPage = id; render(); } }, label);
   return h(
     'div',
-    { class: 'col', style: 'gap:16px' },
-    // The active wallet's own settings, inlined (auto-logout lives in Advanced).
-    ...(a ? [walletNameCard(a), pubkeyCard(a), recoveryCard(a)] : []),
-    ...featureAll('settingsCards'),
-    networkCard(),
-    explorerCard(),
-    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = 'nostr'; render(); } }, t('nostrSettings')),
-    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = 'advanced'; render(); } }, t('advancedSettings'))
+    { class: 'col', style: 'gap:10px' },
+    nav('wallet', t('settingsWallet')),
+    nav('payments', t('settingsPayments')),
+    nav('network', t('settingsNetwork')),
+    nav('nostr', t('nostrSettings')),
+    nav('advanced', t('advancedSettings'))
   );
 }
 
