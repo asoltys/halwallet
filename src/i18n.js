@@ -363,6 +363,7 @@ const STR = {
     bip39Passphrase: 'Passphrase',
     copyPassphrase: 'Copy passphrase',
     revealRecovery: 'Reveal recovery phrase',
+    revealWords: 'Show the words',
     offlineTransfer: 'Offline transfer',
     offlineTransferDesc: 'Export your coins on an online device, then import the file on an offline device to sign without internet.',
     exportSnapshot: '⤓ Export snapshot',

@@ -74,7 +74,7 @@ const ui = {
   importText: '',
   passphrase: '',
   showPass: false,
-  revealShown: false, // recovery phrase unmasked on the Backup tab (after the warning)
+  revealShown: false, // recovery phrase: false | 'masked' (grid, dots) | 'words'
   pubkeyShown: false, // account public key revealed in Settings
   giftMode: false, // gift sub-view active on the Send page
   giftAmount: '', // gift-create amount input
@@ -850,6 +850,7 @@ async function activateAccount(acc, opts = {}) {
   // balance/history and re-enter the seed to spend again.
   if (acc.type !== 'watch' && !acc.provisional) acc.xpub = wallet.accountXpub();
   persistAccounts();
+  autoSave(acc);
   for (const f of FEATURES) { try { f.init && f.init(); } catch {} } // per-feature wallet lifecycle
   const hadCache = wallet.restoreCache(); // show last-known balance/history instantly
   // An opened gift link starts on a claim/back-up screen instead of the wallet.
@@ -1001,6 +1002,7 @@ function commitAccount() {
     if (a.type !== 'watch') a.xpub = wallet.accountXpub(); // now eligible for the durable directory
     persistAccounts();
   }
+  autoSave(a);
 }
 
 function removeAccount(id) {
@@ -1096,6 +1098,22 @@ function mergeVaultList(list) {
       acc.persisted = true;
     }
   }
+}
+
+// Keeping a wallet is the default: a seed that only lives in this tab is one
+// refresh away from being gone, and that surprise costs people money. So a
+// wallet saves itself to the device unless we can't write the vault — when
+// one exists but is locked, the manual Save button still covers it. No
+// password is set here; Settings can add one later.
+function autoSave(acc) {
+  if (!acc || acc.type !== 'full' || acc.persisted || acc.provisional) return;
+  if (vaultPassword == null) {
+    if (hasVault()) return; // locked vault: needs their password, leave it manual
+    vaultPassword = '';
+  }
+  acc.persisted = true;
+  writeVault();
+  persistAccounts();
 }
 
 // Toggle persistence on a full account. Prompts for the vault password when it
@@ -1882,24 +1900,34 @@ function recoveryCard(a) {
   }
   if (!a.mnemonic)
     return h('div', { class: 'card col' }, h('h3', {}, t('importedKey')), h('p', { class: 'small muted', style: 'margin:0' }, t('importedKeyNote')));
-  // Collapsed by default — the word grid only exists after an explicit reveal.
+  // Two steps on purpose. The first opens the card, with the words masked —
+  // so the grid is on screen and you can see how much of it there is (and get
+  // a warning) before anything readable is over your shoulder. The second
+  // actually shows them.
   if (!shown)
     return h('div', { class: 'card col' },
       h('h3', {}, t('recoveryPhrase')),
       h('p', { class: 'small muted', style: 'margin:0' }, t('recoveryDesc')),
-      h('button', { class: 'btn-block', onClick: () => { ui.revealShown = true; render(); } }, t('revealRecovery')));
+      h('button', { class: 'btn-block', onClick: () => { ui.revealShown = 'masked'; render(); } }, t('revealRecovery')));
+  const unmasked = shown === 'words';
   return h('div', { class: 'card col' },
     h('h3', {}, t('recoveryPhrase')),
     h('div', { class: 'warn-box' }, t('recoveryWarn')),
     h('div', { class: 'words' }, words.map((w, i) =>
-      h('div', { class: 'w' }, h('span', { class: 'n' }, i + 1), h('span', { class: 't' }, w)))),
-    a.passphrase
+      h('div', { class: 'w' + (unmasked ? '' : ' masked') },
+        h('span', { class: 'n' }, i + 1),
+        h('span', { class: 't' }, unmasked ? w : '••••••')))),
+    unmasked && a.passphrase
       ? h('div', { class: 'col gap6' }, h('span', { class: 'lab' }, t('bip39Passphrase')), h('div', { class: 'addr-box' }, a.passphrase))
       : null,
-    h('div', { class: 'row gap6 wrap' },
-      copyBtn(a.mnemonic, t('copyPhrase')),
-      a.passphrase ? copyBtn(a.passphrase, t('copyPassphrase')) : null,
-      h('button', { class: 'btn-sm grow', onClick: () => { ui.revealShown = false; render(); } }, t('hide')))
+    unmasked
+      ? h('div', { class: 'row gap6 wrap' },
+          copyBtn(a.mnemonic, t('copyPhrase')),
+          a.passphrase ? copyBtn(a.passphrase, t('copyPassphrase')) : null,
+          h('button', { class: 'btn-sm grow', onClick: () => { ui.revealShown = false; render(); } }, t('hide')))
+      : h('div', { class: 'row gap6' },
+          h('button', { class: 'btn-primary grow', onClick: () => { ui.revealShown = 'words'; render(); } }, t('revealWords')),
+          h('button', { class: 'btn-sm', onClick: () => { ui.revealShown = false; render(); } }, t('hide')))
   );
 }
 
