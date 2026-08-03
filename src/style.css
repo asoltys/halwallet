@@ -457,6 +457,8 @@ input[type=text], input[type=password], input[type=number], textarea, select { t
 body {
   background-image: radial-gradient(900px 420px at 50% -160px, var(--wash), transparent 70%);
   background-attachment: fixed;
+  /* our swipe-nav owns horizontal gestures; keep the browser's edge-back out */
+  overscroll-behavior-x: none;
 }
 body::after {
   content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;
@@ -465,6 +467,10 @@ body::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .anim-page, .anim-menu, .anim-unfold, .amt-flash, .check-badge, .balance::before { animation: none !important; }
+  .anim-page, .anim-menu, .anim-unfold, .anim-slide-left, .anim-slide-right, .amt-flash, .check-badge, .balance::before { animation: none !important; }
   *, *::before, *::after { transition-duration: .01ms !important; }
 }
+@keyframes slide-in-left { from { opacity: 0; transform: translateX(30px); } }
+@keyframes slide-in-right { from { opacity: 0; transform: translateX(-30px); } }
+.anim-slide-left { animation: slide-in-left .28s cubic-bezier(.16, .84, .3, 1) both; }
+.anim-slide-right { animation: slide-in-right .28s cubic-bezier(.16, .84, .3, 1) both; }

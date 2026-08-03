@@ -284,6 +284,9 @@ function uiChanged(key, val) {
 // its one-shot class, killing the motion. animWindow answers "how far into
 // the animation started by this change are we?" — callers re-apply the class
 // with a negative animation-delay so a rebuild RESUMES the animation.
+let _navAt = -1e9;
+let _navCls = 'anim-page';
+let _swipeDir = null; // set by the swipe handler just before render
 const _animAt = new Map();
 function animWindow(key, val, durMs) {
   if (uiChanged(key, val)) _animAt.set(key, performance.now());
@@ -347,7 +350,12 @@ function render() {
   // ui field that decides which page is on screen.
   const navKey = [ui.screen, ui.tab, ui.chatOpen, ui.msgView, ui.msgPeer, ui.msgCommunity,
     ui.profilePk, ui.settingsPage, ui.addrScan, ui.arkExitPage, ui.txDetail, ui.giftMode, ui.claimStep].join('|');
-  applyAnim(screen, 'anim-page', animWindow('nav', navKey, 340));
+  if (uiChanged('nav', navKey)) {
+    _navAt = performance.now();
+    _navCls = _swipeDir ? 'anim-slide-' + _swipeDir : 'anim-page';
+  }
+  _swipeDir = null;
+  applyAnim(screen, _navCls, (performance.now() - _navAt) < 340 ? performance.now() - _navAt : -1);
   root.replaceChildren(screen, footer());
   if (fpath) {
     const el = nodeAtPath(fpath);
@@ -3171,6 +3179,44 @@ const FEATURES = buildFeatures(ctx);
 applyDir();
 // Auto log-out: start the countdown only when the app loses focus / is hidden,
 // and cancel it the moment it's focused again. So it never logs out mid-use.
+// Swipe left/right moves between the main tabs, the way thumbs expect.
+// Horizontal-dominant, quick, and only on the wallet's own tab pages — never
+// inside chat, profiles, takeovers, or the (offline-forced) settings tab.
+(() => {
+  const ORDER = ['receive', 'send', 'history'];
+  let sx = 0, sy = 0, t0 = 0, live = false;
+  window.addEventListener('touchstart', (e) => {
+    live = e.touches.length === 1 && ui.screen === 'wallet' && !ui.chatOpen && !ui.profilePk
+      && !ui.arkExitPage && ORDER.includes(ui.tab);
+    if (!live) return;
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+    t0 = Date.now();
+  }, { passive: true });
+  window.addEventListener('touchcancel', () => { live = false; }, { passive: true });
+  window.addEventListener('touchend', (e) => {
+    if (!live) return;
+    live = false;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Date.now() - t0 > 600 || Math.abs(dx) < 60 || Math.abs(dx) < 1.8 * Math.abs(dy)) return;
+    const next = ORDER[ORDER.indexOf(ui.tab) + (dx < 0 ? 1 : -1)];
+    if (!next) return;
+    _swipeDir = dx < 0 ? 'left' : 'right';
+    ui.tab = next;
+    // same resets as a tab-bar tap
+    ui.sendError = '';
+    ui.revealShown = false;
+    ui.txDetail = null;
+    ui.arkMoveDetail = null;
+    ui.giftDetail = null;
+    ui.addrScan = false;
+    ui.bump = null;
+    ui.giftMode = false;
+    render();
+  }, { passive: true });
+})();
+
 window.addEventListener('blur', onAppHidden);
 window.addEventListener('focus', onAppVisible);
 document.addEventListener('visibilitychange', () => {
