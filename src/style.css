@@ -512,3 +512,4 @@ body::after {
 .onb-mark svg { width: 72px; height: 72px; filter: drop-shadow(0 8px 22px rgba(184, 79, 232, .35)); }
 @keyframes mark-float { 50% { transform: translateY(-6px); } }
 @media (prefers-reduced-motion: reduce) { .onb-mark { animation: none; } }
+.onb-addr { color: var(--muted); font-family: var(--mono); font-size: 13px; }

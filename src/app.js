@@ -2091,7 +2091,10 @@ function onboardScreen() {
       title(t('onbNameTitle')),
       h('p', { class: 'muted', style: 'margin:0' }, t('onbNameBody')),
       featureHook('namesClaimForm') || h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('onbNameWait'))),
-      addr ? h('button', { class: 'btn-block', onClick: () => { o.step = 'avatar'; render(); } }, t('onbKeepName', { addr })) : null,
+      addr
+        ? h('button', { class: 'btn-block', onClick: () => { o.step = 'avatar'; render(); } },
+            t('onbKeepPre'), h('span', { class: 'onb-addr' }, addr), t('onbKeepPost'))
+        : null,
     ]);
   }
   if (o.step === 'avatar') {
