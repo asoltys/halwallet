@@ -1351,16 +1351,43 @@ export function arkFeature(ctx) {
   // Moving money between the two balances, in plain terms. This is the only
   // place the two rails meet, and it never names them: Saving is on-chain,
   // Spending is instant, and the wallet handles the rest.
+  // Amount field with an inline Max — a text affordance inside the input's
+  // right edge rather than a button eating a third of the row.
+  function amountField({ value, onInput, maxSat, placeholder, onMax }) {
+    return h('div', { class: 'amt-field' },
+      h('input', {
+        type: 'number', inputmode: 'numeric', min: '0', placeholder,
+        value: value || '',
+        onInput,
+      }),
+      maxSat > 0
+        ? h('button', { type: 'button', class: 'amt-max', onClick: onMax }, t('max'))
+        : null);
+  }
+
+  // Boarding drains an on-chain balance, so Max must leave room for the
+  // mining fee: ask the tx builder what a sweep would actually deliver.
+  function maxBoardSat() {
+    try {
+      const feeRate = (wallet.feeRates && wallet.feeRates.halfHourFee) || 5;
+      const draft = wallet.buildTx({ recipients: [{ address: wallet.freshChange().address, amount: 0 }], feeRate, sendMax: true });
+      return Math.max(0, (draft.outputs[0]?.amount || 0));
+    } catch {
+      return 0;
+    }
+  }
+
   function boardForm() {
     const minBoard = (ark && ark.info && ark.info.minBoardAmountSat) || 0;
     const canBoard = wallet.spendable >= minBoard;
     return h('div', { class: 'col', style: 'width:100%;gap:8px' },
       h('div', { class: 'input-group' },
-        h('input', {
-          type: 'number', inputmode: 'numeric', min: '0',
+        amountField({
+          value: ui.arkBoardAmt,
           placeholder: t('arkBoardPlaceholder', { n: minBoard.toLocaleString() }),
-          value: ui.arkBoardAmt || '',
           onInput: (e) => { ui.arkBoardAmt = e.target.value; render(); },
+          maxSat: canBoard ? wallet.spendable : 0,
+          onMax: () => { ui.arkBoardAmt = String(maxBoardSat()); render(); },
         }),
         h('button', { class: 'btn-primary', disabled: !!ui.arkBusy || !canBoard, onClick: doArkBoard },
           ui.arkBusy === 'board' ? h('span', { class: 'spinner sm' }) : t('arkBoardBtn'))),
@@ -1402,13 +1429,13 @@ export function arkFeature(ctx) {
               const valid = sats > 0 && sats <= spendable;
               return h('div', { class: 'col', style: 'gap:8px' },
                 h('div', { class: 'input-group' },
-                  h('input', {
-                    type: 'number', inputmode: 'numeric', min: '0',
+                  amountField({
+                    value: ui.arkOffboardAmt,
                     placeholder: t('arkOffboardAmtPlaceholder'),
-                    value: ui.arkOffboardAmt || '',
                     onInput: (e) => { ui.arkOffboardAmt = e.target.value; render(); },
+                    maxSat: spendable,
+                    onMax: () => { ui.arkOffboardAmt = String(spendable); render(); },
                   }),
-                  h('button', { class: 'btn-ghost', onClick: () => { ui.arkOffboardAmt = String(spendable); render(); } }, t('max')),
                   h('button', {
                     class: 'btn-primary', disabled: !!ui.arkBusy || !valid,
                     onClick: () => doArkOffboard(sats),
