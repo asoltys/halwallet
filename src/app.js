@@ -1938,8 +1938,10 @@ function walletScreen() {
     return h('div', { class: 'col', style: 'gap:0' }, brandHeader(false), h('div', { class: 'mt16' }, ob));
   }
   // Settings is a full page of its own — no balance, no tab strip; the hub's
-  // back button (or the logo / avatar menu) leads out.
-  if (ui.tab === 'settings') {
+  // back button (or the logo / avatar menu) leads out. Offline keeps the
+  // classic layout: settings is the forced tab there, and hiding the balance
+  // and tab strip would wall off the cached balance, history, and receive.
+  if (ui.tab === 'settings' && !wallet.offline) {
     return h(
       'div',
       { class: 'col', style: 'gap:0' },
