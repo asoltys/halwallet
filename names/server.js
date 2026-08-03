@@ -301,6 +301,13 @@ async function settleLoop() {
     if (!name) continue; // not one of ours (e.g. the ASP's own invoices)
     const sat = Math.floor((inv.amount_received_msat?.msat ?? inv.amount_received_msat ?? 0) / 1000);
     if (!sat) continue;
+    // money has arrived for this name — push-notify their devices (best effort)
+    if (CFG.push && CFG.push.url && state.names[name]) {
+      fetch(`${CFG.push.url}/notify`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: CFG.push.token, pubkey: state.names[name].pubkey, amountSat: sat }),
+      }).catch(() => {});
+    }
     if (pending) {
       if (pending.zap) publishZapReceipt(pending, inv).catch(() => {});
       delete state.invoices[inv.payment_hash];

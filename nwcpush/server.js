@@ -54,13 +54,22 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 // registrations: { [servicePubkey]: [{ sub, id, updated }] }
 // ---------------------------------------------------------------------------
 
-let regs = (() => {
-  try { return JSON.parse(readFileSync(STATE, 'utf8')); } catch { return {}; }
+let regs = {};
+// user-facing notifications: { [endpointId]: { sub, ptags: [], authors: [], updated } }
+// ptags → DMs / zap receipts p-tagged at the user; authors → community
+// stream pubkeys (kind 1059 wraps authored by a channel's derived key).
+let notifyRegs = {};
+(() => {
+  try {
+    const raw = JSON.parse(readFileSync(STATE, 'utf8'));
+    if (raw && raw.nwc) { regs = raw.nwc; notifyRegs = raw.notify || {}; }
+    else regs = raw || {}; // pre-notify state file
+  } catch {}
 })();
 function persist() {
   mkdirSync(dirname(STATE), { recursive: true });
   const tmp = STATE + '.tmp';
-  writeFileSync(tmp, JSON.stringify(regs));
+  writeFileSync(tmp, JSON.stringify({ nwc: regs, notify: notifyRegs }));
   renameSync(tmp, STATE);
 }
 // A device that stops refreshing drops off, so a stale endpoint can't keep us
@@ -72,7 +81,10 @@ function prune() {
     regs[pk] = (regs[pk] || []).filter((r) => (r.updated || 0) > cutoff);
     if (!regs[pk].length) { delete regs[pk]; dropped++; }
   }
-  if (dropped) { persist(); log(`pruned ${dropped} stale pubkey(s)`); resubscribe(); }
+  for (const id of Object.keys(notifyRegs)) {
+    if ((notifyRegs[id].updated || 0) <= cutoff) { delete notifyRegs[id]; dropped++; }
+  }
+  if (dropped) { persist(); log(`pruned ${dropped} stale registration(s)`); resubscribe(); }
 }
 
 const watchedPubkeys = () => Object.keys(regs);
@@ -85,11 +97,76 @@ const pool = new SimplePool();
 let sub = null;
 let lastResub = 0;
 
+const notifyPtags = () => [...new Set(Object.values(notifyRegs).flatMap((r) => r.ptags || []))];
+const notifyAuthors = () => [...new Set(Object.values(notifyRegs).flatMap((r) => r.authors || []))];
+
+let notifySub = null;
+function resubscribeNotify() {
+  try { notifySub?.close(); } catch {}
+  notifySub = null;
+  const ptags = notifyPtags();
+  const authors = notifyAuthors();
+  if (!ptags.length && !authors.length) return;
+  const filters = [];
+  // DMs / direct invites / zap receipts land p-tagged at the user
+  if (ptags.length) filters.push({ kinds: [1059, 9735, 9737], '#p': ptags, since: Math.floor(Date.now() / 1000) });
+  // community chat: wraps authored by a channel's derived stream key
+  if (authors.length) filters.push({ kinds: [1059], authors, since: Math.floor(Date.now() / 1000) });
+  // one sub per filter — the pool API takes a single filter object
+  notifySub = filters.map((f) => pool.subscribeMany(RELAYS, f, { onevent: onNotifyEvent }));
+  notifySub.close = function () { for (const x of this) { try { x.close(); } catch {} } };
+  log(`notify: watching ${ptags.length} ptag(s), ${authors.length} stream author(s)`);
+}
+
+// throttle: chat bursts collapse to one push per device per window
+const COOLDOWN = { payment: 10_000, dm: 10_000, chat: 90_000 };
+const lastPush = new Map(); // endpointId:reason -> ts
+const seenNotifyEvents = new Map(); // event id -> ts
+function onNotifyEvent(ev) {
+  if (seenNotifyEvents.has(ev.id)) return;
+  seenNotifyEvents.set(ev.id, Date.now());
+  if (seenNotifyEvents.size > 4000) {
+    const cut = Date.now() - 600_000;
+    for (const [k, t] of seenNotifyEvents) if (t < cut) seenNotifyEvents.delete(k);
+  }
+  const p = ev.tags?.find((t) => t[0] === 'p')?.[1];
+  const reason = ev.kind === 9735 || ev.kind === 9737 ? 'payment'
+    : p && notifyPtags().includes(p) ? 'dm' : 'chat';
+  for (const [id, r] of Object.entries(notifyRegs)) {
+    const hit = reason === 'chat'
+      ? (r.authors || []).includes(ev.pubkey)
+      : p && (r.ptags || []).includes(p);
+    if (hit) pushNotify(id, r, reason, {}).catch(() => {});
+  }
+}
+
+async function pushNotify(id, r, reason, extra) {
+  const key = id + ':' + reason;
+  const last = lastPush.get(key) || 0;
+  if (Date.now() - last < (COOLDOWN[reason] || 10_000)) return;
+  lastPush.set(key, Date.now());
+  const payload = JSON.stringify({ type: 'notify', reason, ...extra });
+  try {
+    await webpush.sendNotification(r.sub, payload, { TTL: 3600, urgency: 'normal' });
+    log(`notify(${reason}) -> device ${id}`);
+  } catch (e) {
+    if (e.statusCode === 404 || e.statusCode === 410) {
+      delete notifyRegs[id];
+      persist();
+      resubscribeNotify();
+      log(`dropped an expired notify endpoint ${id}`);
+    } else {
+      log(`notify(${reason}) push failed for ${id}: ${e.statusCode || e.message}`);
+    }
+  }
+}
+
 function resubscribe() {
+  resubscribeNotify();
   const pks = watchedPubkeys();
   try { sub?.close(); } catch {}
   sub = null;
-  if (!pks.length) { log('nothing registered; not subscribed'); return; }
+  if (!pks.length) { log('nothing registered for nwc; not subscribed'); return; }
   lastResub = Date.now();
   sub = pool.subscribeMany(
     RELAYS,
@@ -228,6 +305,20 @@ const server = Bun.serve({
       return json({ ok: true });
     }
 
+    // Server-to-server: the names registrar reports a settled receive for a
+    // pubkey. Token-gated; pushes 'payment received' to that user's devices.
+    if (url.pathname === '/notify' && req.method === 'POST') {
+      const body = await req.json().catch(() => null);
+      if (!CFG.notifyToken || body?.token !== CFG.notifyToken) return json({ error: 'forbidden' }, 403);
+      const pk = body?.pubkey;
+      if (!/^[0-9a-f]{64}$/.test(pk || '')) return json({ error: 'pubkey required' }, 400);
+      let n = 0;
+      for (const [id, r] of Object.entries(notifyRegs)) {
+        if ((r.ptags || []).includes(pk)) { pushNotify(id, r, 'payment', { amountSat: Number(body.amountSat) || undefined }).catch(() => {}); n++; }
+      }
+      return json({ ok: true, devices: n });
+    }
+
     // Was a request we pushed already answered by someone? Lets a worker
     // avoid double-paying (or shouting an error over) another device's reply.
     if (url.pathname === '/answered') {
@@ -240,7 +331,22 @@ const server = Bun.serve({
     if (url.pathname === '/register' && req.method === 'POST') {
       const body = await req.json().catch(() => null);
       const sub_ = body?.subscription;
+      const hasNwc = Array.isArray(body?.servicePubkeys);
       const pks = (body?.servicePubkeys || []).filter((p) => /^[0-9a-f]{64}$/.test(p));
+      // user-facing notification watch (messages + payments) — independent of
+      // the NWC registration so either can refresh without clobbering the other
+      if (body?.notify && sub_?.endpoint) {
+        const hex = (a, cap) => [...new Set((a || []).filter((p) => /^[0-9a-f]{64}$/.test(p)))].slice(0, cap);
+        const id = Bun.hash(sub_.endpoint).toString(36);
+        notifyRegs[id] = {
+          sub: sub_, updated: Date.now(),
+          ptags: hex(body.notify.ptags, 8),
+          authors: hex(body.notify.authors, 64),
+        };
+        persist();
+        resubscribeNotify();
+        if (!hasNwc) return json({ ok: true, notify: true });
+      }
       if (!sub_?.endpoint || !pks.length) return json({ error: 'subscription and servicePubkeys required' }, 400);
       if (pks.length > MAX_PK) return json({ error: `at most ${MAX_PK} pubkeys` }, 400);
       // one id per endpoint so re-registering replaces rather than duplicates
@@ -271,6 +377,7 @@ const server = Bun.serve({
         regs[pk] = regs[pk].filter((r) => r.id !== id);
         if (!regs[pk].length) delete regs[pk];
       }
+      delete notifyRegs[id];
       persist();
       resubscribe();
       return json({ ok: true });

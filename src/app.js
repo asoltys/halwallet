@@ -2141,7 +2141,15 @@ function receiveTab() {
   // (receives Ark and Lightning), Savings shows a fresh on-chain address.
   const fresh = wallet.freshReceive();
   const nameMode = featureAll('receiveModes').find((m) => m.id === 'name');
-  if (accountSel() === 'spending' && nameMode) return nameMode.render(null);
+  if (accountSel() === 'spending') {
+    // Spending needs the network (registrar + ark); offline, offer the
+    // on-chain path right here instead of an endless spinner.
+    if (wallet.offline)
+      return h('div', { class: 'card col', style: 'gap:12px' },
+        h('div', { class: 'notice info' }, t('receiveOfflineSpending')),
+        h('button', { class: 'btn-primary btn-block', onClick: () => setAccountSel('savings') }, t('receiveUseSavings')));
+    if (nameMode) return nameMode.render(null);
+  }
   const addr = fresh.address;
   return h(
     'div',

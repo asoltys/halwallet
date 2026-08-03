@@ -11,6 +11,27 @@ const NOTIFIER = 'https://nwcpush.coinos.io';
 self.addEventListener('push', (e) => {
   let data = {};
   try { data = e.data ? e.data.json() : {}; } catch (_) {}
+  // User-facing notifications (payments, DMs, community chat). An open
+  // window already shows everything live — stay quiet then.
+  if (data.type === 'notify') {
+    e.waitUntil((async () => {
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (clients.some((c) => c.visibilityState === 'visible')) return;
+      const T = {
+        payment: ['Payment received', data.amountSat ? `+${Number(data.amountSat).toLocaleString()} sats — open coinos to see it.` : 'Open coinos to see it.'],
+        dm: ['New message', 'You have a new private message.'],
+        chat: ['New chat activity', 'There are new messages in your communities.'],
+      };
+      const [title, body] = T[data.reason] || T.chat;
+      await self.registration.showNotification(title, {
+        body,
+        icon: 'icon-192.png', badge: 'icon-192.png',
+        tag: 'notify-' + (data.reason || 'chat'), renotify: data.reason === 'payment',
+        data: { url: './' },
+      });
+    })());
+    return;
+  }
   if (data.type !== 'nwc') return;
   e.waitUntil((async () => {
     // An open window handles requests itself with full wallet state — nudge

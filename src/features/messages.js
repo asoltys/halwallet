@@ -43,6 +43,7 @@ const COMMUNITY = {
 
 const EPOCH = 0;
 const DM_RELAYS = ['wss://relay.coinos.io', 'wss://nos.lol'];
+const NOTIFIER = 'https://nwcpush.coinos.io';
 const APP_BASE = 'https://v3.coinos.io';
 const CACHE_MAX = 50; // messages kept per channel / per DM thread in feature state
 
@@ -374,6 +375,7 @@ export function messagesFeature(ctx) {
     (s.joined[cid] ||= {})[id.pubkey] = true;
     save(s);
     publishLists();
+    registerPush().catch(() => {});
     ensureRoom(jm);
     ui.msgView = 'room';
     ui.msgCommunity = cid;
@@ -465,6 +467,7 @@ export function messagesFeature(ctx) {
     }
     const room = ensureRoom(communityById(b.community_id));
     identity().then((id) => id && ensureJoined(room, id)).catch(() => {});
+    registerPush().catch(() => {});
     ui.msgView = 'room';
     ui.msgCommunity = b.community_id;
     ui.msgChannel = null;
@@ -501,6 +504,55 @@ export function messagesFeature(ctx) {
   // An invite link opened in the browser lands here before the wallet exists.
   const urlInvite = typeof location !== 'undefined' ? parseInviteLink(location.href) : null;
   if (urlInvite) { try { history.replaceState(null, '', '/'); } catch {} }
+
+  // ---- push notifications -------------------------------------------------
+  // The nwcpush notifier watches relays for what it can see without keys:
+  // kind-1059 wraps p-tagged at us (DMs, direct invites), zap receipts
+  // (payments), and wraps authored by our communities' channel keys (chat).
+  // It pushes a typed nudge; the service worker shows a generic notification
+  // unless a window is visible. Payment pushes also arrive server-to-server
+  // from the names registrar when a lightning-address receive settles.
+
+  const b64ToBytes = (b64) => {
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  };
+
+  function pushWatch() {
+    const authors = [];
+    for (const jm of communities()) {
+      const root = hexToBytes(jm.community_root);
+      for (const c of (jm.channels || []).slice(0, 8)) authors.push(channelKey(root, c.id, EPOCH).pk);
+    }
+    return { ptags: myPubkeys(), authors };
+  }
+
+  async function registerPush({ interactive = false } = {}) {
+    try {
+      if (typeof Notification === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+      if (Notification.permission !== 'granted') {
+        if (!interactive) return false;
+        if ((await Notification.requestPermission()) !== 'granted') return false;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const { publicKey } = await (await fetch(`${NOTIFIER}/vapid`)).json();
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(publicKey) });
+      }
+      const r = await fetch(`${NOTIFIER}/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ subscription: sub.toJSON(), notify: pushWatch() }),
+      });
+      if (!r.ok) return false;
+      const s = st();
+      if (!s.push) { s.push = true; save(s); }
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   // ---- device sync: Community List (13302) + Invite List (13303) ----------
   // Self-encrypted replaceables (CORD-02 §8 / CORD-05 §4) so memberships and
@@ -986,6 +1038,20 @@ export function messagesFeature(ctx) {
     if (pendingLink) kids.push(linkInviteCard());
     for (const [rid, inv] of pendingDirect) kids.push(directInviteCard(rid, inv));
 
+    // offer push once — it covers messages AND payments
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default' && !st().pushDismissed)
+      kids.push(h('div', { class: 'notice info col', style: 'gap:8px' },
+        h('div', {}, t('msgPushOffer')),
+        h('div', { class: 'row gap6' },
+          h('button', {
+            class: 'btn-primary btn-sm',
+            onClick: async () => { const ok = await registerPush({ interactive: true }); toast(ok ? t('msgPushOn') : t('msgPushFailed')); render(); },
+          }, t('msgPushEnable')),
+          h('button', {
+            class: 'btn-ghost btn-sm',
+            onClick: () => { const s = st(); s.pushDismissed = true; save(s); render(); },
+          }, t('msgDismiss')))));
+
     // ---- DMs
     kids.push(h('div', { class: 'row between', style: 'align-items:baseline' },
       h('h3', { style: 'margin:0' }, t('msgDmsTitle')),
@@ -1303,6 +1369,7 @@ export function messagesFeature(ctx) {
       }
       startDMs();
       syncLists().catch(() => {});
+      registerPush().catch(() => {}); // silent refresh when permission already granted
     },
     stop() {
       for (const u of allUnsubs) { try { u(); } catch {} }
