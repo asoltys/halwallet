@@ -404,3 +404,4 @@ hr.divider { margin: 16px 0; }
 .menu-backdrop { position: fixed; inset: 0; z-index: 40; }
 .avatar-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 41; min-width: 170px; }
 .chat-avatar.fallback.loading { background: var(--surface2); }
+.wallet-row-btn { font-size: 19px; line-height: 1; padding: 8px 12px; }

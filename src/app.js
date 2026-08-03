@@ -1744,8 +1744,8 @@ function accountsScreen() {
                 class: 'linklike', style: 'text-align:left;flex:1;font-size:15px;' + (isActive ? 'font-weight:600' : ''),
                 onClick: () => { if (isActive) { ui.screen = 'wallet'; render(); } else switchAccount(a.id); },
               }, (isActive ? '● ' : '○ ') + a.label + tag),
-              h('button', { class: 'btn-sm', title: t('walletSettings'), onClick: () => openAccountSettings(a.id) }, '⚙'),
-              h('button', { class: 'btn-sm', title: t('remove'), onClick: () => { ui.confirmRemove = a.id; render(); } }, '✕')
+              h('button', { class: 'btn-sm wallet-row-btn', title: t('walletSettings'), onClick: () => openAccountSettings(a.id) }, '⚙'),
+              h('button', { class: 'btn-sm wallet-row-btn', title: t('remove'), onClick: () => { ui.confirmRemove = a.id; render(); } }, '✕')
             ),
             a.type === 'full'
               ? h('button', { class: 'linklike small', style: 'align-self:flex-start', onClick: () => (a.persisted ? startForget(a.id) : startSave(a.id)) },
