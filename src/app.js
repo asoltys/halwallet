@@ -1573,6 +1573,16 @@ function advancedSettingsView() {
         : h('button', { onClick: () => { ui.addrScan = true; ui.addrScanPage = 0; render(); } }, t('rescanAddresses'))
     ),
     a ? autolockCard(a) : null,
+    // replay the first-run coach marks (the wizard itself only runs once)
+    h('div', { class: 'card col' },
+      h('h3', {}, t('tourReplayTitle')),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('tourReplayDesc')),
+      h('button', { onClick: () => {
+        ui.settingsPage = null;
+        ui.tab = 'receive';
+        ui.tour = 0;
+        render();
+      } }, t('tourReplay'))),
     h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = null; render(); } }, t('back'))
   );
 }
