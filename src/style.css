@@ -403,3 +403,4 @@ hr.divider { margin: 16px 0; }
 .avatar-menu-wrap { position: relative; display: inline-flex; }
 .menu-backdrop { position: fixed; inset: 0; z-index: 40; }
 .avatar-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 41; min-width: 170px; }
+.chat-avatar.fallback.loading { background: var(--surface2); }

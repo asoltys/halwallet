@@ -110,14 +110,38 @@ export function messagesFeature(ctx) {
     }, 80);
   };
 
+  // Profiles persist across sessions (capped) so known faces paint right
+  // away instead of flashing the punk fallback; entries refresh in the
+  // background once a day.
+  const PROFILE_TTL = 24 * 3600_000;
+  let profilesWarmed = false;
+  function warmProfiles() {
+    if (profilesWarmed) return;
+    profilesWarmed = true;
+    const cached = wallet.loadFeatureState('profiles', {});
+    for (const [pk, p] of Object.entries(cached)) if (!profiles.has(pk)) profiles.set(pk, p);
+  }
+  function persistProfile(pk, p) {
+    const s = wallet.loadFeatureState('profiles', {});
+    s[pk] = { name: p.name || null, picture: p.picture || null, t: Date.now() };
+    const keys = Object.keys(s);
+    if (keys.length > 150) {
+      for (const k of keys.sort((a, b) => (s[a].t || 0) - (s[b].t || 0)).slice(0, keys.length - 150)) delete s[k];
+    }
+    wallet.saveFeatureState('profiles', s);
+  }
   function profileOf(pk) {
-    if (profiles.has(pk)) return profiles.get(pk);
-    profiles.set(pk, null);
+    warmProfiles();
+    const cur = profiles.get(pk);
+    if (cur !== undefined && (cur === null || Date.now() - (cur.t || 0) < PROFILE_TTL)) return cur;
+    profiles.set(pk, cur || null); // null = loading, no fallback art yet
     fetchNostrProfile(pk).then((p) => {
-      profiles.set(pk, p || {});
+      const entry = { ...(p || {}), t: Date.now() };
+      profiles.set(pk, entry);
+      persistProfile(pk, entry);
       scheduleRepaint();
-    }).catch(() => profiles.set(pk, {}));
-    return null;
+    }).catch(() => profiles.set(pk, { t: Date.now() }));
+    return cur || null;
   }
   const displayName = (pk) => {
     const p = profileOf(pk);
@@ -765,9 +789,13 @@ export function messagesFeature(ctx) {
 
   const avatar = (pk, cls = 'chat-avatar', clickable = true) => {
     const p = profileOf(pk);
-    const node = p && p.picture
-      ? h('img', { class: cls, src: p.picture, alt: '' })
-      : fallbackAvatar(h, pk, p && p.name, cls);
+    // While the profile is in flight, a quiet empty circle — the punk is a
+    // statement about having no picture, not a loading state.
+    const node = p === null
+      ? h('div', { class: cls + ' fallback loading' })
+      : p.picture
+        ? h('img', { class: cls, src: p.picture, alt: '' })
+        : fallbackAvatar(h, pk, p.name, cls);
     if (clickable) {
       node.classList.add('clickable');
       node.addEventListener('click', (e) => { e.stopPropagation(); openProfile(pk); });
