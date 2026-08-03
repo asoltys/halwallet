@@ -5,7 +5,6 @@
   "hiwBasicsTitle": "Les bases",
   "hiwBasics1": "Quand vous créez un portefeuille, la page génère douze mots aléatoires. Ces mots sont la clé de votre portefeuille. Quiconque les possède peut dépenser les fonds, alors notez-les sur papier et gardez-les dans un endroit auquel vous seul avez accès.",
   "hiwBasics2": "Si vous perdez les douze mots et n’avez pas de sauvegarde, les fonds sont perdus à jamais. Il n’y a aucun lien de réinitialisation ni personne à appeler, alors sauvegardez-les avant d’y déposer de l’argent.",
-  "hiwBasics3": "Il n’y a ni serveur ni compte. Toute l’application tient sur une seule page qui s’exécute dans votre navigateur : personne ne détient vos fonds et aucun serveur ne voit jamais vos clés. Pour afficher votre solde et votre historique, elle interroge un explorateur de blocs public (mempool.space par défaut, ou votre propre nœud si vous en configurez un dans les Réglages).",
   "hiwBasics4": "Vous pouvez même enregistrer cette page et l’ouvrir directement depuis votre ordinateur sans aucune connexion Internet. Elle continue de fonctionner hors ligne.",
   "hiwBasics5": "Elle respecte les standards habituels de Bitcoin (une phrase BIP39 de 12 mots et des clés SegWit natives BIP84), donc si ce site venait à disparaître, vous pourriez restaurer la même phrase dans Sparrow, Electrum ou tout autre portefeuille standard, et vos fonds y seraient.",
   "signExport": "Signer et (diffuser ailleurs)",

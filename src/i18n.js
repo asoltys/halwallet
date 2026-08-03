@@ -126,7 +126,7 @@ const STR = {
     hiwBasicsTitle: 'The basics',
     hiwBasics1: 'When you make a wallet, the page generates twelve random words. Those words are the key to your wallet. Anyone who has them can spend the coins, so write them down on paper and keep them somewhere only you can get to.',
     hiwBasics2: 'If you lose the twelve words and don’t have a backup, the coins are gone for good. There’s no reset link and no one to call, so back them up before you put money in.',
-    hiwBasics3: 'There’s no server and no account. The whole app is a single page that runs in your browser, so nobody holds your coins and nothing on a server ever sees your keys. To show your balance and history it reads from a public block explorer (mempool.space by default, or your own node if you set one in Settings).',
+    hiwBasics3: 'There’s no server and no account. The whole app is a single page that runs in your browser, so nobody holds your coins and nothing on a server ever sees your keys.',
     hiwBasics4: 'You can even save this page and open it straight from your computer with no internet at all. It keeps working offline.',
     hiwBasics5: 'It follows the usual Bitcoin standards (a 12-word BIP39 phrase and BIP84 native SegWit keys), so if this site ever disappears you can restore the same phrase in Sparrow, Electrum, or any other standard wallet and your coins will be right there.',
     hiwLnTitle: 'Spending and Savings',

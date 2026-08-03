@@ -5,7 +5,6 @@
   "hiwBasicsTitle": "O básico",
   "hiwBasics1": "Quando você cria uma carteira, a página gera doze palavras aleatórias. Essas palavras são a chave da sua carteira. Qualquer pessoa que as tiver pode gastar as moedas, então anote-as no papel e guarde-as em um lugar que só você possa acessar.",
   "hiwBasics2": "Se você perder as doze palavras e não tiver um backup, as moedas estarão perdidas para sempre. Não há link de redefinição nem ninguém para ligar, então faça o backup antes de colocar dinheiro.",
-  "hiwBasics3": "Não há servidor nem conta. O aplicativo inteiro é uma única página que roda no seu navegador, então ninguém guarda suas moedas e nada em um servidor jamais vê suas chaves. Para mostrar seu saldo e histórico, ele consulta um explorador de blocos público (mempool.space por padrão, ou seu próprio nó, se você configurar um nas Configurações).",
   "hiwBasics4": "Você pode até salvar esta página e abri-la diretamente do seu computador sem internet alguma. Ela continua funcionando offline.",
   "hiwBasics5": "Ela segue os padrões usuais do Bitcoin (uma frase BIP39 de 12 palavras e chaves BIP84 native SegWit), então, se este site algum dia desaparecer, você pode restaurar a mesma frase no Sparrow, Electrum ou qualquer outra carteira padrão e suas moedas estarão lá.",
   "signExport": "Assinar e (transmitir em outro lugar)",

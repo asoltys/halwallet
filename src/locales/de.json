@@ -5,7 +5,6 @@
   "hiwBasicsTitle": "Die Grundlagen",
   "hiwBasics1": "Wenn du eine Wallet erstellst, erzeugt die Seite zwölf zufällige Wörter. Diese Wörter sind der Schlüssel zu deiner Wallet. Wer sie besitzt, kann die Coins ausgeben. Schreibe sie deshalb auf Papier und bewahre sie an einem Ort auf, zu dem nur du Zugang hast.",
   "hiwBasics2": "Wenn du die zwölf Wörter verlierst und kein Backup hast, sind die Coins endgültig verloren. Es gibt keinen Zurücksetzen-Link und niemanden, den du anrufen kannst. Sichere sie daher, bevor du Geld einzahlst.",
-  "hiwBasics3": "Es gibt keinen Server und kein Konto. Die gesamte App ist eine einzige Seite, die in deinem Browser läuft. Niemand verwahrt deine Coins und kein Server bekommt jemals deine Schlüssel zu sehen. Um deinen Kontostand und deinen Verlauf anzuzeigen, liest sie von einem öffentlichen Block-Explorer (standardmäßig mempool.space oder deinem eigenen Node, falls du in den Einstellungen einen festlegst).",
   "hiwBasics4": "Du kannst diese Seite sogar speichern und ganz ohne Internet direkt von deinem Computer aus öffnen. Sie funktioniert auch offline weiter.",
   "hiwBasics5": "Sie folgt den üblichen Bitcoin-Standards (eine 12-Wörter-Phrase nach BIP39 und native SegWit-Schlüssel nach BIP84). Sollte diese Seite jemals verschwinden, kannst du dieselbe Phrase in Sparrow, Electrum oder einer beliebigen anderen Standard-Wallet wiederherstellen, und deine Coins sind genau dort.",
   "signExport": "Signieren & (anderswo senden)",

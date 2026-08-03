@@ -21,7 +21,6 @@
   "hiwBasicsTitle": "Lo básico",
   "hiwBasics1": "Cuando creas una billetera, la página genera doce palabras al azar. Esas palabras son la clave de tu billetera. Cualquiera que las tenga puede gastar las monedas, así que anótalas en papel y guárdalas en un lugar al que solo tú puedas acceder.",
   "hiwBasics2": "Si pierdes las doce palabras y no tienes una copia de seguridad, las monedas se pierden para siempre. No hay enlace para restablecer ni nadie a quien llamar, así que respáldalas antes de poner dinero.",
-  "hiwBasics3": "No hay servidor ni cuenta. Toda la app es una única página que se ejecuta en tu navegador, así que nadie custodia tus monedas y ningún servidor ve jamás tus claves. Para mostrar tu saldo e historial, lee desde un explorador de bloques público (mempool.space por defecto, o tu propio nodo si configuras uno en Ajustes).",
   "hiwBasics4": "Incluso puedes guardar esta página y abrirla directamente desde tu computadora sin conexión a internet. Sigue funcionando sin conexión.",
   "hiwBasics5": "Sigue los estándares habituales de Bitcoin (una frase BIP39 de 12 palabras y claves SegWit nativas BIP84), así que si este sitio desapareciera algún día, puedes restaurar la misma frase en Sparrow, Electrum o cualquier otra billetera estándar y tus monedas estarán justo ahí.",
   "signExport": "Firmar y (transmitir en otro lugar)",
