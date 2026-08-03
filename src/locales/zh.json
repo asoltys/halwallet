@@ -118,7 +118,6 @@
   "rescanWallet": "重新扫描钱包",
   "scanning": "扫描中…",
   "language": "语言",
-  "offlineBanner": "无法连接网络——离线工作。请在“设置”中导入快照以加载币。",
   "retry": "重试",
   "copied": "已复制",
   "snapshotExported": "快照已导出",

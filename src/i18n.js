@@ -589,7 +589,7 @@ const STR = {
     language: 'Language',
     darkMode: 'Dark mode',
     lightMode: 'Light mode',
-    offlineBanner: "Can't reach the network — working offline. Import a snapshot on the Settings tab to load coins.",
+    offlineBanner: "Can't reach the network — working offline. Import a snapshot in Settings (under Advanced) to load coins.",
     retry: 'Retry',
     copied: 'Copied to clipboard',
     snapshotExported: 'Snapshot exported',

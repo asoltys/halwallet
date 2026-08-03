@@ -118,7 +118,6 @@
   "rescanWallet": "지갑 다시 스캔",
   "scanning": "스캔 중…",
   "language": "언어",
-  "offlineBanner": "네트워크에 연결할 수 없음 — 오프라인 작동 중. 설정에서 스냅샷을 가져와 코인을 불러오세요.",
   "retry": "다시 시도",
   "copied": "복사됨",
   "snapshotExported": "스냅샷을 내보냈습니다",

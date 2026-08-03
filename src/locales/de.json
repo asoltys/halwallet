@@ -118,7 +118,6 @@
   "rescanWallet": "Wallet neu scannen",
   "scanning": "Scanne…",
   "language": "Sprache",
-  "offlineBanner": "Netzwerk nicht erreichbar — offline. Importiere einen Snapshot unter Einstellungen, um Coins zu laden.",
   "retry": "Erneut",
   "copied": "In Zwischenablage kopiert",
   "snapshotExported": "Snapshot exportiert",

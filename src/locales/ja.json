@@ -118,7 +118,6 @@
   "rescanWallet": "ウォレットを再スキャン",
   "scanning": "スキャン中…",
   "language": "言語",
-  "offlineBanner": "ネットワークに接続できません — オフライン動作中。設定からスナップショットを読み込んでコインを表示できます。",
   "retry": "再試行",
   "copied": "コピーしました",
   "snapshotExported": "スナップショットを書き出しました",

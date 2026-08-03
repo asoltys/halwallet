@@ -2052,12 +2052,12 @@ function balanceCard() {
 
 
 function tabsBar() {
+  // Settings lives in the avatar menu, not the tab strip.
   const tabs = [
     ['receive', t('tabReceive')],
     // Watch-only wallets show Send too — it prompts to load the seed to spend.
     ['send', t('tabSend')],
     ['history', t('tabHistory')],
-    ['settings', t('tabSettings')],
   ];
   return h(
     'div',
