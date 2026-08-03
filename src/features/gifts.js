@@ -504,17 +504,13 @@ export function giftsFeature(ctx) {
             );
           })()
         : h('div', { class: 'col gap6' },
-            // Source toggle: gift on-chain coins (presigned link, coins locked
-            // until claim) or the ark balance (instant bearer vtxo, no lock).
+            // The gift's source follows the global account selection: in
+            // Spending the gift is an instant ark bearer vtxo, in Savings a
+            // presigned on-chain link (coins locked until claim).
             (() => {
               const info = hook('arkGiftInfo');
-              if (!info || info.spendableSat <= 0) { if (ui.giftSource === 'ark') ui.giftSource = 'chain'; return null; }
-              const src = ui.giftSource || 'chain';
-              const btn = (id, label) => h('button', {
-                type: 'button', class: (src === id ? 'btn-primary' : 'btn-ghost') + ' grow',
-                onClick: () => { ui.giftSource = id; ui.giftError = ''; render(); },
-              }, label);
-              return h('div', { class: 'row gap6' }, btn('chain', t('giftSourceChain')), btn('ark', t('giftSourceArk')));
+              ui.giftSource = ctx.getAccount() === 'spending' && info ? 'ark' : 'chain';
+              return null;
             })(),
             (() => {
               const isArk = ui.giftSource === 'ark';

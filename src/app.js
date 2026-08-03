@@ -1916,6 +1916,26 @@ function offlineBanner() {
   );
 }
 
+// ---- the global account selector -------------------------------------
+// The wallet is always "in" one of its two balances: Spending (Ark +
+// Lightning) or Savings (on-chain). The balance card headline, the Receive
+// pane, and the gift source all follow it.
+const ACCOUNT_KEY = 'btc-wallet-account';
+function accountSel() {
+  if (!featureHook('arkReady')) return 'savings'; // no ark, no choice
+  if (!ui.account) {
+    let saved = null;
+    try { saved = localStorage.getItem(ACCOUNT_KEY); } catch {}
+    ui.account = saved === 'savings' ? 'savings' : 'spending';
+  }
+  return ui.account;
+}
+function setAccountSel(a) {
+  ui.account = a;
+  try { localStorage.setItem(ACCOUNT_KEY, a); } catch {}
+  render();
+}
+
 function balanceCard() {
   // Dim + spin until this network has data (cache, Nostr state, or a scan has
   // populated balances once). `scanning` alone misses the window between
@@ -1931,23 +1951,29 @@ function balanceCard() {
   const spending = featureHook('spendingSat') || 0;
   const saving = wallet.spendable;
   const hasArk = !!featureHook('arkReady');
+  const sel = hasArk ? accountSel() : 'savings';
   return h(
     'div',
     { class: 'card balance' },
-    // Spending is the balance people use, so it IS the balance: headline,
-    // with Saving as a quieter line underneath. No total — the two are
-    // different kinds of money, and adding them up says nothing useful.
-    h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' },
-      hasArk ? t('spendingLabel') : t('balance')),
+    // The account toggle IS the headline label: you're always "in" Spending
+    // or Savings, and everything (receive, gifts) follows. No total — the two
+    // are different kinds of money, and adding them up says nothing useful.
+    hasArk
+      ? h('div', { class: 'seg balance-seg' },
+          h('button', { class: sel === 'spending' ? 'active' : '', onClick: () => setAccountSel('spending') }, t('spendingLabel')),
+          h('button', { class: sel === 'savings' ? 'active' : '', onClick: () => setAccountSel('savings') }, t('savingLabel')))
+      : h('div', { class: 'small faint', style: 'text-transform:uppercase;letter-spacing:.05em' }, t('balance')),
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
       firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,
-      fmtAmount(hasArk ? spending : saving), ' ', unitTag('unit')),
+      fmtAmount(sel === 'spending' ? spending : saving), ' ', unitTag('unit')),
     hasArk || pending > 0 || featLines.length
       ? h(
           'div',
           { class: 'split' },
           hasArk
-            ? h('div', {}, h('div', { class: 'k' }, t('savingLabel')), h('div', { class: 'v' }, fmtAmount(saving), ' ', unitTag()))
+            ? h('div', {},
+                h('div', { class: 'k' }, sel === 'spending' ? t('savingLabel') : t('spendingLabel')),
+                h('div', { class: 'v' }, fmtAmount(sel === 'spending' ? saving : spending), ' ', unitTag()))
             : null,
           pending > 0
             ? h('div', {}, h('div', { class: 'k' }, t('pending')), h('div', { class: 'v pending' }, fmtAmount(pending), ' ', unitTag()))
@@ -2022,27 +2048,6 @@ function iconGlyph(ic) {
     ? h('span', { class: 'sel-ico', html: ic })
     : h('span', { class: 'sel-ico' }, ic);
 }
-function iconSelect(opts, current, onSelect) {
-  const cur = opts.find((o) => o.id === current) || opts[0];
-  return h('div', { class: 'icon-select', style: 'position:relative;width:100%' },
-    h('button', {
-      type: 'button', class: 'icon-select-btn',
-      onClick: () => { ui.selectOpen = ui.selectOpen === 'receive' ? null : 'receive'; render(); },
-    },
-      iconGlyph(cur.icon),
-      h('span', { class: 'grow', style: 'text-align:left' }, cur.label),
-      h('span', { class: 'muted', style: 'font-size:12px' }, '▾')),
-    ui.selectOpen === 'receive'
-      ? h('div', {},
-          h('div', { style: 'position:fixed;inset:0;z-index:20', onClick: () => { ui.selectOpen = null; render(); } }),
-          h('div', { class: 'icon-select-menu', style: 'position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:21' },
-            opts.map((o) => h('button', {
-              type: 'button', class: 'icon-select-item' + (o.id === current ? ' active' : ''),
-              onClick: () => { ui.selectOpen = null; onSelect(o.id); },
-            }, iconGlyph(o.icon), h('span', { class: 'grow', style: 'text-align:left' }, o.label)))))
-      : null
-  );
-}
 
 function receiveTab() {
   // Feature takeovers: boarding success, Ark receive celebration, etc.
@@ -2078,29 +2083,15 @@ function receiveTab() {
     );
   }
 
-  // One card with a toggle: the on-chain address plus whatever receive modes
-  // the enabled features contribute (Lightning, silent payment, Ark, ...).
+  // The pane follows the global account: Spending shows the payment address
+  // (receives Ark and Lightning), Savings shows a fresh on-chain address.
   const fresh = wallet.freshReceive();
-  const featModes = featureAll('receiveModes');
-  // The payment name leads: it's the address most people should hand out.
-  const nameMode = featModes.find((m) => m.id === 'name');
-  let mode = ui.receiveType || (nameMode ? 'name' : 'address');
-  if (mode !== 'address' && !featModes.some((m) => m.id === mode)) mode = nameMode ? 'name' : 'address';
-  const opts = [
-    ...(nameMode ? [{ id: 'name', label: nameMode.label, icon: nameMode.icon }] : []),
-    { id: 'address', label: t('receiveAddressTab'), icon: BITCOIN_ICON(20) },
-    ...featModes.filter((m) => m.id !== 'name').map((m) => ({ id: m.id, label: m.label, icon: m.icon })),
-  ];
-  const seg = opts.length > 1
-    ? iconSelect(opts, mode, (id) => { ui.receiveType = id; render(); })
-    : null;
-  const fm = featModes.find((m) => m.id === mode);
-  if (fm) return fm.render(seg);
+  const nameMode = featureAll('receiveModes').find((m) => m.id === 'name');
+  if (accountSel() === 'spending' && nameMode) return nameMode.render(null);
   const addr = fresh.address;
   return h(
     'div',
     { class: 'card col', style: 'align-items:center;gap:14px' },
-    seg,
     h('div', { html: qrSvg(addr) }),
     h('div', { class: 'addr-box', style: 'width:100%' }, addr),
     copyBtn(addr, t('copyAddress'))
@@ -3023,6 +3014,7 @@ const ctx = {
   // support) — lazy so it resolves against the final FEATURES list, and a
   // build without the target feature simply gets null back
   hook: (name, ...args) => featureHook(name, ...args),
+  getAccount: () => accountSel(),
   // Open (or create) a wallet from a mnemonic — used by nostr login.
   openMnemonic: async (mnemonic, passphrase, opts) => enterWallet(mnemonic, passphrase, opts),
 };

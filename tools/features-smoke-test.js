@@ -43,7 +43,7 @@ const wallet = {
 const ctx = {
   h: (tag, attrs, ...kids) => ({ tag, attrs, kids }),
   ui: {}, render: () => {}, wallet,
-  hook: () => null, openMnemonic: async () => {},
+  hook: () => null, getAccount: () => 'savings', openMnemonic: async () => {},
   fmtAmount: String, unitLabel: () => 'sats', unitTag: () => 'sats', getUnit: () => 'sats',
   parseAmount: (v) => parseInt(v, 10) || 0,
   copyBtn: () => null, pasteBtn: () => null, toast: () => {}, blankSend: () => ({}),

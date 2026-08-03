@@ -387,3 +387,4 @@ hr.divider { margin: 16px 0; }
 .balance-move { gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); text-align: left; }
 .balance-move .seg { display: flex; width: 100%; }
 .balance-move .seg button { flex: 1; }
+.balance-seg { display: inline-flex; margin-bottom: 6px; }
