@@ -18,7 +18,6 @@ import {
   shortTxid,
   timeAgo,
   SATS,
-  ARK_ICON,
   BITCOIN_ICON,
 } from './format.js';
 
@@ -528,14 +527,6 @@ function howItWorksScreen() {
       para('hiwLn1'),
       para('hiwLn2'),
       para('hiwLn3')),
-    h('div', { class: 'card col', style: 'gap:14px' },
-      h('h3', { class: 'row gap6', style: 'align-items:center' }, h('span', { html: ARK_ICON(18) }), t('hiwArkTitle')),
-      para('hiwArk1'),
-      para('hiwArk2'),
-      para('hiwArk3')),
-    h('div', { class: 'card col', style: 'gap:14px' },
-      h('h3', {}, '👤 ' + t('hiwSpTitle')),
-      para('hiwSp1')),
     h('div', { class: 'card col', style: 'gap:14px' },
       h('h3', {}, '🎁 ' + t('hiwGiftsTitle')),
       para('hiwGifts1')),
