@@ -518,9 +518,7 @@ function howItWorksScreen() {
       h('h3', {}, t('hiwBasicsTitle')),
       para('hiwBasics1'),
       para('hiwBasics2'),
-      para('hiwBasics3'),
-      para('hiwBasics4'),
-      para('hiwBasics5')
+      para('hiwBasics3')
     ),
     h('div', { class: 'card col', style: 'gap:14px' },
       h('h3', {}, '⚡ ' + t('hiwLnTitle')),
