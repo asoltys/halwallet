@@ -380,8 +380,6 @@ hr.divider { margin: 16px 0; }
 .chat-bubble.me { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); text-align: left; }
 .chat-row.dm .chat-time { font-size: 10px; color: var(--faint); margin-top: 2px; }
 
-/* Settings: section heading between card groups. */
-.settings-section { margin: 8px 0 -6px 4px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 
 /* Inline move-money panel on the balance card. */
 .balance-move { gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); text-align: left; }

@@ -1421,8 +1421,8 @@ function addressScanView() {
 function settingsTab() {
   if (ui.addrScan && !wallet.offline) return addressScanView();
   if (ui.settingsPage === 'advanced') return advancedSettingsView();
+  if (ui.settingsPage === 'nostr') return nostrSettingsView();
   const a = activeAccount();
-  const nostrCards = featureAll('nostrSettingsCards');
   return h(
     'div',
     { class: 'col', style: 'gap:16px' },
@@ -1431,13 +1431,20 @@ function settingsTab() {
     ...featureAll('settingsCards'),
     networkCard(),
     explorerCard(),
-    // Everything nostr — identity, sync, wallet connect — under one heading.
-    nostrCards.length || (a && nostrNpubCard(a))
-      ? h('h3', { class: 'settings-section' }, t('nostrSection'))
-      : null,
-    a ? nostrNpubCard(a) : null,
-    ...nostrCards,
+    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = 'nostr'; render(); } }, t('nostrSettings')),
     h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = 'advanced'; render(); } }, t('advancedSettings'))
+  );
+}
+
+// Everything nostr — identity, sync, wallet connect — on its own page.
+function nostrSettingsView() {
+  const a = activeAccount();
+  return h(
+    'div',
+    { class: 'col', style: 'gap:16px' },
+    a ? nostrNpubCard(a) : null,
+    ...featureAll('nostrSettingsCards'),
+    h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = null; render(); } }, t('back'))
   );
 }
 

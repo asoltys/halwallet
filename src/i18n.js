@@ -199,7 +199,7 @@ const STR = {
     msgInviteSent: 'Invite sent',
     msgLeave: 'Leave community',
     msgLeaveConfirm: 'Really leave? Rejoining needs a new invite',
-    nostrSection: 'Nostr',
+    nostrSettings: 'Nostr settings',
     advancedSettings: 'Advanced settings',
     recoveryDesc: 'The twelve words that back up this wallet. Anyone who sees them can steal your funds.',
     arkOffboardAmtPlaceholder: 'Amount',
