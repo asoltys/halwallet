@@ -1,0 +1,121 @@
+// Recipient search, shared by chat (New message) and the Send form.
+//
+// Sources, best first: an exact npub/hex paste; coinos usernames from the
+// names registrar (prefix search, authoritative for our users); NIP-50
+// full-text profile search on a search relay (the approach Coracle/Snort
+// take — most relays don't index, so a dedicated one is queried). Results
+// merge by pubkey, profiles fill in one batched kind-0 fetch, and per-query
+// results are cached so narrowing a query never re-hits the network for
+// prefixes already seen.
+
+import { queryOn, parseNostrPubkey, npubOf, PROFILE_RELAYS } from './nostr.js';
+
+const REGISTRAR = 'https://names.coinos.io';
+const SEARCH_RELAYS = ['wss://relay.nostr.band'];
+const MAX_RESULTS = 8;
+
+const profileCache = new Map(); // pk -> { name, picture }
+const queryCache = new Map(); // q -> rows
+
+// Worth searching? A partial username or npub — never an address, invoice,
+// or key the Send form knows how to handle whole. Known payment prefixes are
+// excluded so typing an address never triggers a search.
+export function searchable(qRaw) {
+  const q = (qRaw || '').trim().toLowerCase();
+  if (/^(npub1|nprofile1)[a-z0-9]{6,}$/.test(q)) return true;
+  if (q.length < 2 || q.length > 30) return false;
+  if (/^(bc1|tb1|bcrt1|lnbc|lntb|lnurl|bitcoin:|lightning:|sp1q|ark1|xpub|zpub|xprv|zprv|nsec1|bunker:)/.test(q)) return false;
+  if (/^[0-9a-f]{40,}$/.test(q)) return false; // raw hex key/txid
+  return /^[a-z0-9._-]+$/.test(q);
+}
+
+async function fillProfiles(rows) {
+  const missing = rows.filter((r) => !r.picture && !profileCache.has(r.pk));
+  if (missing.length) {
+    const evs = await queryOn(PROFILE_RELAYS, { kinds: [0], authors: missing.map((r) => r.pk) }, 2500);
+    const newest = new Map();
+    for (const e of evs) if (!newest.has(e.pubkey) || e.created_at > newest.get(e.pubkey).created_at) newest.set(e.pubkey, e);
+    for (const [pk, e] of newest) {
+      try {
+        const m = JSON.parse(e.content);
+        profileCache.set(pk, { name: m.display_name || m.name || null, picture: m.picture || null });
+      } catch {}
+    }
+  }
+  for (const r of rows) {
+    const p = profileCache.get(r.pk);
+    if (p) { r.picture ||= p.picture; r.name ||= p.name; }
+  }
+}
+
+export async function searchRecipients(qRaw) {
+  const q = qRaw.trim().toLowerCase();
+  if (queryCache.has(q)) return queryCache.get(q);
+  const out = new Map(); // pk -> { pk, name, address, picture, pri }
+  const add = (pk, row, pri) => {
+    if (!/^[0-9a-f]{64}$/.test(pk || '')) return;
+    const cur = out.get(pk);
+    if (cur) Object.assign(cur, { ...row, ...Object.fromEntries(Object.entries(cur).filter(([, v]) => v != null)), pri: Math.min(cur.pri, pri) });
+    else out.set(pk, { pk, ...row, pri });
+  };
+
+  const exact = parseNostrPubkey(q);
+  if (exact) add(exact, {}, 0);
+
+  await Promise.allSettled([
+    fetch(`${REGISTRAR}/search?q=${encodeURIComponent(q)}`)
+      .then((r) => r.json())
+      .then((j) => (j.results || []).forEach((r) => add(r.pubkey, { name: r.name, address: r.address }, 1))),
+    (async () => {
+      if (exact) return; // an npub needs no full-text search
+      const evs = await queryOn(SEARCH_RELAYS, { kinds: [0], search: q, limit: MAX_RESULTS }, 3500);
+      for (const e of evs) {
+        try {
+          const m = JSON.parse(e.content);
+          profileCache.set(e.pubkey, { name: m.display_name || m.name || null, picture: m.picture || null });
+          add(e.pubkey, { name: m.display_name || m.name, picture: m.picture, address: typeof m.nip05 === 'string' ? m.nip05.replace(/^_@/, '') : undefined }, 2);
+        } catch {}
+      }
+    })(),
+  ]);
+
+  const rows = [...out.values()].sort((a, b) => a.pri - b.pri).slice(0, MAX_RESULTS);
+  await fillProfiles(rows).catch(() => {});
+  if (queryCache.size > 200) queryCache.clear();
+  queryCache.set(q, rows);
+  return rows;
+}
+
+// Debounced controller: one per call site. onUpdate(q, rows|null) fires with
+// null when the query isn't searchable (hide the panel), [] while nothing
+// matched, rows otherwise. Stale responses are dropped by sequence.
+export function makeSearcher(onUpdate) {
+  let timer = null;
+  let seq = 0;
+  return {
+    update(q) {
+      clearTimeout(timer);
+      const my = ++seq;
+      if (!searchable(q)) { onUpdate(q, null); return; }
+      const cached = queryCache.has(q.trim().toLowerCase());
+      timer = setTimeout(async () => {
+        const rows = await searchRecipients(q).catch(() => []);
+        if (my === seq) onUpdate(q, rows);
+      }, cached ? 0 : 300);
+    },
+    clear() { seq++; clearTimeout(timer); onUpdate('', null); },
+  };
+}
+
+// Candidate rows (avatar + name + address/npub), styled with the chat list
+// classes both pages already ship.
+export function resultRows(h, rows, onPick) {
+  return rows.map((r) =>
+    h('div', { class: 'item chat-thread-row', onClick: () => onPick(r) },
+      r.picture
+        ? h('img', { class: 'chat-avatar', src: r.picture, alt: '' })
+        : h('div', { class: 'chat-avatar fallback' }, (r.name || npubOf(r.pk) || '??').slice(0, 2)),
+      h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
+        h('div', { class: 'chat-name' }, r.name || (npubOf(r.pk) || '').slice(0, 14) + '…'),
+        h('div', { class: 'muted small chat-preview' }, r.address || (npubOf(r.pk) || '').slice(0, 24) + '…'))));
+}

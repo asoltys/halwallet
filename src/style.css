@@ -388,3 +388,4 @@ hr.divider { margin: 16px 0; }
 .balance-move .seg { display: flex; width: 100%; }
 .balance-move .seg button { flex: 1; }
 .balance-seg { display: inline-flex; margin-bottom: 6px; }
+.send-suggest { max-height: 260px; overflow-y: auto; }

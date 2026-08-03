@@ -22,6 +22,7 @@ import {
   communityId, parseInviteLink, makeInviteLink, makeInviteBundleEvent, openInviteBundle,
 } from '../concord.js';
 import { makeDM, unwrapDM, wrapDM } from '../dm.js';
+import { makeSearcher, resultRows } from '../recipient-search.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { t } from '../i18n.js';
 
@@ -752,6 +753,20 @@ export function messagesFeature(ctx) {
 
   const backBtn = (onClick) => h('button', { class: 'iconbtn chat-back', onClick }, '‹');
 
+  // Recipient search for New message: debounced, sequenced, cached upstream.
+  const dmSearch = { rows: null, busy: false };
+  const dmSearcher = makeSearcher((q, rows) => {
+    dmSearch.rows = rows;
+    dmSearch.busy = false;
+    scheduleRepaint();
+  });
+  const dmSearcherUpdate = dmSearcher.update.bind(dmSearcher);
+  dmSearcher.update = (q) => {
+    const willSearch = q && q.trim().length >= 2;
+    if (willSearch) { dmSearch.busy = dmSearch.rows === null || !dmSearch.rows.length; }
+    dmSearcherUpdate(q);
+  };
+
   const stickToBottom = () => {
     queueMicrotask(() => {
       const log = document.querySelector('.chat-log');
@@ -798,24 +813,37 @@ export function messagesFeature(ctx) {
     kids.push(h('div', { class: 'row between', style: 'align-items:baseline' },
       h('h3', { style: 'margin:0' }, t('msgDmsTitle')),
       h('button', { class: 'btn-sm', onClick: () => { ui.msgHomePanel = ui.msgHomePanel === 'newdm' ? null : 'newdm'; render(); } }, t('msgNewDm'))));
-    if (ui.msgHomePanel === 'newdm')
-      kids.push(h('div', { class: 'row gap6' },
-        h('input', {
-          class: 'grow', type: 'text', placeholder: t('msgNpubPlaceholder'),
-          value: ui.msgNewDmTo || '', onInput: (e) => { ui.msgNewDmTo = e.target.value; },
-        }),
-        h('button', {
-          class: 'btn-sm', onClick: () => {
-            const pk = parseNostrPubkey(ui.msgNewDmTo);
-            if (!pk) { toast(t('msgBadNpub')); return; }
-            ui.msgNewDmTo = '';
-            ui.msgHomePanel = null;
-            ui.msgView = 'dm';
-            ui.msgPeer = pk;
-            ui.msgStick = true;
-            render();
-          },
-        }, t('msgOpen'))));
+    if (ui.msgHomePanel === 'newdm') {
+      const openThread = (pk) => {
+        dmSearcher.clear();
+        ui.msgNewDmTo = '';
+        ui.msgHomePanel = null;
+        ui.msgView = 'dm';
+        ui.msgPeer = pk;
+        ui.msgStick = true;
+        render();
+      };
+      kids.push(h('div', { class: 'col gap6' },
+        h('div', { class: 'row gap6' },
+          h('input', {
+            class: 'grow', type: 'text', placeholder: t('msgSearchPlaceholder'),
+            value: ui.msgNewDmTo || '',
+            onInput: (e) => { ui.msgNewDmTo = e.target.value; dmSearcher.update(e.target.value); },
+          }),
+          h('button', {
+            class: 'btn-sm', onClick: () => {
+              const pk = parseNostrPubkey(ui.msgNewDmTo);
+              if (!pk) { toast(t('msgBadNpub')); return; }
+              openThread(pk);
+            },
+          }, t('msgOpen'))),
+        dmSearch.rows === null ? null
+          : dmSearch.busy ? h('div', { class: 'row gap6', style: 'align-items:center;padding:4px 0' },
+              h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('msgSearching')))
+          : dmSearch.rows.length
+            ? h('div', { class: 'list' }, resultRows(h, dmSearch.rows, (r) => openThread(r.pk)))
+            : h('div', { class: 'small muted' }, t('msgNoMatches'))));
+    }
     kids.push(
       dmRows.length
         ? h('div', { class: 'list' }, dmRows.map(({ peer, last }) =>

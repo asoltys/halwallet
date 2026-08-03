@@ -419,6 +419,20 @@ Bun.serve({
       });
     }
 
+    // Prefix search over registered names — powers recipient search in the
+    // wallet's DMs. Public data (every name is a public DNS record).
+    if (url.pathname === '/search' && req.method === 'GET') {
+      if (!rateOk(ip, 60)) return json({ error: 'rate limited' }, 429);
+      const q = (url.searchParams.get('q') || '').toLowerCase().trim();
+      if (q.length < 2 || q.length > 30) return json({ results: [] });
+      const results = Object.entries(state.names)
+        .filter(([key]) => key.split('@')[0].startsWith(q))
+        .sort(([a], [b]) => a.length - b.length || (a < b ? -1 : 1))
+        .slice(0, 10)
+        .map(([key, r]) => ({ address: key, name: key.split('@')[0], pubkey: r.pubkey }));
+      return json({ results });
+    }
+
     // Availability / lookup. Public data (it's DNS).
     const m = url.pathname.match(/^\/name\/([a-z0-9._-]{1,30})$/);
     if (m && req.method === 'GET') {

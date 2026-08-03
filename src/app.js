@@ -6,6 +6,8 @@
 
 import { Wallet, newMnemonic, isValidMnemonic, accountXpubFor, cacheKeyFor, utxoId, parseExtendedKey, xpubToZpub, encryptVault, decryptVault } from './wallet.js';
 import { qrSvg } from './qr.js';
+import { makeSearcher, resultRows, searchable } from './recipient-search.js';
+import { npubOf } from './nostr.js';
 import { scanQr } from './scan.js';
 import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS } from './api.js';
 import { buildFeatures } from './features/index.js';
@@ -2403,6 +2405,11 @@ function destReady(a) {
   return !!a && (wallet.isOnchainAddress(a) || FEATURES.some((f) => f.isSendDest && f.isSendDest(a)));
 }
 
+// Recipient search under the destination input: usernames and npubs resolve
+// to candidates with avatars; picking one runs the same path as pasting.
+const sendSearch = { rows: null };
+const sendSearcher = makeSearcher((q, rows) => { sendSearch.rows = rows; render(); });
+
 // One recipient: address + amount. Max is only offered for a single recipient.
 function recipientRow(s, r, i) {
   const single = s.recipients.length === 1;
@@ -2433,12 +2440,22 @@ function recipientRow(s, r, i) {
       r.address = v; syncCheck();
       const hadError = !!ui.sendError;
       ui.sendError = ''; // editing the destination starts over — drop stale errors
+      if (i === 0) sendSearcher.update(v); // candidates render when results land
       if (tryFeature(v, true)) return;              // a bolt11 advances to its own confirmation
       // reveal/hide amount + controls as validity flips, an annotation
       // (zap button) appears/disappears, or an error clears
       if (hadError || destReady(v) !== r._ready || !!featureHook('sendFormNote', v) !== r._note) render();
     },
   });
+  const pickRecipient = (cand) => {
+    const v = cand.address || npubOf(cand.pk);
+    sendSearcher.clear();
+    addrInput.value = v;
+    r.address = v;
+    ui.sendError = '';
+    syncCheck();
+    if (!featureMatchSend(v)) render();
+  };
   const row = h(
     'div',
     { class: 'col gap6' },
@@ -2452,6 +2469,9 @@ function recipientRow(s, r, i) {
       !single && h('button', { type: 'button', class: 'btn-sm', title: t('remove'), onClick: () => { s.recipients.splice(i, 1); render(); } }, '✕')
     ),
     check,
+    i === 0 && sendSearch.rows && sendSearch.rows.length && searchable(r.address)
+      ? h('div', { class: 'list send-suggest' }, resultRows(h, sendSearch.rows, pickRecipient))
+      : null,
     r._ready ? h('div', { class: 'input-group' },
       h('input', {
         type: 'number', step: unit === 'sats' ? '1' : '0.00000001', min: '0',
