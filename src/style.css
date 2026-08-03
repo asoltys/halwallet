@@ -507,3 +507,8 @@ body::after {
 .tour-card { position: fixed; left: 50%; transform: translateX(-50%); width: min(90vw, 360px); background: var(--paper); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); z-index: 81; }
 @media (prefers-reduced-motion: reduce) { .onb-confetti i { animation: none; display: none; } }
 .onb-check { width: 96px; height: 96px; font-size: 52px; align-self: center; margin: 6px 0; }
+/* the nostr mark heading the sign-in steps: big, centered, gently afloat */
+.onb-mark { align-self: center; margin-bottom: -4px; animation: mark-float 4.5s ease-in-out infinite; }
+.onb-mark svg { width: 72px; height: 72px; filter: drop-shadow(0 8px 22px rgba(184, 79, 232, .35)); }
+@keyframes mark-float { 50% { transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { .onb-mark { animation: none; } }

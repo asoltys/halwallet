@@ -8,6 +8,7 @@ import { Wallet, newMnemonic, isValidMnemonic, accountXpubFor, cacheKeyFor, utxo
 import { qrSvg } from './qr.js';
 import { makeSearcher, resultRows, searchable, punkUrl } from './recipient-search.js';
 import { npubOf } from './nostr.js';
+import { NOSTR_MARK } from './features/nostrlogin.js';
 import { scanQr } from './scan.js';
 import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS } from './api.js';
 import { buildFeatures } from './features/index.js';
@@ -2059,6 +2060,7 @@ function onboardScreen() {
   }
   if (o.step === 'nostr') {
     return page([
+      h('div', { class: 'onb-mark', html: NOSTR_MARK }),
       title(t('onbNostrTitle')),
       h('p', { class: 'muted', style: 'margin:0' }, t('onbNostrBody')),
       h('button', { class: 'btn-primary btn-block', style: 'padding:14px', onClick: () => {
@@ -2077,6 +2079,7 @@ function onboardScreen() {
   }
   if (o.step === 'signin') {
     return page([
+      h('div', { class: 'onb-mark', html: NOSTR_MARK }),
       title(t('onbSigninTitle')),
       featureHook('unlockExtra') || h('div', { class: 'notice err' }, 'nostr login unavailable'),
       h('button', { class: 'linklike small', onClick: () => { o.step = 'nostr'; render(); } }, t('back')),
