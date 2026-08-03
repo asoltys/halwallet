@@ -446,7 +446,7 @@ const STR = {
     arkOffboardedNote: 'Arrives in Savings after 1 confirmation.',
     arkOffboarded: 'Moved to Savings',
     arkOffboardHistory: 'Moved to Savings',
-    arkExitBtn: 'Move to Savings without the server ({n} coin(s))',
+    arkExitBtn: 'Move to Savings without the server',
     arkExitStarted: 'Unilateral exit started for {n} coin(s) — broadcasting the exit chain.',
     arkExitNoFeeCoin: 'This needs a little in Savings to pay the mining fees.',
     arkExitChainStatus: 'Moving {n} sats — step {done} of {total}…',

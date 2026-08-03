@@ -1578,7 +1578,7 @@ export function arkFeature(ctx) {
         h('p', { class: 'small muted', style: 'margin:0' }, t('arkUniDesc')),
         nSpend > 0
           ? h('button', { class: 'btn-ghost btn-block', disabled: !!ui.arkBusy, onClick: doArkExit },
-              ui.arkBusy === 'exit' ? h('span', { class: 'spinner sm' }) : t('arkExitBtn', { n: nSpend }))
+              ui.arkBusy === 'exit' ? h('span', { class: 'spinner sm' }) : t('arkExitBtn'))
           : null,
         ...exits),
       ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null,
