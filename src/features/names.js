@@ -140,7 +140,7 @@ export function namesFeature(ctx) {
         // npub happens at login instead (adoptIdentity below), where a
         // signer is already live — an address must never wait on a popup.
         const own = wallet.nostrNpub && wallet.nostrNpub();
-        if (own) { await claim(own.slice(0, 20), {}); st = load(); }
+        if (own) { await claim(own.slice(0, 12), {}); st = load(); }
       }
       checked = true;
       clearTimeout(deadline); deadline = null;
@@ -167,7 +167,7 @@ export function namesFeature(ctx) {
   // wallet key to keep the record updated afterwards.
   async function adoptIdentity(signer, npub) {
     if (!signer || !npub || !available()) return null;
-    const name = npub.slice(0, 20);
+    const name = npub.slice(0, 12);
     if (load().name === name) return name;
     await claim(name, { signer, manager: wallet.nostrPubkey() });
     render();

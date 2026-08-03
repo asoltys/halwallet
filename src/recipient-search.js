@@ -157,6 +157,6 @@ export function resultRows(h, rows, onPick) {
         ? h('img', { class: 'chat-avatar', src: r.picture, alt: '' })
         : fallbackAvatar(h, r.pk, r.name, 'chat-avatar'),
       h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
-        h('div', { class: 'chat-name' }, r.name || (npubOf(r.pk) || '').slice(0, 14) + '…'),
+        h('div', { class: 'chat-name' }, r.name || (npubOf(r.pk) || '').slice(0, 12)),
         h('div', { class: 'muted small chat-preview' }, r.address || r.nip05 || (npubOf(r.pk) || '').slice(0, 24) + '…'))));
 }

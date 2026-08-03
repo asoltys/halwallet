@@ -48,7 +48,7 @@ const APP_BASE = 'https://v3.coinos.io';
 const CACHE_MAX = 50; // messages kept per channel / per DM thread in feature state
 
 export function messagesFeature(ctx) {
-  const { h, ui, render, wallet, toast, hook } = ctx;
+  const { h, ui, render, wallet, toast, hook, copyBtn } = ctx;
 
   // ---- persisted state ----------------------------------------------------
 
@@ -124,7 +124,7 @@ export function messagesFeature(ctx) {
     const p = profileOf(pk);
     if (p && p.name) return p.name;
     const npub = npubOf(pk);
-    return npub ? npub.slice(0, 12) + '…' : pk.slice(0, 12) + '…';
+    return npub ? npub.slice(0, 12) : pk.slice(0, 12);
   };
 
   // ---- community rooms ----------------------------------------------------
@@ -865,6 +865,7 @@ export function messagesFeature(ctx) {
           ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }))
           : full.about ? h('p', { class: 'small', style: 'margin:0;white-space:pre-wrap' }, String(full.about).slice(0, 1000)) : null,
         h('div', { class: 'addr-box break', style: 'font-size:11px' }, npub),
+        copyBtn(npub, t('copyKey')),
         ui.profEdit
           ? h('div', { class: 'col', style: 'gap:8px' },
               field(t('profName'), 'name'),
