@@ -513,8 +513,7 @@ body::after {
 @media (prefers-reduced-motion: reduce) { .onb-mark { animation: none; } }
 .onb-addr { color: var(--muted); font-family: var(--mono); font-size: 13px; }
 /* balance card: one account at a time, dots to flip */
-.balance-face { min-height: 96px; }
-.balance-note { margin-top: 2px; }
+.balance-face { min-height: 78px; }
 /* amount input with an inline Max affordance */
 .amt-field { position: relative; display: flex; flex: 1; min-width: 0; }
 .amt-field input { width: 100%; padding-right: 52px; }

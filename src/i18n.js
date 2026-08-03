@@ -141,8 +141,6 @@ const STR = {
     spendingLabel: 'Spending',
     savingLabel: 'Savings',
     balanceSwitch: 'Switch to {name}',
-    balanceNoteSpending: 'Instant · free to send',
-    balanceNoteSavings: 'On-chain · mining fees apply',
     movingLabel: 'Moving…',
     balance: 'Balance',
     pending: 'Pending',

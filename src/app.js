@@ -2363,9 +2363,6 @@ function balanceCard() {
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
       firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,
       animatedAmount('bal:' + sel, isSpending ? spending : saving), ' ', unitTag('unit')),
-    hasArk
-      ? h('div', { class: 'small muted balance-note' }, isSpending ? t('balanceNoteSpending') : t('balanceNoteSavings'))
-      : null,
     pending > 0 || featLines.length
       ? h('div', { class: 'split' },
           pending > 0
