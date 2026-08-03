@@ -816,55 +816,6 @@ export function arkFeature(ctx) {
     );
   }
 
-  function arkCard() {
-    const net = getNetwork();
-    // No provider picker: coinos is the provider (per-network defaults cover
-    // dev networks). The card is status only.
-    const id = getArkProviderId(net);
-    const head = [
-      h('h3', { class: 'row gap6', style: 'align-items:center' }, t('arkTitle')),
-      h('p', { class: 'small muted', style: 'margin:0' }, t('arkDesc')),
-      ui.arkError ? h('div', { class: 'notice err' }, ui.arkError) : null,
-    ];
-    if (id === 'off' || wallet.watchOnly) {
-      return h('div', { class: 'card col' }, ...head,
-        wallet.watchOnly && id !== 'off' ? h('div', { class: 'small faint' }, t('arkWatchOnly')) : null);
-    }
-    if (!ark || !ark.state) {
-      return h('div', { class: 'card col' }, ...head,
-        arkConnectPromise
-          ? h('div', { class: 'row gap6', style: 'align-items:center' },
-              h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkConnecting')))
-          : h('button', { class: 'btn-ghost btn-block', onClick: () => connectArk().catch(() => {}) }, t('arkConnectBtn')));
-    }
-  
-    const spendables = ark.vtxos().filter((v) => v.state === 'spendable');
-    const pendingActions = ark.pendingActions();
-    const row = (k, v) => h('div', { class: 'row between' }, h('span', { class: 'small muted' }, k), h('span', { class: 'small' }, v));
-  
-    return h(
-      'div',
-      { class: 'card col', style: 'gap:10px' },
-      ...head,
-      spendables.length ? row(t('arkVtxos'), String(spendables.length)) : null,
-      // in-flight operations, summarized in plain words (exits get their own
-      // per-exit status lines below)
-      (() => {
-        const counts = {};
-        for (const a of pendingActions) { if (a.type !== 'exit') counts[a.type] = (counts[a.type] || 0) + 1; }
-        const LABEL = { board: 'arkOpsBoard', send: 'arkOpsSend', refresh: 'arkOpsRefresh', offboard: 'arkOpsOffboard', 'ln-pay': 'arkOpsLnPay', 'ln-recv': 'arkOpsLnRecv' };
-        const parts = Object.entries(counts).map(([type, n]) => t(LABEL[type] || 'arkPendingActions', { n }));
-        return parts.length ? h('div', { class: 'small muted' }, parts.join(' · ')) : null;
-      })(),
-      // Refresh/consolidation is automatic (maybeAutoRefresh) — no button.
-      // Moving funds out (cooperative offboard / unilateral exit) lives on its
-      // own page, reached from the "Exit" link on the Ark balance line.
-      spendables.length >= 1
-        ? h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.arkExitPage = true; ui.arkError = ''; render(); } }, t('arkExitPageTitle'))
-        : null
-    );
-  }
-
   async function doArkBoard() {
     const sats = parseInt((ui.arkBoardAmt || '').trim(), 10);
     if (!sats) return;
@@ -1773,7 +1724,6 @@ export function arkFeature(ctx) {
           : null,
         done ? null : h('div', { class: 'small muted', style: 'margin-top:2px' }, t('arkBoardedNote')));
     },
-    settingsCards() { return [arkCard()]; },
 
     // ---- ark-gift hooks (called by the gifts feature via ctx.hook) ----
     arkGiftInfo() {

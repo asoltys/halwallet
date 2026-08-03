@@ -1476,11 +1476,9 @@ function settingsTab() {
 
 // Everything nostr — identity, sync, wallet connect — on its own page.
 function nostrSettingsView() {
-  const a = activeAccount();
   return h(
     'div',
     { class: 'col', style: 'gap:16px' },
-    a ? nostrNpubCard(a) : null,
     ...featureAll('nostrSettingsCards'),
     h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.settingsPage = null; render(); } }, t('back'))
   );
