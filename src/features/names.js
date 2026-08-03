@@ -385,6 +385,8 @@ export function namesFeature(ctx) {
     namesAddress() { const st = load(); return st.name ? `${st.name}@${st.domain || DOMAIN}` : null; },
     // the onboarding wizard renders the same claim form on its username step
     namesClaimForm() { return claimForm(true); },
+    // claim a specific name (the migration flow, after coinos.io released it)
+    namesClaimName(name) { return claim(String(name).toLowerCase()); },
     stop() { clearTimeout(retryTimer); clearTimeout(deadline); deadline = null; },
     receiveModes() {
       if (!available()) return [];

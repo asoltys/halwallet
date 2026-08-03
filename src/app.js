@@ -2035,7 +2035,7 @@ function onboardScreen() {
   const o = ui.onb;
   // steps that were waiting on something advance the moment it exists
   if ((o.step === 'nostr' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()) {
-    o.step = 'username';
+    o.step = 'legacy';
     o.enterAddr = featureHook('namesAddress') || null;
   }
   if (o.step === 'username') {
@@ -2049,6 +2049,27 @@ function onboardScreen() {
   const page = (kids) => h('div', { class: 'col onb', style: 'gap:20px' }, ...kids);
   const title = (txt) => h('h2', { class: 'onb-title' }, txt);
 
+  if (o.step === 'legacy') {
+    const addr = featureHook('namesAddress');
+    const url = addr
+      ? `https://coinos.io/migrate?to=${encodeURIComponent(addr)}&back=${encodeURIComponent(location.origin + '/')}`
+      : null;
+    return page([
+      title(t('onbLegacyTitle')),
+      h('p', { class: 'muted', style: 'margin:0' }, t('onbLegacyBody')),
+      url
+        ? h('a', {
+            class: 'btn btn-primary btn-block', href: url,
+            style: 'text-align:center;display:block;text-decoration:none;padding:14px',
+            onClick: () => { o.wentToLegacy = true; },
+          }, t('onbLegacyGo'))
+        : h('div', { class: 'row gap6', style: 'align-items:center' },
+            h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('onbNameWait'))),
+      h('button', { class: 'btn-block', style: 'padding:14px', onClick: () => { o.step = 'username'; render(); } },
+        o.wentToLegacy ? t('onbLegacyDone') : t('onbLegacyNo')),
+      h('button', { class: 'linklike small', onClick: () => { o.step = 'nostr'; render(); } }, t('back')),
+    ]);
+  }
   if (o.step === 'welcome') {
     return page([
       h('div', { class: 'onb-hero' }, brandHeader(false)),
@@ -2151,6 +2172,34 @@ function onboardScreen() {
       render();
     } }, t('onbEnter')),
   ]);
+}
+
+// Returning from the legacy migration: coinos.io sends ?migrated=<username>
+// once it has swept the balance and released the name. Claim it here — the
+// registrar's "is this a legacy user?" guard now passes.
+function claimMigratedName() {
+  let name = null;
+  try {
+    const u = new URL(location.href);
+    name = u.searchParams.get('migrated');
+    if (name) { u.searchParams.delete('migrated'); history.replaceState(null, '', u.pathname + u.search); }
+  } catch {}
+  if (!name) return;
+  ui.migrating = name;
+  render();
+  let tries = 0;
+  const attempt = () => {
+    featureHook('namesClaimName', name)
+      .then(() => { ui.migrating = null; toast(t('migrateClaimed', { name })); render(); })
+      .catch(() => {
+        // DNS/registrar caches the legacy lookup briefly; give it a minute
+        if (++tries < 12) return setTimeout(attempt, 5000);
+        ui.migrating = null;
+        toast(t('migrateClaimFailed', { name }));
+        render();
+      });
+  };
+  attempt();
 }
 
 // ---- the coach-mark tour: three stops, measured against the live DOM ----
@@ -3450,6 +3499,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') onAppHidden();
   else onAppVisible();
 });
+window.addEventListener('load', () => setTimeout(() => { if (activeAccount()) claimMigratedName(); }, 1500));
 loadLocale(getLang()).finally(() => {
   applyBootAutoLogout(); // clear an overdue session before we read it for claim targets
   if (featureHook('bootUrl')) return; // a feature consumed the URL (e.g. a gift claim)
