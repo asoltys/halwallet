@@ -140,11 +140,16 @@ export function makeSearcher(onUpdate) {
       clearTimeout(timer);
       const my = ++seq;
       if (!searchable(q)) { onUpdate(q, null); return; }
-      const cached = queryCache.has(q.trim().toLowerCase());
+      const s = q.trim().toLowerCase();
+      // Get something on screen fast, then relax: the first short query fires
+      // almost immediately (that's the wait the user actually feels), while
+      // longer ones — mid-word keystrokes — wait long enough to skip the
+      // characters still being typed. Cached prefixes are instant.
+      const wait = queryCache.has(s) ? 0 : s.length <= 3 ? 120 : 500;
       timer = setTimeout(async () => {
         const rows = await searchRecipients(q).catch(() => []);
         if (my === seq) onUpdate(q, rows);
-      }, cached ? 0 : 300);
+      }, wait);
     },
     clear() { seq++; clearTimeout(timer); onUpdate('', null); },
   };

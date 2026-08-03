@@ -982,7 +982,7 @@ export function arkFeature(ctx) {
     if (!z) return null;
     return h('div', { class: 'card col', style: 'gap:12px' },
       h('h3', {}, '⚡ ' + t('arkZapTitle')),
-      h('div', { class: 'small muted', style: 'word-break:break-all' }, z.npub),
+      ctx.hook('profileChip', z.pk) || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.npub),
       z.status === 'lookup' ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkZapLookup'))) : null,
       z.status === 'noark' ? h('div', { class: 'notice err' }, t('arkZapNoArk')) : null,
       // No Ark address, but they may still take a Lightning zap — hand off to
@@ -991,7 +991,9 @@ export function arkFeature(ctx) {
         ? h('button', { class: 'btn-primary btn-block', onClick: () => { ctx.hook('lnZapNpub', z.pk, z.npub); } }, '⚡ ' + t('lnZapFallback'))
         : null,
       z.status === 'wrongnet' ? h('div', { class: 'notice err' }, t('arkGiftWrongNet', { net: z.net })) : null,
-      z.status === 'ready'
+      z.status === 'ready' && (arkBalance()?.spendableSat || 0) < 330
+        ? h('div', { class: 'notice info' }, t('zapNoBalance'))
+        : z.status === 'ready'
         ? h('div', { class: 'col gap6' },
             h('div', { class: 'input-group' },
               h('input', { type: 'number', min: '0', inputmode: 'decimal', placeholder: t('lnPayAmount'), value: z.amount,
@@ -1004,7 +1006,7 @@ export function arkFeature(ctx) {
       ui.sendError ? h('div', { class: 'notice err' }, ui.sendError) : null,
       h('div', { class: 'row gap6' },
         h('button', { class: 'btn-ghost', onClick: () => { ui.arkZap = null; ui.sendError = ''; ui.send = blankSend(); render(); } }, t('back')),
-        z.status === 'ready'
+        z.status === 'ready' && (arkBalance()?.spendableSat || 0) >= 330
           ? (ui.busy
               ? h('button', { class: 'btn-primary grow', disabled: true }, h('span', { class: 'spinner' }))
               : h('button', { class: 'btn-primary grow', onClick: doArkZap }, t('arkZapBtn')))
@@ -1604,6 +1606,7 @@ export function arkFeature(ctx) {
     // The zaps feature's generic Lightning seams (once served by the retired
     // swaps feature): the ASP pays invoices natively over ark.
     canLnPay() { return arkAvailable() && !wallet.watchOnly && !!(ark && ark.info); },
+    lnSpendableSat() { const b = arkBalance(); return b ? b.spendableSat : 0; },
     startLnPay(invoice, meta) { return startArkLnPay(invoice, meta); },
     // ---- headless seam for the NWC wallet service ----
     arkPayInvoice(invoice, opts) { return payInvoiceHeadless(invoice, opts); },

@@ -58,8 +58,9 @@ export function zapsFeature(ctx) {
     const p = z.params;
     if (!sats || sats <= 0) { z.error = t('enterValidAmtForN', { n: 1 }); return render(); }
     const msat = sats * 1000;
-    if (msat < p.minSendable || msat > p.maxSendable) {
-      z.error = t('lnZapRange', { min: Math.ceil(p.minSendable / 1000).toLocaleString(), max: Math.floor(p.maxSendable / 1000).toLocaleString() });
+    const capSat = Math.min(Math.floor(p.maxSendable / 1000), hook('lnSpendableSat') ?? Infinity);
+    if (msat < p.minSendable || sats > capSat) {
+      z.error = t('lnZapRange', { min: Math.ceil(p.minSendable / 1000).toLocaleString(), max: capSat.toLocaleString() });
       return render();
     }
     z.error = ''; z.status = 'invoicing'; render();
@@ -97,17 +98,30 @@ export function zapsFeature(ctx) {
     if (z.status === 'error') {
       return h('div', { class: 'card col', style: 'gap:12px' },
         h('h3', {}, '⚡ ' + t('lnZapTitle')),
-        h('div', { class: 'small muted', style: 'word-break:break-all' }, z.name || ''),
+        (z.target && z.target.pk && hook('profileChip', z.target.pk)) || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.name || ''),
         h('div', { class: 'notice err' }, z.error || t('lnZapFailed')),
         h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back')));
     }
-    // ready: amount + optional comment
+    // ready: amount + optional comment. Their LNURL ceiling is meaningless
+    // past our own Spending balance — cap to the lower of the two, and when
+    // Spending can't even cover their minimum, say so instead of rendering
+    // an impossible range.
     const p = z.params;
-    const min = Math.ceil(p.minSendable / 1000), max = Math.floor(p.maxSendable / 1000);
+    const ours = hook('lnSpendableSat');
+    const min = Math.ceil(p.minSendable / 1000);
+    const max = Math.min(Math.floor(p.maxSendable / 1000), ours != null ? ours : Infinity);
+    const broke = ours != null && (ours <= 0 || max < min);
     const commentOk = p.allowsNostr || p.commentAllowed > 0;
+    if (broke) {
+      return h('div', { class: 'card col', style: 'gap:12px' },
+        h('h3', {}, '⚡ ' + t('lnZapTitle')),
+        (z.target && z.target.pk && hook('profileChip', z.target.pk)) || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.name || z.address || ''),
+        h('div', { class: 'notice info' }, t('zapNoBalance')),
+        h('button', { class: 'btn-ghost btn-block', onClick: back }, t('back')));
+    }
     return h('div', { class: 'card col', style: 'gap:12px' },
       h('h3', {}, '⚡ ' + t('lnZapTitle')),
-      h('div', { class: 'small muted', style: 'word-break:break-all' }, z.name || z.address || ''),
+      (z.target && z.target.pk && hook('profileChip', z.target.pk)) || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.name || z.address || ''),
       h('div', { class: 'col gap6' },
         h('div', { class: 'input-group' },
           h('input', { type: 'number', min: '0', inputmode: 'decimal', placeholder: t('lnPayAmount'), value: z.amount,
