@@ -1466,7 +1466,8 @@ function settingsTab() {
     nav('payments', t('settingsPayments')),
     nav('network', t('settingsNetwork')),
     nav('nostr', t('nostrSettings')),
-    nav('advanced', t('advancedSettings'))
+    nav('advanced', t('advancedSettings')),
+    h('button', { class: 'btn-ghost btn-block', style: 'margin-top:6px', onClick: () => { ui.tab = wallet.offline ? 'settings' : 'receive'; render(); } }, t('back'))
   );
 }
 
@@ -1946,6 +1947,17 @@ function walletScreen() {
   const ob = featureHook('onboardingView');
   if (ob) {
     return h('div', { class: 'col', style: 'gap:0' }, brandHeader(false), h('div', { class: 'mt16' }, ob));
+  }
+  // Settings is a full page of its own — no balance, no tab strip; the hub's
+  // back button (or the logo / avatar menu) leads out.
+  if (ui.tab === 'settings') {
+    return h(
+      'div',
+      { class: 'col', style: 'gap:0' },
+      brandHeader(true),
+      ui.offlineFallback && wallet.offline ? offlineBanner() : null,
+      h('div', { class: 'mt16' }, tabContent())
+    );
   }
   return h(
     'div',
