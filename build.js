@@ -58,7 +58,7 @@ self.addEventListener('activate', (e) => {
 
 // NWC push handling lives in src/sw-nwc.js (bundled and appended below when
 // the nwc+ark features ship): it tries to ANSWER the request from the pouch
-// and falls back to a notification. {{NWC_WAKE_FALLBACK}} carries a
+// and falls back to a notification. The placeholder below carries a
 // notify-only handler for builds without those features.
 {{NWC_WAKE_FALLBACK}}
 
@@ -259,8 +259,8 @@ if (import.meta.main) {
   const feats = enabledFeatures();
   const nwcSw = feats.includes('nwc') && feats.includes('ark');
   const swBody = SW
-    .replace('{{VERSION}}', version)
-    .replace('{{NWC_WAKE_FALLBACK}}', nwcSw ? '' : SW_WAKE_ONLY);
+    .replaceAll('{{VERSION}}', version)
+    .replaceAll('{{NWC_WAKE_FALLBACK}}', nwcSw ? '' : SW_WAKE_ONLY);
   await Bun.write('dist/sw.js', nwcSw ? swBody + '\n' + await buildSwNwc() : swBody);
   for (const f of STATIC) await Bun.write('dist/' + f, Bun.file('static/' + f));
   // default avatars, self-hosted since coinos.io's copies are half-broken

@@ -30,27 +30,69 @@ const pool = new SimplePool({ enablePing: true, enableReconnect: true });
 // feature's configuration. NWC needs this: the relays it advertises in a
 // connection URI must be exactly the ones it listens on, or a client's
 // request lands somewhere the wallet isn't and it waits forever.
+// ---- relay health ---------------------------------------------------------
+// A relay that refuses connections (damus has been down for days at a time)
+// otherwise gets retried on every profile fetch, every sync, every chat
+// subscribe — each attempt logging a browser-level WebSocket error we cannot
+// catch from JS. So we remember failures and stop dialing for a while.
+const SICK_MS = 10 * 60_000;
+const sick = new Map(); // url -> until
+export function markRelaySick(url, why) {
+  if (!url) return;
+  if (!sick.has(url)) console.warn(`nostr: ${url} unreachable (${why || 'connect failed'}) — skipping for 10 min`);
+  sick.set(url, Date.now() + SICK_MS);
+}
+// Drop known-bad relays, but never hand back an empty set: if everything is
+// sick the network probably is, and one doomed attempt beats doing nothing.
+function liveRelays(list) {
+  const now = Date.now();
+  for (const [u, until] of sick) if (until < now) sick.delete(u);
+  const ok = (list || []).filter((u) => !sick.has(u));
+  return ok.length ? ok : (list || []);
+}
+// Dial a relay once in the background to learn whether it's reachable; a
+// rejection here is the only reliable signal nostr-tools gives us.
+const probed = new Set();
+function probeRelays(list) {
+  for (const url of list || []) {
+    if (probed.has(url) || sick.has(url)) continue;
+    probed.add(url);
+    Promise.resolve(pool.ensureRelay(url, { connectionTimeout: 6000 }))
+      .then(() => {})
+      .catch((e) => markRelaySick(url, e && e.message))
+      .finally(() => setTimeout(() => probed.delete(url), SICK_MS));
+  }
+}
+
 export function subscribeOn(relays, filter, onEvent, extra = {}) {
   try {
     // nostr-tools ≥2.23 takes a single filter object here; wrapping it in an
     // array serializes as ["REQ",id,[{...}]] which every relay rejects with
     // "provided filter is not an object" — and the subscription dies silently.
-    const sub = pool.subscribeMany(relays, filter, { onevent: onEvent, ...extra });
+    const live = liveRelays(relays);
+    probeRelays(relays);
+    const sub = pool.subscribeMany(live, filter, { onevent: onEvent, ...extra });
     return () => { try { sub.close(); } catch {} };
   } catch { return () => {}; }
 }
 export async function queryOn(relays, filter, maxWait = 1500) {
-  try { return await pool.querySync(relays, filter, { maxWait }); } catch { return []; }
+  probeRelays(relays);
+  try { return await pool.querySync(liveRelays(relays), filter, { maxWait }); } catch { return []; }
 }
 export async function publishOn(relays, evt) {
   try {
-    const results = await Promise.allSettled(pool.publish(relays, evt));
+    const live = liveRelays(relays);
+    const results = await Promise.allSettled(pool.publish(live, evt));
     // A rejected publish is a relay refusing the event (policy, rate limit,
     // ban). Swallowing that silently once hid a relay-side rejection behind
     // what looked like a client bug — always say which relay refused and why.
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        console.warn(`nostr: publish kind ${evt.kind} refused by ${relays[i]}:`, r.reason?.message || r.reason);
+        const msg = r.reason?.message || String(r.reason || '');
+        // "relay connection errored/closed" means the socket never came up —
+        // that's a sick relay, not a rejected event.
+        if (/connect|closed|errored|timeout|network/i.test(msg)) markRelaySick(live[i], msg);
+        else console.warn(`nostr: publish kind ${evt.kind} refused by ${live[i]}:`, msg);
       }
     });
     return results.some((r) => r.status === 'fulfilled');
@@ -73,7 +115,7 @@ export function npubOf(pkHex) { try { return npubEncode(pkHex); } catch { return
 
 // Profiles live across the network, so look them up on popular relays (broader
 // than the sync relays).
-export const PROFILE_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.coinos.io'];
+export const PROFILE_RELAYS = ['wss://relay.coinos.io', 'wss://nos.lol', 'wss://relay.primal.net'];
 // Fetch a recipient's profile (name + picture) for a pubkey, newest across relays.
 export async function fetchNostrProfile(pubkeyHex, relays = PROFILE_RELAYS) {
   let events;
