@@ -6,7 +6,8 @@
 import {
   NostrSync, getSyncConfig, setSyncConfig, npubOf, syncDtag, deviceDtag,
   domainDtag, isOurDtag, isCoreDtag, isOwnDeviceDtag,
-  fetchNostrProfile, PROFILE_RELAYS,
+  fetchNostrProfile, PROFILE_RELAYS, DEFAULT_SYNC_RELAYS, queryOn, publishOn,
+  finalizeEvent,
 } from '../nostr.js';
 import { t } from '../i18n.js';
 
@@ -62,9 +63,6 @@ export function installSyncWallet(wallet) {
     nostrNpub() { const pk = this.nostrPubkey(); return pk ? npubOf(pk) : null; },
 
     // Send a nostr DM (e.g. a locked gift's claim code) to a recipient pubkey.
-    async sendNostrDM(recipientPkHex, text) {
-      return this.nostr && this.nostr.sk ? this.nostr.sendDM(recipientPkHex, text) : false;
-    },
 
     // Generic event publish/fetch on the configured sync relays — the seam
     // other features (ark zaps) use to speak their own kinds. No-ops when
@@ -154,7 +152,44 @@ export function installSyncWallet(wallet) {
     if (wallet.mnemonic) wallet.nostr.load(wallet.mnemonic, wallet.passphrase);
     else wallet.nostr.unload();
     wallet._syncPubSeen = {}; // a new identity has published nothing yet
+    adoptSyncRelays().catch(() => {});
   });
+
+  // Sync rides the user's own relays: their NIP-65 (kind 10002) write set —
+  // the login npub's first, else the wallet key's — falling back to the
+  // coinos relay. A wallet key with no NIP-65 gets one published (default
+  // relay, signed silently) so other clients can find this identity's events.
+  async function adoptSyncRelays() {
+    if (wallet.offline || !wallet.nostr.pk) return;
+    const pks = [];
+    try {
+      const login = wallet.loadFeatureState('nostrlogin', {});
+      if (login && /^[0-9a-f]{64}$/.test(login.pubkey || '')) pks.push(login.pubkey);
+    } catch {}
+    pks.push(wallet.nostr.pk);
+    const evs = await queryOn([...new Set([...PROFILE_RELAYS, ...DEFAULT_SYNC_RELAYS])], { kinds: [10002], authors: pks }, 3500);
+    const newestFor = (pk) => evs.filter((e) => e.pubkey === pk).sort((a, b) => b.created_at - a.created_at)[0];
+    const writeRelays = (e) => e.tags
+      .filter((x) => x[0] === 'r' && x[1] && (!x[2] || x[2] === 'write'))
+      .map((x) => x[1].trim()).filter((r) => /^wss?:\/\//.test(r)).slice(0, 4);
+    for (const pk of pks) {
+      const e = newestFor(pk);
+      const relays = e && writeRelays(e);
+      if (relays && relays.length) {
+        setSyncConfig({ enabled: true, relays: [...new Set([...relays, ...DEFAULT_SYNC_RELAYS])].slice(0, 5) });
+        break;
+      }
+    }
+    // a brand-new wallet identity: announce its relays (NIP-65)
+    if (wallet.nostr.sk && !newestFor(wallet.nostr.pk)) {
+      const evt = finalizeEvent({
+        kind: 10002, content: '',
+        tags: DEFAULT_SYNC_RELAYS.map((r) => ['r', r]),
+        created_at: Math.floor(Date.now() / 1000),
+      }, wallet.nostr.sk);
+      publishOn([...new Set([...PROFILE_RELAYS, ...DEFAULT_SYNC_RELAYS])], evt);
+    }
+  }
   // Live cross-device state: subscribe to ALL our devices' slots so a save on
   // another device merges here within seconds. Merge-safe extension state (ark
   // vtxos union) applies live; full snapshots stay a load-time affair. With
@@ -207,53 +242,7 @@ export function syncFeature(ctx) {
   const { h, ui, render, wallet } = ctx;
   installSyncWallet(wallet);
 
-  // Cross-device sync settings: toggle + editable relay list (default coinos).
-  function syncCard() {
-    const cfg = getSyncConfig();
-    const setEnabled = (enabled) => {
-      if (enabled === cfg.enabled) return;
-      setSyncConfig({ enabled, relays: cfg.relays });
-      render();
-      // On enable, pull anything newer from the relays, then push our copy up.
-      if (enabled && !wallet.offline) {
-        wallet.syncFromNostr().catch(() => {}).finally(() => wallet.saveCache());
-      }
-    };
-    return h(
-      'div',
-      { class: 'card col' },
-      h('h3', {}, t('deviceSync')),
-      h('p', { class: 'small muted', style: 'margin:0' }, t('deviceSyncDesc')),
-      h('div', { class: 'row between' },
-        h('span', { class: 'lab', style: 'margin:0' }, t('syncAcross')),
-        h('div', { class: 'seg' },
-          h('button', { type: 'button', class: cfg.enabled ? 'active' : '', onClick: () => setEnabled(true) }, t('syncOn')),
-          h('button', { type: 'button', class: !cfg.enabled ? 'active' : '', onClick: () => setEnabled(false) }, t('syncOff'))
-        )
-      ),
-      cfg.enabled
-        ? h('label', { class: 'field' },
-            h('span', { class: 'lab' }, t('relaysLabel')),
-            h('textarea', {
-              placeholder: 'wss://relay.example.com',
-              autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
-              style: 'min-height:64px',
-              value: cfg.relays.join('\n'),
-              onInput: (e) => {
-                const relays = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean);
-                setSyncConfig({ enabled: true, relays });
-              },
-            }),
-            h('div', { class: 'small faint' }, t('relaysHint'))
-          )
-        : null
-    );
-  }
-
   return {
     id: 'sync',
-    nostrSettingsCards() {
-      return wallet.watchOnly || !wallet.mnemonic ? [] : [syncCard()];
-    },
   };
 }

@@ -77,7 +77,6 @@ const ui = {
   pubkeyShown: false, // account public key revealed in Settings
   giftMode: false, // gift sub-view active on the Send page
   giftAmount: '', // gift-create amount input
-  giftClaimCode: null, // the one-time claim code DM'd to the recipient (fallback)
   viewGift: null, // re-viewing a previously created gift's link/QR { code, locked, amount, claimCode }
   claimChoose: null, // opening a gift with existing wallets present: { code } — pick a target
   giftCode: null, // last-created gift PSBT code
@@ -1861,16 +1860,6 @@ function pubkeyCard(a) {
   );
 }
 
-// Nostr address — share it so others can send you locked gifts.
-function nostrNpubCard(a) {
-  if (a.id !== activeId || !wallet.nostrNpub || !wallet.nostrNpub()) return null;
-  return h('div', { class: 'card col' },
-    h('h3', {}, t('nostrKeyTitle')),
-    h('p', { class: 'small muted', style: 'margin:0' }, t('nostrKeyDesc')),
-    h('div', { class: 'addr-box break', style: 'font-size:12px' }, wallet.nostrNpub()),
-    copyBtn(wallet.nostrNpub(), t('copyKey')));
-}
-
 function autolockCard(a) {
   return h('div', { class: 'card col' },
     h('h3', {}, t('autolockTitle')),
@@ -1892,7 +1881,6 @@ function accountSettingsScreen() {
     walletNameCard(a),
     pubkeyCard(a),
     recoveryCard(a),
-    nostrNpubCard(a),
     autolockCard(a),
     h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.editLabel = null; ui.revealShown = false; ui.pubkeyShown = false; ui.loadSeed = null; goBack(() => { ui.screen = 'accounts'; }); } }, t('back'))
   );

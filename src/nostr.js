@@ -12,7 +12,6 @@
 import * as nip06 from 'nostr-tools/nip06';
 import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
-import { wrapEvent as nip17WrapEvent } from 'nostr-tools/nip17';
 import { getPublicKey, finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { decode as nip19decode, npubEncode } from 'nostr-tools/nip19';
 import { SimplePool } from 'nostr-tools/pool';
@@ -164,10 +163,9 @@ export function getSyncConfig() {
     if (raw) {
       const c = JSON.parse(raw);
       const relays = Array.isArray(c.relays) ? c.relays : [];
-      return {
-        enabled: c.enabled !== false,
-        relays: relays.length ? relays : DEFAULT_SYNC_RELAYS,
-      };
+      // Always on — the toggle is gone; relays follow the user's NIP-65
+      // (adoptSyncRelays in the sync feature), coinos relay as the default.
+      return { enabled: true, relays: relays.length ? relays : DEFAULT_SYNC_RELAYS };
     }
   } catch {}
   return { enabled: true, relays: DEFAULT_SYNC_RELAYS }; // default: on, coinos relay
@@ -221,23 +219,6 @@ export class NostrSync {
       }
     });
     return results.some((r) => r.status === 'fulfilled');
-  }
-
-  // Deliver an encrypted DM (a locked gift's claim code) as a NIP-17 gift wrap
-  // (kind 1059) — the modern standard every current client supports. Goes to the
-  // recipient's published inbox relays (NIP-17/65) plus a broad fallback. Returns
-  // true if ≥1 relay accepted it.
-  async sendDM(recipientPkHex, text, relays = null) {
-    if (!this.sk) return false;
-    let evt;
-    try { evt = nip17WrapEvent(this.sk, { publicKey: recipientPkHex }, text); } catch { return false; }
-    let targets = relays;
-    if (!targets) {
-      const inbox = await fetchInboxRelays(recipientPkHex);
-      targets = [...new Set([...inbox, ...PROFILE_RELAYS])].slice(0, 8); // recipient's inbox + safety net
-    }
-    const res = await Promise.allSettled(pool.publish(targets, evt));
-    return res.some((x) => x.status === 'fulfilled');
   }
 
   // Publish an arbitrary event (finalized here with our key) to the relays.
