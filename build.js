@@ -47,6 +47,15 @@ self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
 });
 
+// The page asks which build we are, and reloads only if it's running an older
+// one. Without this it reloads on every controller change, including the very
+// common case where the navigation that woke us already fetched the new page.
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'sw-version' && e.source) {
+    e.source.postMessage({ type: 'sw-version', version: '{{VERSION}}' });
+  }
+});
+
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches
@@ -107,13 +116,26 @@ const PWA_HEAD = `<link rel="manifest" href="manifest.webmanifest">
 `;
 
 // Register with updateViaCache:'none' so the browser always re-fetches sw.js
-// (never from HTTP cache) and detects a new build immediately. When the new SW
-// takes control (it skipWaiting + clients.claim), reload once so the fresh
-// inlined app runs — but only if a SW was already controlling this page, so a
-// first-ever visit doesn't reload.
+// (never from HTTP cache) and detects a new build immediately.
+//
+// When a new worker takes control we may need to reload, because the app is
+// inlined in the page: a page serving the old build would keep running it. But
+// navigations are network-first, so the refresh that triggered the update
+// usually delivered the NEW page already — reloading then is pure
+// interruption, a second unasked-for refresh a beat after your own.
+//
+// So ask the new worker which build it is and reload only on a genuine
+// mismatch. The page's own token is stamped in at build time; both come from
+// the same {{VERSION}}, hashed before substitution so the two agree.
 const SW_REGISTER =
-  `<script>if('serviceWorker'in navigator){var _had=!!navigator.serviceWorker.controller,_ref=false;` +
-  `navigator.serviceWorker.addEventListener('controllerchange',function(){if(_had&&!_ref){_ref=true;location.reload()}});` +
+  `<script>if('serviceWorker'in navigator){var _v='{{VERSION}}',_had=!!navigator.serviceWorker.controller,_ref=false;` +
+  `function _ask(c){try{c&&c.postMessage({type:'sw-version'})}catch(e){}}` +
+  `navigator.serviceWorker.addEventListener('message',function(e){` +
+  `if(!e.data||e.data.type!=='sw-version')return;` +
+  // _v.charAt(0)==='{' means the token never got substituted; treating that as
+  // a mismatch would reload forever.
+  `if(_had&&!_ref&&e.data.version&&_v.charAt(0)!=='{'&&e.data.version!==_v){_ref=true;location.reload()}});` +
+  `navigator.serviceWorker.addEventListener('controllerchange',function(){_ask(navigator.serviceWorker.controller)});` +
   `addEventListener('load',function(){navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(function(){})})}</script>`;
 
 // Bundle the standalone jsQR decoder (sets window.jsQR) for lazy loading.
@@ -239,7 +261,12 @@ ${pwa ? SW_REGISTER + '\n' : ''}</body>
 
 if (import.meta.main) {
   await mkdir('dist', { recursive: true });
-  const html = await buildHtml({ minify: true });
+  // Hashed with {{VERSION}} still a placeholder, so the page and the worker
+  // can both be stamped with the same token — the page cannot contain a hash
+  // of itself.
+  const rawHtml = await buildHtml({ minify: true });
+  const version = Bun.hash(rawHtml).toString(36);
+  const html = rawHtml.replaceAll('{{VERSION}}', version);
   await Bun.write('dist/index.html', html);
 
   // Lazy-loaded QR decoder — kept out of index.html, fetched only when a
@@ -253,7 +280,6 @@ if (import.meta.main) {
 
   // PWA sidecars.
   await Bun.write('dist/manifest.webmanifest', JSON.stringify(MANIFEST, null, 2));
-  const version = Bun.hash(html).toString(36);
   // Full builds get the auto-answering NWC worker; feature-stripped builds
   // keep the notify-only handler (the responder would just dead-weight them).
   const feats = enabledFeatures();
