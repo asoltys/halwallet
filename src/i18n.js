@@ -35,7 +35,7 @@ const STR = {
   en: {
     appTitle: 'coinos',
     home: 'Home',
-    logout: 'Logout',
+    lockWallet: 'Lock wallet',
     accounts: 'Wallets',
     addWallet: 'Add wallet',
     clearAll: 'Clear all',

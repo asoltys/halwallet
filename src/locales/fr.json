@@ -18,7 +18,6 @@
   "explorerUrl": "URL du serveur",
   "explorerUrlHint": "Base REST Esplora / electrs, par ex. https://mempool.space/api",
   "home": "Accueil",
-  "logout": "Déconnexion",
   "createNew": "Créer",
   "importExisting": "Importer",
   "genIntro": "Générez une nouvelle phrase de 12 mots. Notez-la. C’est le seul moyen de récupérer ce portefeuille.",

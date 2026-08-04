@@ -33,7 +33,6 @@
   "explorerUrl": "URL del servidor",
   "explorerUrlHint": "Base REST de Esplora / electrs, p. ej. https://mempool.space/api",
   "home": "Inicio",
-  "logout": "Cerrar sesión",
   "createNew": "Crear nuevo",
   "importExisting": "Importar existente",
   "genIntro": "Genera una nueva frase semilla de 12 palabras. Anótala. Es la única forma de recuperar este monedero.",

@@ -18,7 +18,6 @@
   "explorerUrl": "서버 URL",
   "explorerUrlHint": "Esplora / electrs REST 기본 주소, 예: https://mempool.space/api",
   "home": "홈",
-  "logout": "로그아웃",
   "createNew": "새로 만들기",
   "importExisting": "가져오기",
   "genIntro": "새 12단어 시드 문구를 생성합니다. 적어 두세요. 이 지갑을 복구하는 유일한 방법입니다.",

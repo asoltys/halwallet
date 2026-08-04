@@ -18,7 +18,6 @@
   "explorerUrl": "URL сервера",
   "explorerUrlHint": "Базовый REST-адрес Esplora / electrs, например https://mempool.space/api",
   "home": "Главная",
-  "logout": "Выйти",
   "createNew": "Создать",
   "importExisting": "Импортировать",
   "genIntro": "Сгенерируйте новую сид-фразу из 12 слов. Запишите её. Это единственный способ восстановить кошелёк.",

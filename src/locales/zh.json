@@ -18,7 +18,6 @@
   "explorerUrl": "服务器 URL",
   "explorerUrlHint": "Esplora / electrs REST 基础地址，例如 https://mempool.space/api",
   "home": "首页",
-  "logout": "退出",
   "createNew": "新建",
   "importExisting": "导入已有",
   "genIntro": "生成一组新的 12 词助记词。请抄写下来。这是恢复钱包的唯一方式。",

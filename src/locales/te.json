@@ -18,7 +18,6 @@
   "explorerUrl": "సర్వర్ URL",
   "explorerUrlHint": "Esplora / electrs REST బేస్, ఉదా. https://mempool.space/api",
   "home": "హోమ్",
-  "logout": "లాగౌట్",
   "createNew": "కొత్తది సృష్టించు",
   "importExisting": "ఉన్నదాన్ని దిగుమతి",
   "genIntro": "కొత్త 12-పదాల సీడ్ ఫ్రేజ్ సృష్టించండి. దాన్ని రాసుకోండి. ఈ వాలెట్‌ను తిరిగి పొందడానికి ఇదే ఏకైక మార్గం.",

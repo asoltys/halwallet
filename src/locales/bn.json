@@ -18,7 +18,6 @@
   "explorerUrl": "সার্ভার URL",
   "explorerUrlHint": "Esplora / electrs REST বেস, যেমন https://mempool.space/api",
   "home": "হোম",
-  "logout": "লগ আউট",
   "createNew": "নতুন তৈরি",
   "importExisting": "বিদ্যমান ইম্পোর্ট",
   "genIntro": "নতুন ১২-শব্দের সিড ফ্রেজ তৈরি করুন। লিখে রাখুন। এটিই এই ওয়ালেট পুনরুদ্ধারের একমাত্র উপায়।",

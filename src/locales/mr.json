@@ -18,7 +18,6 @@
   "explorerUrl": "सर्व्हर URL",
   "explorerUrlHint": "Esplora / electrs REST बेस, उदा. https://mempool.space/api",
   "home": "मुख्यपृष्ठ",
-  "logout": "बाहेर पडा",
   "createNew": "नवीन तयार करा",
   "importExisting": "अस्तित्वातील आयात करा",
   "genIntro": "नवीन १२-शब्दांचा सीड वाक्यांश तयार करा. तो लिहून ठेवा. हे वॉलेट परत मिळवण्याचा हाच एकमेव मार्ग आहे.",

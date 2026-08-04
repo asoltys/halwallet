@@ -1,9 +1,9 @@
-// Logging out should ask for a password only when there is one.
+// "Lock wallet" locks; only "Clear all" deletes.
 //
 // Wallets save themselves to this device under an empty password unless the
 // user sets one, so the unlock screen was demanding a password nobody had
-// chosen — which made logout look like it had done something drastic. It
-// hasn't: logout keeps every saved wallet, and only "Clear all" deletes them.
+// chosen — which made the action look like it had done something drastic. It
+// hasn't: locking keeps every saved wallet.
 //
 // Run: bun tools/logout-test.js
 import puppeteer from 'puppeteer-core';
@@ -25,7 +25,7 @@ const waitText = async (x, ms = 20000) => { for (let i = 0; i < ms / 250; i++) {
 const logout = async () => {
   await page.evaluate(() => document.querySelector('.header-avatar')?.click());
   await sleep(400);
-  await click('.icon-select-item', 'Logout');
+  await click('.icon-select-item', 'Lock wallet');
   await sleep(1500);
 };
 const vaultSize = () => page.evaluate(() => (localStorage.getItem('btc-wallet-vault') || '').length);
@@ -47,7 +47,7 @@ try {
   const savedBytes = await vaultSize();
   check('it saved itself to the device', savedBytes > 0, `${savedBytes} bytes of vault`);
 
-  console.log('\n[logging out with no password set]');
+  console.log('\n[locking with no password set]');
   await logout();
   let txt = await body();
   check('no password is demanded', !/enter your password|unlock saved wallets/i.test(txt), txt.slice(0, 120).replace(/\n+/g, ' | '));
@@ -103,5 +103,5 @@ try {
   await browser.close();
   server.stop(true);
 }
-console.log(ok ? '\n✅ logout keeps your wallets' : '\n❌ failures above');
+console.log(ok ? '\n✅ locking keeps your wallets' : '\n❌ failures above');
 process.exit(ok ? 0 : 1);

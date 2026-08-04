@@ -18,7 +18,6 @@
   "explorerUrl": "URL server",
   "explorerUrlHint": "Basis REST Esplora / electrs, mis. https://mempool.space/api",
   "home": "Beranda",
-  "logout": "Keluar",
   "createNew": "Buat baru",
   "importExisting": "Impor yang ada",
   "genIntro": "Buat frasa benih baru 12 kata. Catatlah. Ini satu-satunya cara memulihkan dompet ini.",

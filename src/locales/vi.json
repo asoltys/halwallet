@@ -18,7 +18,6 @@
   "explorerUrl": "URL máy chủ",
   "explorerUrlHint": "Cơ sở REST của Esplora / electrs, ví dụ https://mempool.space/api",
   "home": "Trang chủ",
-  "logout": "Đăng xuất",
   "createNew": "Tạo mới",
   "importExisting": "Nhập ví có sẵn",
   "genIntro": "Tạo cụm từ hạt giống 12 từ mới. Hãy ghi lại. Đây là cách duy nhất để khôi phục ví này.",

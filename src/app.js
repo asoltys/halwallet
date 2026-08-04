@@ -1456,7 +1456,7 @@ function avatarMenu() {
             me ? item(t('profEdit'), () => featureHook('showProfile', me)) : null,
             item(t('tabSettings'), () => { ui.chatOpen = false; ui.profilePk = null; ui.screen = 'wallet'; ui.tab = 'settings'; ui.settingsPage = null; }),
             me ? item(t('msgDmsTitle'), () => { ui.profilePk = null; ui.chatOpen = true; }) : null,
-            item(t('logout'), () => lock())); applyAnim(m, 'anim-menu', dt); return m; })())
+            item(t('lockWallet'), () => lock())); applyAnim(m, 'anim-menu', dt); return m; })())
       : null; })());
 }
 

@@ -18,7 +18,6 @@
   "explorerUrl": "Sunucu URL'si",
   "explorerUrlHint": "Esplora / electrs REST tabanı, örn. https://mempool.space/api",
   "home": "Ana sayfa",
-  "logout": "Çıkış",
   "createNew": "Yeni oluştur",
   "importExisting": "Mevcudu içe aktar",
   "genIntro": "Yeni 12 kelimelik tohum ifadesi oluşturun. Yazın. Bu cüzdanı kurtarmanın tek yolu budur.",

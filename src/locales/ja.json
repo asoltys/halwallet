@@ -18,7 +18,6 @@
   "explorerUrl": "サーバーURL",
   "explorerUrlHint": "Esplora / electrs REST のベース。例: https://mempool.space/api",
   "home": "ホーム",
-  "logout": "ログアウト",
   "createNew": "新規作成",
   "importExisting": "インポート",
   "genIntro": "新しい12単語のシードフレーズを生成します。書き留めてください。これがこのウォレットを復元する唯一の方法です。",

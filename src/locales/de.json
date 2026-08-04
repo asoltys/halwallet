@@ -18,7 +18,6 @@
   "explorerUrl": "Server-URL",
   "explorerUrlHint": "Esplora-/electrs-REST-Basis, z. B. https://mempool.space/api",
   "home": "Start",
-  "logout": "Abmelden",
   "createNew": "Neu erstellen",
   "importExisting": "Importieren",
   "genIntro": "Erzeuge eine neue Seed-Phrase aus 12 Wörtern. Schreibe sie auf. Sie ist die einzige Möglichkeit, dieses Wallet wiederherzustellen.",

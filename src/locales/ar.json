@@ -18,7 +18,6 @@
   "explorerUrl": "عنوان الخادم",
   "explorerUrlHint": "قاعدة REST لـ Esplora / electrs، مثلاً https://mempool.space/api",
   "home": "الرئيسية",
-  "logout": "تسجيل الخروج",
   "createNew": "إنشاء جديدة",
   "importExisting": "استيراد موجودة",
   "genIntro": "أنشئ عبارة استرداد جديدة من 12 كلمة. اكتبها. فهي الطريقة الوحيدة لاستعادة هذه المحفظة.",

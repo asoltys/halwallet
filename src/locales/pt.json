@@ -18,7 +18,6 @@
   "explorerUrl": "URL do servidor",
   "explorerUrlHint": "Base REST do Esplora / electrs, por exemplo https://mempool.space/api",
   "home": "Início",
-  "logout": "Sair",
   "createNew": "Criar nova",
   "importExisting": "Importar existente",
   "genIntro": "Gere uma nova frase semente de 12 palavras. Anote-a. É a única forma de recuperar esta carteira.",
