@@ -1077,7 +1077,9 @@ export function messagesFeature(ctx) {
           ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }))
           // the editor's About textarea IS the bio here — no static copy above it
           : showAbout && !ui.profEdit ? h('p', { class: 'small', style: 'margin:0;white-space:pre-wrap' }, about.slice(0, 1000)) : null,
-        h('div', { class: 'addr-box break npub-box', style: 'font-size:11px' },
+        // your own npub stays out of the editor — it means nothing to most
+        // people, and the account settings still show it to those who care
+        mine ? null : h('div', { class: 'addr-box break npub-box', style: 'font-size:11px' },
           h('span', { class: 'grow', style: 'min-width:0' }, npub),
           h('button', {
             class: 'copy-ico', title: t('copy'),
