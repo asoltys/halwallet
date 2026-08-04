@@ -2572,6 +2572,7 @@ function tabsBar() {
         ui.tab = id;
         ui.sendError = ''; // a stale send error never survives a tab change
         ui.revealShown = false; // re-mask the recovery phrase whenever tabs change
+        ui.nostrExportStep = false; // and the exported nostr key
         ui.txDetail = null; // back to the history list when leaving/returning
         ui.arkMoveDetail = null;
         ui.giftDetail = null;

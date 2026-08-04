@@ -9,7 +9,7 @@
 // published, because it means the nostr key can recover the money.
 
 import { newMnemonic } from '../wallet.js';
-import { npubOf } from '../nostr.js';
+import { npubOf, nsecOf } from '../nostr.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import {
@@ -289,6 +289,68 @@ export function nostrLoginFeature(ctx) {
     } catch (e) { fail(e); }
   }
 
+  // Reveal the seed-derived nostr key. A self-backup is published FIRST so
+  // the promise on the reveal screen is true: pasting this nsec into any
+  // coinos login finds the backup and opens THIS wallet, instead of
+  // key-deriving a fresh empty one (walletForSigner checks relays before
+  // deriving).
+  async function exportWalletKey() {
+    ui.nostrLoginError = '';
+    busy(true);
+    try {
+      const sk = wallet.nostr && wallet.nostr.sk;
+      if (!sk || !wallet.mnemonic) throw new Error(t('nlNeedSeed'));
+      await publishWalletBackup(keySigner(sk), { mnemonic: wallet.mnemonic, passphrase: wallet.passphrase || '' });
+      ui.nostrExportStep = 'shown';
+      busy(false);
+    } catch (e) { fail(e); }
+  }
+
+  // The built-in key, behind the same two-step gate as the recovery phrase:
+  // a warning you have to act on before anything secret is in the DOM.
+  function exportSection() {
+    const sk = wallet.nostr && wallet.nostr.sk;
+    if (!sk) return null;
+    if (ui.nostrExportStep === 'shown') {
+      const nsec = nsecOf(sk);
+      return h('div', { class: 'col', style: 'gap:8px' },
+        h('div', { class: 'addr-box break' }, nsec),
+        h('p', { class: 'small faint', style: 'margin:0' }, t('nlExportedNote')),
+        h('div', { class: 'row gap6' },
+          copyBtn(nsec, t('copy')),
+          h('button', { class: 'btn-sm grow', onClick: () => { ui.nostrExportStep = false; render(); } }, t('hide'))));
+    }
+    if (ui.nostrExportStep === 'warn') {
+      return h('div', { class: 'col', style: 'gap:8px' },
+        h('div', { class: 'warn-box' }, t('nlExportWarn')),
+        ui.nostrLoginError ? h('div', { class: 'notice err' }, ui.nostrLoginError) : null,
+        h('div', { class: 'row gap6' },
+          h('button', { class: 'btn-primary grow', disabled: ui.nostrLoginBusy, onClick: exportWalletKey },
+            ui.nostrLoginBusy ? h('span', { class: 'spinner' }) : t('nlExportReveal')),
+          h('button', { class: 'btn-sm', onClick: () => { ui.nostrExportStep = false; ui.nostrLoginError = ''; render(); } }, t('cancel'))));
+    }
+    return h('button', {
+      class: 'btn-block', disabled: ui.nostrLoginBusy,
+      onClick: () => { ui.nostrExportStep = 'warn'; ui.nostrLoginError = ''; render(); },
+    }, t('nlExportBtn'));
+  }
+
+  function linkSection() {
+    if (!ui.nostrLinkOpen) {
+      return h('button', {
+        class: 'btn-block', disabled: ui.nostrLoginBusy,
+        onClick: () => { ui.nostrLinkOpen = true; ui.nostrLoginError = ''; render(); },
+      }, t('nlChangeBtn'));
+    }
+    return h('div', { class: 'col', style: 'gap:10px' },
+      h('div', { class: 'row between' },
+        h('strong', { class: 'small' }, t('nlChangeBtn')),
+        h('span', { class: 'linklike small', onClick: () => { ui.nostrLinkOpen = false; ui.nostrLoginError = ''; render(); } }, t('cancel'))),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('nlLinkDesc')),
+      h('div', { class: 'notice info small' }, t('nlBackupWarning')),
+      signerButtons(linkOpenWallet));
+  }
+
   function settingsCard() {
     if (wallet.watchOnly || !wallet.mnemonic) return null;
     const st = load();
@@ -306,11 +368,18 @@ export function nostrLoginFeature(ctx) {
           h('p', { class: 'small muted', style: 'margin:0' }, t('nlReconnectDesc')),
           signerButtons(reconnectSigner)));
     }
+    // No external account linked — but the wallet still HAS a nostr account:
+    // the one derived from its seed, already signing chat and holding the
+    // payment address. A bare login form here read as "no account yet", so
+    // the built-in identity comes first and both exporting its key and
+    // switching to another account are explicit steps behind buttons.
+    const npub = wallet.nostrNpub && wallet.nostrNpub();
     return h('div', { class: 'card col' },
       h('h3', {}, t('nlLinkTitle')),
-      h('p', { class: 'small muted', style: 'margin:0' }, t('nlLinkDesc')),
-      h('div', { class: 'notice info small' }, t('nlBackupWarning')),
-      signerButtons(linkOpenWallet));
+      npub ? h('div', { class: 'small muted break' }, npub) : null,
+      h('p', { class: 'small muted', style: 'margin:0' }, t('nlBuiltinDesc')),
+      exportSection(),
+      linkSection());
   }
 
   return {

@@ -13,7 +13,7 @@ import * as nip06 from 'nostr-tools/nip06';
 import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
 import { getPublicKey, finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
-import { decode as nip19decode, npubEncode } from 'nostr-tools/nip19';
+import { decode as nip19decode, npubEncode, nsecEncode } from 'nostr-tools/nip19';
 import { SimplePool } from 'nostr-tools/pool';
 import { randomBytes } from '@noble/hashes/utils';
 import { base64urlnopad } from '@scure/base';
@@ -112,6 +112,8 @@ export function parseNostrPubkey(input) {
 }
 // An npub or 64-hex nostr pubkey → hex, or null if it isn't one.
 export function npubOf(pkHex) { try { return npubEncode(pkHex); } catch { return null; } }
+// A raw secret key → nsec, for the one place that deliberately exports it.
+export function nsecOf(sk) { try { return nsecEncode(sk); } catch { return null; } }
 
 // Profiles live across the network, so look them up on popular relays (broader
 // than the sync relays).
