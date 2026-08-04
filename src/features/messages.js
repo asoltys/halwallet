@@ -1046,10 +1046,11 @@ export function messagesFeature(ctx) {
     }
     const name = displayName(pk);
     const npub = npubOf(pk) || pk;
-    const field = (label, key, ph = '') => h('label', { class: 'field' },
+    const field = (label, key, ph = '', multi = false) => h('label', { class: 'field' },
       h('span', { class: 'lab' }, label),
-      h('input', {
-        type: 'text', placeholder: ph, value: ui.profEdit[key],
+      h(multi ? 'textarea' : 'input', {
+        ...(multi ? { rows: '4', style: 'font-family:var(--sans);min-height:72px' } : { type: 'text' }),
+        placeholder: ph, value: ui.profEdit[key],
         onInput: (ev) => { ui.profEdit[key] = ev.target.value; },
       }));
     // A lightning address worth showing: not an npub-shaped machine address
@@ -1072,7 +1073,8 @@ export function messagesFeature(ctx) {
             showLud ? h('div', { class: 'muted small break' }, '⚡ ' + lud16) : null)),
         full === undefined
           ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }))
-          : showAbout ? h('p', { class: 'small', style: 'margin:0;white-space:pre-wrap' }, about.slice(0, 1000)) : null,
+          // the editor's About textarea IS the bio here — no static copy above it
+          : showAbout && !ui.profEdit ? h('p', { class: 'small', style: 'margin:0;white-space:pre-wrap' }, about.slice(0, 1000)) : null,
         h('div', { class: 'addr-box break npub-box', style: 'font-size:11px' },
           h('span', { class: 'grow', style: 'min-width:0' }, npub),
           h('button', {
@@ -1083,7 +1085,7 @@ export function messagesFeature(ctx) {
         ui.profEdit
           ? h('div', { class: 'col', style: 'gap:8px' },
               field(t('profName'), 'name'),
-              field(t('profAbout'), 'about'),
+              field(t('profAbout'), 'about', '', true),
               field(t('profPicture'), 'picture', 'https://…'),
               h('button', { class: 'btn-primary btn-block', disabled: ui.profSaving, onClick: saveProfile },
                 ui.profSaving ? h('span', { class: 'spinner sm' }) : t('save')))
