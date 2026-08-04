@@ -80,9 +80,12 @@ html, body {
   margin: 0 auto;
   padding: 24px 16px 24px;
   /* A column the height of the window, so the footer sits at the bottom of
-     short screens instead of floating under the content. */
+     short screens instead of floating under the content. svh, not dvh: dvh
+     can resolve to the tall viewport (URL bar hidden) at first paint, which
+     puts the footer just below the fold until you scroll — the phone browser
+     showing its address bar is the case that has to fit. */
   min-height: 100vh;
-  min-height: 100dvh;
+  min-height: 100svh;
   display: flex;
   flex-direction: column;
 }
@@ -578,3 +581,21 @@ body::after {
 .chan-pick { width: auto; min-width: 0; padding: 6px 32px 6px 10px; font-size: 13px; font-weight: 600; border-radius: 9px; background-position: right 10px center; }
 .or-split { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 13px; }
 .or-split::before, .or-split::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.paste-wrap { position: relative; display: block; }
+.paste-wrap textarea { display: block; }
+.paste-in {
+  position: absolute; right: 10px; bottom: 12px; display: flex; align-items: center; gap: 6px;
+  padding: 5px 9px; font-size: 12px; font-weight: 600; border-radius: 8px;
+  color: var(--muted); background: var(--paper); border: 1px solid var(--line-strong);
+}
+.paste-in:hover { color: var(--ink); }
+.paste-wrap.has-text .paste-in { display: none; }
+
+/* Short screens (a small phone with its address bar showing) — buy back the
+   vertical room the footer needs by tightening the frame, not the content. */
+@media (max-height: 620px) {
+  #app { padding-top: 12px; padding-bottom: 12px; }
+  .card { padding: 16px; }
+  .footer { padding-top: 14px; padding-bottom: 0; }
+  .tabs { margin: 10px 0; }
+}

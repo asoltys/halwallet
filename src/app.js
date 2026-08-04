@@ -510,6 +510,25 @@ function pasteBtn(apply) {
   });
 }
 
+// Paste, for a textarea. Beside a one-line input the button belongs in the
+// input-group (see Send); above a textarea it floats next to the label as a
+// box heavier than the label itself. So put it inside the field — and only
+// while the field is empty, which is the only time it's wanted and the only
+// time it can't cover what you typed.
+function pasteInto(ta, apply) {
+  const btn = pasteBtn((text) => { apply(text); sync(); });
+  if (!btn) return ta;
+  btn.classList.add('paste-in');
+  btn.append(h('span', {}, t('paste')));
+  const wrap = h('div', { class: 'paste-wrap' }, ta, btn);
+  // Toggled on the node rather than through render(): re-rendering a textarea
+  // on every keystroke rebuilds it under the caret.
+  const sync = () => wrap.classList.toggle('has-text', !!ta.value);
+  ta.addEventListener('input', sync);
+  sync();
+  return wrap;
+}
+
 // ---------------------------------------------------------------- display unit
 // Global BTC/sats preference, persisted in localStorage across refreshes and
 // logouts. Every unit label on the site is clickable to toggle it.
@@ -766,11 +785,8 @@ function importPane() {
     h(
       'label',
       { class: 'field' },
-      h('div', { class: 'row between' },
-        h('span', { class: 'lab' }, t('importLabel')),
-        pasteBtn((text) => { ta.value = text; ui.importText = text; })
-      ),
-      ta
+      h('span', { class: 'lab' }, t('importLabel')),
+      pasteInto(ta, (text) => { ta.value = text; ui.importText = text; })
     ),
     optionsPanel(),
     h('button', { class: 'btn-primary btn-block', onClick: () => openWallet(ui.importText) }, t('openWallet'))
@@ -2121,7 +2137,7 @@ function onboardScreen() {
   const o = ui.onb;
   // steps that were waiting on something advance the moment it exists
   if ((o.step === 'welcome' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()) {
-    o.step = 'legacy';
+    o.step = 'username';
     o.enterAddr = featureHook('namesAddress') || null;
   }
   if (o.step === 'username') {
@@ -2163,10 +2179,8 @@ function onboardScreen() {
         disabled: !!o.legacyBusy, onClick: goLegacy,
       }, o.legacyBusy ? h('span', { class: 'spinner sm' }) : t('onbLegacyGo')),
       h('button', { class: 'btn-block', style: 'padding:14px', onClick: () => { o.step = 'username'; render(); } },
-        o.wentToLegacy ? t('onbLegacyDone') : t('onbLegacyNo')),
+        o.wentToLegacy ? t('onbLegacyDone') : t('back')),
       ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
-      // No Back: the wallet exists by now, so the nostr question behind us
-      // would just bounce straight back here. Both choices lead forward.
     ]);
   }
   if (o.step === 'welcome') {
@@ -2207,10 +2221,12 @@ function onboardScreen() {
       title(t('onbNameTitle')),
       h('p', { class: 'muted', style: 'margin:0' }, t('onbNameBody')),
       featureHook('namesClaimForm') || h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('onbNameWait'))),
-      addr
-        ? h('button', { class: 'btn-block', onClick: () => { o.step = 'avatar'; render(); } },
-            t('onbKeepPre'), h('span', { class: 'onb-addr' }, addr), t('onbKeepPost'))
-        : null,
+      // A way past without naming yourself, but not one that shows the
+      // npub-shaped default address — nobody wants to be offered that.
+      addr ? h('button', { class: 'linklike small', onClick: () => { o.step = 'avatar'; render(); } }, t('onbSkipName')) : null,
+      // Most people are new. The ones who aren't know it, and can say so here
+      // rather than everyone being asked first.
+      h('button', { class: 'linklike small', onClick: () => { ui.onbError = ''; o.step = 'legacy'; render(); } }, t('onbHaveCoinos')),
     ]);
   }
   if (o.step === 'avatar') {
@@ -2607,12 +2623,9 @@ function loadSeedCard() {
   return h(
     'div',
     { class: 'card col' },
-    h('div', { class: 'row between' },
-      h('h3', { style: 'margin:0' }, t('loadSeedTitle')),
-      pasteBtn((text) => { seedTa.value = text; ls.value = text; })
-    ),
+    h('h3', { style: 'margin:0' }, t('loadSeedTitle')),
     h('p', { class: 'small muted', style: 'margin:0' }, t('loadSeedDesc')),
-    seedTa,
+    pasteInto(seedTa, (text) => { seedTa.value = text; ls.value = text; }),
     h('input', {
       type: 'password', class: 'mono-input', placeholder: t('bip39PassphraseOpt'),
       autocapitalize: 'none', autocomplete: 'off', value: ls.passphrase,
