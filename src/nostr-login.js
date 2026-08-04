@@ -102,12 +102,37 @@ export async function bunkerSigner(uri, { onAuth } = {}) {
   });
   await signer.connect();
   const pubkey = await signer.getPublicKey();
-  return bunkerAdapter(signer, pubkey);
+  return bunkerAdapter(signer, pubkey, local);
 }
 
-function bunkerAdapter(signer, pubkey) {
+// Reconnect a remote signer a page reload dropped. The remote end granted
+// permission to this client key, not to this page load, so rebuilding from
+// the same client key and pointer picks the session back up — usually without
+// prompting the user again.
+export async function resumeBunker(session, { onAuth, timeoutMs = 8000 } = {}) {
+  if (!session || !session.local || !session.bp || !session.bp.pubkey) return null;
+  const local = hex.decode(session.local);
+  const signer = BunkerSigner.fromBunker(local, session.bp, {
+    onauth: (url) => { if (onAuth) onAuth(url); },
+  });
+  const give = new Promise((_, rej) => setTimeout(() => rej(new Error('signer did not answer')), timeoutMs));
+  try {
+    await Promise.race([signer.connect(), give]);
+    const pubkey = await Promise.race([signer.getPublicKey(), give]);
+    return bunkerAdapter(signer, pubkey, local);
+  } catch (e) {
+    try { signer.close(); } catch {}
+    throw e;
+  }
+}
+
+function bunkerAdapter(signer, pubkey, local) {
   return {
     kind: 'bunker', pubkey, label: 'remote signer',
+    // Everything needed to rebuild this connection later. `local` is the
+    // client key the remote signer authorised — not the user's identity key,
+    // which never leaves the signer.
+    session: local ? { local: hex.encode(local), bp: signer.bp } : null,
     signEvent: (e) => signer.signEvent(e),
     encryptSelf: (txt) => signer.nip44Encrypt(pubkey, txt),
     decryptSelf: (ct) => signer.nip44Decrypt(pubkey, ct),
@@ -138,7 +163,7 @@ export function nostrConnect({ relays = ['wss://relay.coinos.io', 'wss://nos.lol
   const ready = (async () => {
     const signer = await BunkerSigner.fromURI(local, uri, {}, controller.signal);
     const pubkey = await signer.getPublicKey();
-    return bunkerAdapter(signer, pubkey);
+    return bunkerAdapter(signer, pubkey, local);
   })();
   ready.finally(() => clearTimeout(timer)).catch(() => {});
   return { uri, ready, cancel: (reason) => controller.abort(reason || new Error('cancelled')) };

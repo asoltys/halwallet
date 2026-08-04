@@ -114,11 +114,15 @@ export function messagesFeature(ctx) {
 
   // ---- identity -----------------------------------------------------------
 
+  // Who we speak as. If the user logged in with a nostr account we speak as
+  // that account or not at all — falling back to the wallet's own key would
+  // sign under a pubkey that isn't the one their avatar and profile show,
+  // which reads to everyone else as a different person entirely.
   async function identity() {
     const id = hook('nostrLoginIdentity');
     if (id) {
       const signer = id.signer || (await hook('nostrLoginResume'));
-      if (signer) return { pubkey: id.pubkey, signer };
+      return signer ? { pubkey: id.pubkey, signer } : null;
     }
     if (wallet.nostr && wallet.nostr.sk) return { pubkey: wallet.nostr.pk, signer: wallet.nostr.sk };
     return null;
