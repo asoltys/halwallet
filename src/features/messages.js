@@ -962,7 +962,9 @@ export function messagesFeature(ctx) {
     const node = p === null
       ? h('div', { class: cls + ' fallback loading' })
       : p.picture
-        ? h('img', { class: cls, src: p.picture, alt: '' })
+        // A background paints synchronously from cache; a fresh <img> decodes
+        // async, so recreating one per render made avatars visibly flash.
+        ? h('div', { class: cls + ' ava-img', style: `background-image:url(${JSON.stringify(p.picture)})` })
         : fallbackAvatar(h, pk, p.name, cls);
     if (clickable) {
       node.classList.add('clickable');

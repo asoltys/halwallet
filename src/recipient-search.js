@@ -161,7 +161,9 @@ export function resultRows(h, rows, onPick) {
   return rows.map((r) =>
     h('div', { class: 'item chat-thread-row', onClick: () => onPick(r) },
       r.picture
-        ? h('img', { class: 'chat-avatar', src: r.picture, alt: '' })
+        // background, not <img>: paints synchronously from cache, so rows
+        // re-rendered per keystroke don't flash their avatars
+        ? h('div', { class: 'chat-avatar ava-img', style: `background-image:url(${JSON.stringify(r.picture)})` })
         : fallbackAvatar(h, r.pk, r.name, 'chat-avatar'),
       h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
         h('div', { class: 'chat-name' }, r.name || (npubOf(r.pk) || '').slice(0, 12)),
