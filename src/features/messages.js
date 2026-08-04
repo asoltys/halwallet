@@ -83,6 +83,10 @@ export function messagesFeature(ctx) {
 
   const dmRead = (pk) => 'dm:' + pk;
   const chRead = (id) => 'ch:' + id;
+  // The list screen has a watermark of its own: standing on it answers the
+  // header dot ("someone's waiting" — you've now been shown who), while each
+  // row keeps its own dot until that conversation is actually opened.
+  const HOME_READ = 'home';
 
   const newestFrom = (entries, theirs) => {
     let ts = 0;
@@ -97,17 +101,31 @@ export function messagesFeature(ctx) {
     save(s);
   }
 
+  // Per-conversation dots for the list screen: newer than when we last had
+  // that thread (or any channel of that room) open.
+  const dmUnread = (pk, msgs) =>
+    newestFrom(msgs.values(), (m) => !m.mine) > (st().read[dmRead(pk)] || 0);
+  function roomUnread(room) {
+    const s = st();
+    const my = myPubkeys();
+    for (const [id, msgs] of room.byChannel)
+      if (newestFrom(msgs.values(), (m) => !my.includes(m.author)) > (s.read[chRead(id)] || 0)) return true;
+    return false;
+  }
+
   // How many conversations are waiting on us — the header only draws a dot, but
-  // a count keeps the door open for a number later.
+  // a count keeps the door open for a number later. Floored by the list-screen
+  // watermark: once you've seen the list, the header stops repeating it.
   function unreadCount() {
     const s = st();
     const my = myPubkeys();
+    const seen = s.read[HOME_READ] || 0;
     let n = 0;
     for (const [pk, msgs] of threads)
-      if (newestFrom(msgs.values(), (m) => !m.mine) > (s.read[dmRead(pk)] || 0)) n++;
+      if (newestFrom(msgs.values(), (m) => !m.mine) > Math.max(seen, s.read[dmRead(pk)] || 0)) n++;
     for (const room of rooms.values())
       for (const [id, msgs] of room.byChannel)
-        if (newestFrom(msgs.values(), (m) => !my.includes(m.author)) > (s.read[chRead(id)] || 0)) n++;
+        if (newestFrom(msgs.values(), (m) => !my.includes(m.author)) > Math.max(seen, s.read[chRead(id)] || 0)) n++;
     return n;
   }
   const communityById = (cid) => communities().find((c) => c.community_id === cid);
@@ -1280,10 +1298,23 @@ export function messagesFeature(ctx) {
     const dmRows = [...threads.entries()]
       .map(([peer, m]) => {
         const last = [...m.values()].sort((a, b) => a.rumor.created_at - b.rumor.created_at).at(-1);
-        return { peer, last };
+        return { peer, last, unread: dmUnread(peer, m) };
       })
       .filter((x) => x.last)
       .sort((a, b) => b.last.rumor.created_at - a.last.rumor.created_at);
+
+    // Being here answers the header dot — including anything that lands while
+    // the list is open, since arrivals repaint it and the rows below say who.
+    {
+      const my = myPubkeys();
+      let newest = 0;
+      for (const msgs of threads.values())
+        newest = Math.max(newest, newestFrom(msgs.values(), (m) => !m.mine));
+      for (const room of rooms.values())
+        for (const msgs of room.byChannel.values())
+          newest = Math.max(newest, newestFrom(msgs.values(), (m) => !my.includes(m.author)));
+      markRead(HOME_READ, newest);
+    }
 
     const kids = [];
 
@@ -1351,16 +1382,18 @@ export function messagesFeature(ctx) {
     const shownDms = (ui.msgAllDms || dmRows.length <= DM_PREVIEW + 2) ? dmRows : dmRows.slice(0, DM_PREVIEW);
     kids.push(
       dmRows.length
-        ? h('div', { class: 'list' }, shownDms.map(({ peer, last }) =>
+        ? h('div', { class: 'list' }, shownDms.map(({ peer, last, unread }) =>
             h('div', {
-              class: 'item chat-thread-row',
+              class: 'item chat-thread-row' + (unread ? ' unread' : ''),
               onClick: () => { ui.msgView = 'dm'; ui.msgPeer = peer; ui.msgStick = true; render(); },
             },
             avatar(peer),
             h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
               h('div', { class: 'row between' },
                 h('span', { class: 'chat-name' }, displayName(peer)),
-                h('span', { class: 'chat-time' }, timeLabel(last.rumor.created_at * 1000))),
+                h('span', { class: 'chat-time thread-when' },
+                  timeLabel(last.rumor.created_at * 1000),
+                  unread ? h('i', { class: 'thread-dot' }) : null)),
               h('div', { class: 'muted small chat-preview' }, (last.mine ? t('msgYouPrefix') + ' ' : '') + last.rumor.content)))))
         : h('div', { class: 'muted small' }, t('msgNoDms')));
     if (shownDms.length < dmRows.length)
@@ -1394,13 +1427,16 @@ export function messagesFeature(ctx) {
       const room = rooms.get(jm.community_id);
       const name = room?.folded?.metadata?.name || jm.name;
       const memberCount = room ? [...room.members.values()].filter((m) => m.state === 'join').length : 0;
+      const unread = room ? roomUnread(room) : false;
       return h('div', {
-        class: 'item chat-thread-row',
+        class: 'item chat-thread-row' + (unread ? ' unread' : ''),
         onClick: () => { ui.msgView = 'room'; ui.msgCommunity = jm.community_id; ui.msgChannel = null; ui.msgStick = true; render(); },
       },
       h('div', { class: 'chat-avatar fallback' }, name.slice(0, 2)),
       h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
-        h('div', { class: 'chat-name' }, name),
+        h('div', { class: 'row between' },
+          h('span', { class: 'chat-name' }, name),
+          unread ? h('i', { class: 'thread-dot' }) : null),
         h('div', { class: 'muted small' },
           memberCount ? t('msgMembers', { n: memberCount }) : t('msgEncrypted'))));
     })));
