@@ -2191,11 +2191,7 @@ function onboardScreen() {
     if (addr && addr !== o.enterAddr && !/^npub1/.test(addr)) o.step = 'avatar';
   }
   try { localStorage.setItem(ONB_STEP_KEY, o.step); } catch {}
-  // Every step shows the logo (welcome renders it big as the hero instead) —
-  // with a wallet already minted it doubles as the way out, via goHome.
-  const page = (kids) => h('div', { class: 'col onb', style: 'gap:20px' },
-    o.step !== 'welcome' ? brandHeader(false) : null,
-    ...kids);
+  const page = (kids) => h('div', { class: 'col onb', style: 'gap:20px' }, ...kids);
   const title = (txt) => h('h2', { class: 'onb-title' }, txt);
 
   if (o.step === 'legacy') {
@@ -2323,6 +2319,12 @@ function onboardScreen() {
         } catch (e) { ui.onbError = e.message; }
         ui.onbBusy = false; render();
       } }, ui.onbBusy ? h('span', { class: 'spinner sm' }) : (o.avatar ? t('onbContinue') : t('onbSkipAvatar'))),
+      h('button', { class: 'btn-ghost btn-block', disabled: ui.onbBusy, onClick: () => {
+        // re-anchor the username step's "name changed" detector to the name
+        // as it stands NOW, or a just-claimed name bounces us right back here
+        o.enterAddr = featureHook('namesAddress') || null;
+        o.step = 'username'; render();
+      } }, t('back')),
     ]);
   }
   // success
@@ -2338,6 +2340,7 @@ function onboardScreen() {
       ui.tab = 'receive';
       render();
     } }, t('onbEnter')),
+    h('button', { class: 'btn-ghost btn-block', onClick: () => { o.step = 'avatar'; render(); } }, t('back')),
   ]);
 }
 
