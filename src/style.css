@@ -428,9 +428,11 @@ hr.divider { margin: 16px 0; }
 .header-msgs.unread::after {
   content: ''; position: absolute; top: 2px; right: 2px; width: 9px; height: 9px;
   border-radius: 50%; background: var(--red);
-  box-shadow: 0 0 0 2px var(--bg); animation: dot-pop .3s ease-out;
+  /* No entrance animation: render() rebuilds the whole DOM, so a pop here
+     replayed on every repaint and read as the dot flashing. It either says
+     someone is waiting or it doesn't. */
+  box-shadow: 0 0 0 2px var(--bg);
 }
-@keyframes dot-pop { from { transform: scale(0); } to { transform: scale(1); } }
 .chat-avatar.header-ava { width: 30px; height: 30px; font-size: 11px; }
 .npub-box { display: flex; align-items: center; gap: 8px; }
 .copy-ico { flex-shrink: 0; background: none; border: none; padding: 2px; color: var(--muted); cursor: pointer; display: flex; }
