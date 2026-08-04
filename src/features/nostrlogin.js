@@ -199,6 +199,9 @@ export function nostrLoginFeature(ctx) {
             onClick: () => run(() => extensionSigner()) }, t('nlExtension'))
         : null,
       nostrConnectSection(run),
+      // These are alternatives, not steps: without the divider the field under
+      // the button reads as something you also have to fill in.
+      h('div', { class: 'or-split' }, h('span', {}, t('or'))),
       h('div', { class: 'row gap6' },
         h('input', {
           type: 'password', placeholder: t('nlKeyOrBunker'), style: 'flex:1',

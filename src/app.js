@@ -2120,7 +2120,7 @@ function onboardScreen() {
   ui.onb ||= { step: 'welcome' };
   const o = ui.onb;
   // steps that were waiting on something advance the moment it exists
-  if ((o.step === 'nostr' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()) {
+  if ((o.step === 'welcome' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()) {
     o.step = 'legacy';
     o.enterAddr = featureHook('namesAddress') || null;
   }
@@ -2173,28 +2173,20 @@ function onboardScreen() {
     return page([
       h('div', { class: 'onb-hero' }, brandHeader(false)),
       title(t('onbWelcomeTitle')),
-      h('p', { class: 'muted', style: 'margin:0;font-size:16px' }, t('onbWelcomeBody')),
-      h('button', { class: 'btn-primary btn-block', style: 'font-size:17px;padding:14px', onClick: () => { o.step = 'nostr'; render(); } }, t('onbStart')),
-      h('button', { class: 'linklike small', onClick: () => { ui.onbSkip = true; ui.onb = null; render(); } }, t('onbHaveWallet')),
-    ]);
-  }
-  if (o.step === 'nostr') {
-    return page([
-      h('div', { class: 'onb-mark', html: NOSTR_MARK }),
-      title(t('onbNostrTitle')),
-      h('p', { class: 'muted', style: 'margin:0' }, t('onbNostrBody')),
-      h('button', { class: 'btn-primary btn-block', style: 'padding:14px', onClick: () => {
-        o.step = 'signin';
-        ui.nostrLoginOpen = true;
-        render();
-      } }, t('onbNostrYes')),
-      h('button', { class: 'btn-block', style: 'padding:14px', disabled: ui.onbBusy, onClick: async () => {
+      // Starting is the primary path; bringing a nostr account is the
+      // alternative, offered here rather than as a question of its own.
+      h('button', { class: 'btn-primary btn-block', style: 'font-size:17px;padding:14px', disabled: ui.onbBusy, onClick: async () => {
         ui.onbBusy = true; render();
         try { await enterWallet(newMnemonic(), '', { generated: true }); } catch (e) { ui.onbError = e.message; }
         ui.onbBusy = false; render();
-      } }, ui.onbBusy ? h('span', { class: 'spinner sm' }) : t('onbNostrNo')),
+      } }, ui.onbBusy ? h('span', { class: 'spinner sm' }) : t('onbStart')),
+      h('button', { class: 'btn-block', style: 'padding:14px', onClick: () => {
+        o.step = 'signin';
+        ui.nostrLoginOpen = true;
+        render();
+      } }, t('nlSignIn')),
       ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
-      h('button', { class: 'linklike small', onClick: () => { o.step = 'welcome'; render(); } }, t('back')),
+      h('button', { class: 'linklike small', onClick: () => { ui.onbSkip = true; ui.onb = null; render(); } }, t('onbHaveWallet')),
     ]);
   }
   if (o.step === 'signin') {
@@ -2202,7 +2194,7 @@ function onboardScreen() {
       h('div', { class: 'onb-mark', html: NOSTR_MARK }),
       title(t('onbSigninTitle')),
       featureHook('unlockExtra') || h('div', { class: 'notice err' }, 'nostr login unavailable'),
-      h('button', { class: 'linklike small', onClick: () => { o.step = 'nostr'; render(); } }, t('back')),
+      h('button', { class: 'linklike small', onClick: () => { o.step = 'welcome'; render(); } }, t('back')),
     ]);
   }
   if (o.step === 'username') {

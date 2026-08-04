@@ -115,6 +115,9 @@ try {
   await page.evaluate(() => { const i = document.querySelector('input[placeholder*="channel" i]'); const b = i && i.parentElement.querySelector('button'); if (b) b.click(); });
 
   for (let i = 0; i < 60 && !(await page.$('.chan-pick')); i++) await sleep(500);
+  // the picker appears on the relay echo, which can beat createChannel's own
+  // continuation — give the field a moment to put itself away
+  for (let i = 0; i < 20 && (await page.$('input[placeholder*="channel" i]')); i++) await sleep(500);
   const two = await page.evaluate(() => {
     const sel = document.querySelector('.chan-pick');
     return { picker: !!sel, tag: sel && sel.tagName, opts: sel ? [...sel.options].map((o) => o.textContent) : [], field: !!document.querySelector('input[placeholder*="channel" i]') };
