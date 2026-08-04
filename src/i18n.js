@@ -182,7 +182,6 @@ const STR = {
     profName: 'Name',
     profAbout: 'About',
     profPicture: 'Picture URL',
-    profLud16: 'Lightning address',
     profSaved: 'Profile published',
     msgSearching: 'Searching…',
     msgNoMatches: 'No matches',

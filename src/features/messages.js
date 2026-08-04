@@ -887,9 +887,16 @@ export function messagesFeature(ctx) {
       let base = {};
       try { base = newest ? JSON.parse(newest.content) : {}; } catch {}
       const merged = { ...base };
-      for (const [k, v] of [['name', e.name], ['about', e.about], ['picture', e.picture], ['lud16', e.lud16]]) {
+      for (const [k, v] of [['name', e.name], ['about', e.about], ['picture', e.picture]]) {
         if (v.trim()) merged[k] = v.trim();
         else delete merged[k];
+      }
+      // Not an editable field: someone else's lightning address is theirs to
+      // manage, and editing it here reads like renaming their coinos account.
+      // We only fill one in when the profile has none, so zaps can find them.
+      if (!merged.lud16) {
+        const addr = hook('namesAddress');
+        if (addr) merged.lud16 = addr;
       }
       if (merged.name) merged.display_name = merged.name;
       const partial = { kind: 0, content: JSON.stringify(merged), tags: [], created_at: Math.floor(Date.now() / 1000) };
@@ -919,7 +926,6 @@ export function messagesFeature(ctx) {
         name: full.display_name || full.name || '',
         about: full.about || '',
         picture: full.picture || '',
-        lud16: full.lud16 || (hook('namesAddress') || ''),
       };
     }
     const name = displayName(pk);
@@ -963,7 +969,6 @@ export function messagesFeature(ctx) {
               field(t('profName'), 'name'),
               field(t('profAbout'), 'about'),
               field(t('profPicture'), 'picture', 'https://…'),
-              field(t('profLud16'), 'lud16', 'you@coinos.io'),
               h('button', { class: 'btn-primary btn-block', disabled: ui.profSaving, onClick: saveProfile },
                 ui.profSaving ? h('span', { class: 'spinner sm' }) : t('save')))
           : mine
