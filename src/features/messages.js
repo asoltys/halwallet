@@ -1226,7 +1226,31 @@ export function messagesFeature(ctx) {
     });
   };
 
+  // A remote signer that a reload dropped: say so where the typing happens,
+  // rather than letting someone write a message and only then be told. The
+  // identity itself is still known — it's the ability to sign as it that's
+  // missing — so this offers to fetch it back rather than to log in again.
+  function signerNotice() {
+    const id = hook('nostrLoginIdentity');
+    if (!id || id.signer || ui.msgReconnected) return null;
+    return h('div', { class: 'row gap6 chat-signer-off', style: 'align-items:center' },
+      h('span', { class: 'small muted grow' }, t('msgSignerOff')),
+      h('button', {
+        class: 'btn-sm', disabled: !!ui.msgReconnecting,
+        onClick: async () => {
+          ui.msgReconnecting = true; render();
+          const s = await hook('nostrLoginResume');
+          ui.msgReconnecting = false;
+          if (s) { ui.msgReconnected = true; toast(t('msgSignerBack')); }
+          else { ui.chatOpen = false; ui.screen = 'wallet'; ui.tab = 'settings'; ui.settingsPage = 'nostr'; }
+          render();
+        },
+      }, ui.msgReconnecting ? h('span', { class: 'spinner sm' }) : t('msgReconnect')));
+  }
+
   const composer = (placeholder, onSend, onType) =>
+    h('div', { class: 'col', style: 'gap:6px' },
+      signerNotice(),
     h('div', { class: 'chat-compose' },
       h('input', {
         class: 'grow', type: 'text', id: 'msg-draft', placeholder,
@@ -1235,7 +1259,7 @@ export function messagesFeature(ctx) {
         onKeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); } },
       }),
       h('button', { class: 'btn-primary btn-sm', disabled: ui.msgSending, onClick: onSend },
-        ui.msgSending ? h('span', { class: 'spinner sm' }) : t('msgSend')));
+        ui.msgSending ? h('span', { class: 'spinner sm' }) : t('msgSend'))));
 
   // ---- home ---------------------------------------------------------------
 

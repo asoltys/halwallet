@@ -556,3 +556,4 @@ body::after {
 .balance-move .input-group { flex-wrap: wrap; }
 .balance-move .amt-field { flex: 1 1 150px; }
 .balance-move .input-group > button { flex: 1 1 150px; }
+.chat-signer-off { padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); }
