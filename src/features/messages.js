@@ -1705,7 +1705,7 @@ export function messagesFeature(ctx) {
     showProfile(pk) { openProfile(pk); return true; },
     // Publish (merge) kind-0 fields for the current identity — the onboarding
     // wizard sets name + picture through this.
-    async publishProfile(fields) {
+    async publishProfile(fields, opts = {}) {
       const id = await identity();
       if (!id) throw new Error(t('msgNoIdentity'));
       const evs = await queryOn([...new Set([...PROFILE_RELAYS, ...DM_RELAYS])], { kinds: [0], authors: [id.pubkey] }, 3000);
@@ -1713,10 +1713,18 @@ export function messagesFeature(ctx) {
       let base = {};
       try { base = newest ? JSON.parse(newest.content) : {}; } catch {}
       const merged = { ...base };
+      // fillOnly fields are offers, not orders: the onboarding wizard suggests
+      // a name and a punk for profiles that have none — it must never RENAME
+      // (or re-face) an identity that already has one.
+      const fill = new Set(opts.fillOnly || []);
+      const taken = (k) => (k === 'name' ? !!(base.name || base.display_name) : !!base[k]);
       for (const [k, v] of Object.entries(fields || {})) {
-        if (v) merged[k] = v;
+        if (!v) continue;
+        if (fill.has(k) && taken(k)) continue;
+        merged[k] = v;
       }
-      if (merged.name) merged.display_name = merged.name;
+      if (merged.name && !(fill.has('name') && taken('name'))) merged.display_name = merged.name;
+      if (JSON.stringify(merged) === JSON.stringify(base)) return true; // nothing to say
       const partial = { kind: 0, content: JSON.stringify(merged), tags: [], created_at: Math.floor(Date.now() / 1000) };
       const evt = id.signer instanceof Uint8Array ? finalizeEvent(partial, id.signer) : await id.signer.signEvent(partial);
       const ok = await publishOn([...new Set([...PROFILE_RELAYS, ...DM_RELAYS])], evt);

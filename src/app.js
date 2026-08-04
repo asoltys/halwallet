@@ -2311,8 +2311,11 @@ function onboardScreen() {
           const fields = { name: addr ? addr.split('@')[0] : undefined, picture };
           // Publishing the profile is a nicety — a signer that can't sign
           // right now (a sleeping phone bunker) must not trap the wizard.
+          // And it's an OFFER: the address-derived name (and, unless they
+          // actually picked one, the default punk) only fills gaps — it
+          // never renames an identity that already has a profile.
           if (fields.name || fields.picture) {
-            try { await featureHook('publishProfile', fields); }
+            try { await featureHook('publishProfile', fields, { fillOnly: o.avatar ? ['name'] : ['name', 'picture'] }); }
             catch (e) { toast(t('onbProfileSkipped')); console.warn('onboarding: profile publish failed —', e.message); }
           }
           o.step = 'success';
