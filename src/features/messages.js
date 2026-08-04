@@ -1241,8 +1241,8 @@ export function messagesFeature(ctx) {
           ui.msgReconnecting = true; render();
           const s = await hook('nostrLoginResume');
           ui.msgReconnecting = false;
-          if (s) toast(t('msgSignerBack'));
-          else { ui.chatOpen = false; ui.screen = 'wallet'; ui.tab = 'settings'; ui.settingsPage = 'nostr'; }
+          // Success needs no announcement — the notice itself goes away.
+          if (!s) { ui.chatOpen = false; ui.screen = 'wallet'; ui.tab = 'settings'; ui.settingsPage = 'nostr'; }
           render();
         },
       }, ui.msgReconnecting ? h('span', { class: 'spinner sm' }) : t('msgReconnect')));

@@ -274,7 +274,8 @@ export function nostrLoginFeature(ctx) {
       }
       live = selfHealing(signer);
       save({ ...load(), ...sessionOf(signer) });
-      toast(t('nlReconnected'));
+      // No toast: the badge flips to "connected" and the reconnect controls
+      // disappear, which says it better than a pill floating over the footer.
       busy(false);
     } catch (e) { fail(e); }
   }
