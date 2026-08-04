@@ -92,9 +92,21 @@ export function nwcFeature(ctx) {
   const relays = () => NWC_RELAYS;
 
   // The string the user pastes into another app.
+  //
+  // lud16 is NIP-47's recommended way to hand the client a lightning address:
+  // an app with no lud16 on its profile can fill one in from the connection
+  // rather than asking. Only sent once a name is actually claimed — there is
+  // nothing to advertise before that.
+  //
+  // The `@` is left literal. It needs no escaping in a query value, and a
+  // client that reads the param without URL-decoding it would otherwise store
+  // a broken `name%40domain`; anything else stays encoded, so an exotic
+  // custom domain still can't inject a parameter.
   function uriFor(c) {
     const rs = relays().map((r) => `relay=${encodeURIComponent(r)}`).join('&');
-    return `nostr+walletconnect://${c.servicePk}?${rs}&secret=${c.secret}`;
+    const addr = hook('namesAddress');
+    const lud16 = addr ? `&lud16=${encodeURIComponent(addr).replace(/%40/g, '@')}` : '';
+    return `nostr+walletconnect://${c.servicePk}?${rs}&secret=${c.secret}${lud16}`;
   }
 
   function createConn({ name, maxSat, dailySat }) {
