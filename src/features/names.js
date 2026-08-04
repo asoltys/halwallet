@@ -23,7 +23,7 @@ const DOMAIN = 'coinos.io';
 const AUTH_KIND = 21353;
 
 export function namesFeature(ctx) {
-  const { h, ui, render, wallet, hook, toast, copyBtn } = ctx;
+  const { h, ui, render, wallet, hook, toast, copyBtn, brandHeader, goBack } = ctx;
 
   // The wallet's own key signs registrar requests: it's the one key that is
   // always available — offline, in the background, with no signer attached.
@@ -314,12 +314,9 @@ export function namesFeature(ctx) {
         // the pen is how you change the name — right where the name is
         h('button', {
           class: 'addr-edit', title: t('namesCustom'),
-          onClick: () => { ui.nameEditOpen = !ui.nameEditOpen; ui.nameClaimError = null; render(); },
+          onClick: () => { ui.nameEditOpen = true; ui.nameClaimError = null; render(); },
           html: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>',
         })),
-      ui.nameEditOpen ? h('div', { class: 'col', style: 'gap:8px;width:100%' },
-        h('p', { class: 'small muted', style: 'margin:0' }, t('namesCustomHow')),
-        claimForm(false)) : null,
       copyBtn(addr, t('namesCopy')),
       offerSection());
   }
@@ -396,6 +393,21 @@ export function namesFeature(ctx) {
   return {
     id: 'names',
     init() { checked = false; lastError = null; refresh(); },
+    // The pencil by the address opens this: choosing a name gets a page of
+    // its own — no balances, no tabs, just the name.
+    screenView() {
+      if (ui.screen !== 'wallet' || !ui.nameEditOpen) return null;
+      const st = load();
+      const addr = st.name ? `${st.name}@${st.domain || DOMAIN}` : null;
+      return h('div', { class: 'col', style: 'gap:16px' },
+        brandHeader(false),
+        h('div', { class: 'card col' },
+          h('h3', {}, t('namesCustom')),
+          addr ? h('div', { class: 'addr-box break', style: 'font-size:14px' }, addr) : null,
+          h('p', { class: 'small muted', style: 'margin:0' }, t('namesCustomHow')),
+          claimForm(true)),
+        h('button', { class: 'btn-ghost btn-block', onClick: () => goBack(() => { ui.nameEditOpen = null; ui.nameClaimError = null; }) }, t('back')));
+    },
     namesAdoptIdentity(signer, npub) { return adoptIdentity(signer, npub); },
     // the claimed payment address, for anyone prefilling a lightning address
     namesAddress() { const st = load(); return st.name ? `${st.name}@${st.domain || DOMAIN}` : null; },

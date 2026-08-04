@@ -361,7 +361,7 @@ function render() {
   // Navigation animates; background repaints must not. The key is every
   // ui field that decides which page is on screen.
   const navKey = [ui.screen, ui.tab === 'settings', ui.chatOpen, ui.msgView, ui.msgPeer, ui.msgCommunity,
-    ui.profilePk, ui.settingsPage, ui.addrScan, ui.arkExitPage, ui.txDetail, ui.giftMode, ui.claimStep].join('|');
+    ui.profilePk, ui.settingsPage, ui.addrScan, ui.arkExitPage, ui.txDetail, ui.giftMode, ui.claimStep, ui.nameEditOpen].join('|');
   if (uiChanged('nav', navKey)) _navAt = performance.now();
   applyAnim(screen, 'anim-page', (performance.now() - _navAt) < 340 ? performance.now() - _navAt : -1);
   root.replaceChildren(screen, footer());
@@ -407,7 +407,7 @@ wallet.subscribe(scheduleRender);
 // buttons (and Android/system back) move between screens we've actually viewed.
 // We snapshot only the navigation-relevant `ui` fields, so incidental re-renders
 // (typing, polling, balance updates) don't create history entries.
-const NAV_FIELDS = ['screen', 'tab', 'txDetail', 'bump', 'giftMode', 'claimStep', 'chatOpen', 'msgView', 'msgCommunity', 'msgPeer', 'profilePk', 'settingsPage'];
+const NAV_FIELDS = ['screen', 'tab', 'txDetail', 'bump', 'giftMode', 'claimStep', 'chatOpen', 'msgView', 'msgCommunity', 'msgPeer', 'profilePk', 'settingsPage', 'nameEditOpen'];
 function navSnapshot() {
   const s = {};
   for (const f of NAV_FIELDS) s[f] = ui[f] ?? null;
