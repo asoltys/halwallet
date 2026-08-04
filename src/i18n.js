@@ -607,6 +607,8 @@ const STR = {
     namesMoreArkHow: 'Get paid directly from any Ark wallet',
     namesMoreClink: 'Nostr offer (CLINK)',
     namesMoreClinkHow: 'A static code Nostr wallets can pay',
+    namesMoreOnchain: 'Bitcoin address (on-chain)',
+    namesMoreOnchainHow: 'Switch to Savings for a regular on-chain address',
     namesInvAmountPh: 'Amount (sats)',
     namesInvMemoPh: 'Description (optional)',
     namesInvCreate: 'Create invoice',

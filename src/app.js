@@ -3614,6 +3614,7 @@ const ctx = {
   // build without the target feature simply gets null back
   hook: (name, ...args) => featureHook(name, ...args),
   getAccount: () => accountSel(),
+  setAccount: (a, dir) => setAccountSel(a, dir),
   // Open (or create) a wallet from a mnemonic — used by nostr login.
   openMnemonic: async (mnemonic, passphrase, opts) => enterWallet(mnemonic, passphrase, opts),
   // A nostr login that lands mid-wizard: a restored wallet has been through

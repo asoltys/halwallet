@@ -23,7 +23,7 @@ const DOMAIN = 'coinos.io';
 const AUTH_KIND = 21353;
 
 export function namesFeature(ctx) {
-  const { h, ui, render, wallet, hook, toast, copy, copyBtn, brandHeader, goBack } = ctx;
+  const { h, ui, render, wallet, hook, toast, copy, copyBtn, brandHeader, goBack, setAccount } = ctx;
 
   // The wallet's own key signs registrar requests: it's the one key that is
   // always available — offline, in the background, with no signer attached.
@@ -479,7 +479,12 @@ export function namesFeature(ctx) {
       opt('bolt11', t('namesMoreBolt11'), t('namesMoreBolt11How')),
       opt('bolt12', t('namesMoreBolt12'), t('namesMoreBolt12How'), loadOffers),
       opt('ark', t('namesMoreArk'), t('namesMoreArkHow')),
-      opt('clink', t('namesMoreClink'), t('namesMoreClinkHow')));
+      opt('clink', t('namesMoreClink'), t('namesMoreClinkHow')),
+      // Not a pane: a plain on-chain address means receiving to Savings, so
+      // this hands over to the savings receive view instead of showing a
+      // second address here.
+      opt('onchain', t('namesMoreOnchain'), t('namesMoreOnchainHow'),
+        () => { ui.namesMore = null; setAccount('savings'); }));
   }
 
   function moreSection() {
