@@ -169,7 +169,15 @@ export function namesFeature(ctx) {
   async function adoptIdentity(signer, npub) {
     if (!signer || !npub || !available()) return null;
     const name = npub.slice(0, 12);
-    if (load().name === name) return name;
+    let st = load();
+    // A restored wallet may not know its name yet — ask the registrar before
+    // assuming there is none.
+    if (!st.name) { await lookupMine(); st = load(); }
+    // The npub default is a placeholder for wallets with no name. Adopting it
+    // must never displace a custom name — claim() releases the previous name,
+    // so getting this wrong deletes the user's address from the registrar.
+    if (st.name && !/^npub1/.test(st.name)) return st.name;
+    if (st.name === name) return name;
     await claim(name, { signer, manager: wallet.nostrPubkey() });
     render();
     return name;
