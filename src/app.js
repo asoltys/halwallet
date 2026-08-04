@@ -2264,11 +2264,12 @@ function onboardScreen() {
       featureHook('namesClaimForm') || h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('onbNameWait'))),
       // A way past without naming yourself, but not one that shows the
       // npub-shaped default address — nobody wants to be offered that.
-      addr ? h('button', { class: 'linklike small', onClick: () => { o.step = 'avatar'; render(); } }, t('onbSkipName')) : null,
+      h('div', { class: 'row gap6' },
+        h('button', { class: 'btn-ghost grow', onClick: () => { o.heldFor = activeAccount()?.id; o.step = 'welcome'; render(); } }, t('back')),
+        addr ? h('button', { class: 'grow', onClick: () => { o.step = 'avatar'; render(); } }, t('onbSkipName')) : null),
       // Most people are new. The ones who aren't know it, and can say so here
       // rather than everyone being asked first.
       h('button', { class: 'linklike small', onClick: () => { ui.onbError = ''; o.step = 'legacy'; render(); } }, t('onbHaveCoinos')),
-      h('button', { class: 'linklike small', onClick: () => { o.heldFor = activeAccount()?.id; o.step = 'welcome'; render(); } }, t('back')),
     ]);
   }
   if (o.step === 'avatar') {

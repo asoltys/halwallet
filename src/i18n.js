@@ -530,7 +530,7 @@ const STR = {
     onbLegacyGo: 'Move my coinos.io account',
     onbLegacyNoAddr: "Your payment address isn't ready yet — try again in a moment.",
     onbLegacyDone: "I'm done — continue",
-    onbHaveCoinos: 'I already have a coinos.io account',
+    onbHaveCoinos: 'Migrate my coinos.io account',
     migrateClaimed: 'Welcome back — {name} is yours here now.',
     migrateClaimFailed: "Your balance moved, but {name} isn't free yet. Try claiming it in a minute.",
     migrateWorking: 'Claiming {name}…',
