@@ -2180,11 +2180,15 @@ function onboardScreen() {
         try { await enterWallet(newMnemonic(), '', { generated: true }); } catch (e) { ui.onbError = e.message; }
         ui.onbBusy = false; render();
       } }, ui.onbBusy ? h('span', { class: 'spinner sm' }) : t('onbStart')),
+      // Same shape as the sign-in button on the unlock screen: .btn-block
+      // forces display:block, so the flex centering goes on an inner wrapper.
       h('button', { class: 'btn-block', style: 'padding:14px', onClick: () => {
         o.step = 'signin';
         ui.nostrLoginOpen = true;
         render();
-      } }, t('nlSignIn')),
+      } }, h('span', { style: 'display:flex;align-items:center;justify-content:center;gap:8px' },
+        h('span', { style: 'display:flex;flex-shrink:0', html: NOSTR_MARK }),
+        t('nlSignIn'))),
       ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
       h('button', { class: 'linklike small', onClick: () => { ui.onbSkip = true; ui.onb = null; render(); } }, t('onbHaveWallet')),
     ]);
