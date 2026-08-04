@@ -1232,7 +1232,7 @@ export function messagesFeature(ctx) {
   // missing — so this offers to fetch it back rather than to log in again.
   function signerNotice() {
     const id = hook('nostrLoginIdentity');
-    if (!id || id.signer || ui.msgReconnected) return null;
+    if (!id || id.signer) return null;
     return h('div', { class: 'row gap6 chat-signer-off', style: 'align-items:center' },
       h('span', { class: 'small muted grow' }, t('msgSignerOff')),
       h('button', {
@@ -1241,7 +1241,7 @@ export function messagesFeature(ctx) {
           ui.msgReconnecting = true; render();
           const s = await hook('nostrLoginResume');
           ui.msgReconnecting = false;
-          if (s) { ui.msgReconnected = true; toast(t('msgSignerBack')); }
+          if (s) toast(t('msgSignerBack'));
           else { ui.chatOpen = false; ui.screen = 'wallet'; ui.tab = 'settings'; ui.settingsPage = 'nostr'; }
           render();
         },

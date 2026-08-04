@@ -12,7 +12,6 @@ import { newMnemonic } from '../wallet.js';
 import { npubOf } from '../nostr.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
-import { hex } from '@scure/base';
 import {
   extensionSigner, bunkerSigner, keySigner, parseNostrSecret,
   walletForSigner, publishWalletBackup, nostrConnect, resumeBunker } from '../nostr-login.js';
@@ -61,16 +60,15 @@ export function nostrLoginFeature(ctx) {
   // own key — a different pubkey, which is exactly the mismatch people notice
   // when their chat messages come out under a stranger's name.
   //
-  // A remote signer stores its NIP-46 client key, which the signer authorised
-  // for this app and which cannot sign anything on its own. A pasted key
-  // stores the key itself: it is already the seed of everything here (the
-  // wallet's mnemonic derives from it), so this is the same secret the app is
-  // holding either way, not a new one.
+  // A remote signer stores its NIP-46 client key: the signer authorised that
+  // key for this app, and it cannot sign anything on its own.
+  //
+  // A pasted key stores NOTHING. The UI promises it is used once and never
+  // kept, and that promise is worth more than saving someone a paste after a
+  // reload — they reconnect from the nostr settings card instead.
   const sessionOf = (signer) => {
     if (!signer) return {};
-    if (signer.session) return { session: signer.session, secret: null };
-    if (signer.secret instanceof Uint8Array) return { session: null, secret: hex.encode(signer.secret) };
-    return { session: null, secret: null };
+    return { session: signer.session || null };
   };
 
   const busy = (v) => { ui.nostrLoginBusy = v; render(); };
@@ -261,14 +259,42 @@ export function nostrLoginFeature(ctx) {
       signerButtons(loginWith));
   }
 
+  // Re-attach a signer for the account already linked here. Deliberately not
+  // linkOpenWallet: this must not become a way to quietly swap identities, so
+  // a different account is refused rather than linked.
+  async function reconnectSigner(makeSigner) {
+    ui.nostrLoginError = '';
+    busy(true);
+    try {
+      const st = load();
+      const signer = await makeSigner();
+      if (signer.pubkey !== st.pubkey) {
+        if (signer.close) signer.close();
+        throw new Error(t('nlWrongAccount', { npub: (npubOf(st.pubkey) || '').slice(0, 16) + '…' }));
+      }
+      live = selfHealing(signer);
+      save({ ...load(), ...sessionOf(signer) });
+      toast(t('nlReconnected'));
+      busy(false);
+    } catch (e) { fail(e); }
+  }
+
   function settingsCard() {
     if (wallet.watchOnly || !wallet.mnemonic) return null;
     const st = load();
     if (st.pubkey) {
       return h('div', { class: 'card col' },
-        h('h3', {}, t('nlLinkTitle')),
+        h('div', { class: 'row between' },
+          h('h3', {}, t('nlLinkTitle')),
+          h('span', { class: 'badge dot' + (live ? ' live' : ' off') }, live ? t('nlConnected') : t('nlDisconnected'))),
         h('div', { class: 'small muted break' }, npubOf(st.pubkey) || st.pubkey),
-        h('p', { class: 'small faint', style: 'margin:0' }, t('nlLinkedDesc')));
+        h('p', { class: 'small faint', style: 'margin:0' }, t('nlLinkedDesc')),
+        // Signing needs a live signer, and a reload always drops a remote one.
+        // Without this the app can tell you it isn't connected and offer you
+        // nowhere to fix it.
+        live ? null : h('div', { class: 'col', style: 'gap:8px' },
+          h('p', { class: 'small muted', style: 'margin:0' }, t('nlReconnectDesc')),
+          signerButtons(reconnectSigner)));
     }
     return h('div', { class: 'card col' },
       h('h3', {}, t('nlLinkTitle')),
@@ -308,12 +334,6 @@ export function nostrLoginFeature(ctx) {
         if (typeof window !== 'undefined' && window.nostr) {
           try {
             const s = await extensionSigner();
-            if (s.pubkey === st.pubkey) return (live = s);
-          } catch {}
-        }
-        if (st.secret) {
-          try {
-            const s = keySigner(hex.decode(st.secret));
             if (s.pubkey === st.pubkey) return (live = s);
           } catch {}
         }
