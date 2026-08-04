@@ -187,16 +187,30 @@ export function keySigner(sk) {
 
 // Look for a wallet this nostr account already published. Returns the
 // mnemonic, or null when the account has no wallet yet.
+//
+// "No wallet" is a claim, not a default: acting on it mints a NEW wallet
+// whose backup would replace this one on every relay it reaches. So absence
+// is only believed when at least one relay actually answered, and a backup
+// we can see but not decrypt is an error, never a shrug — each query is
+// per-relay because a pooled query swallows individual connection failures.
 export async function fetchWalletBackup(signer, relays = BACKUP_RELAYS) {
   const pool = new SimplePool();
+  const filter = { kinds: [BACKUP_KIND], authors: [signer.pubkey], '#d': [SEED_DTAG] };
   try {
-    const evs = await pool.querySync(relays,
-      { kinds: [BACKUP_KIND], authors: [signer.pubkey], '#d': [SEED_DTAG] }, { maxWait: 6000 });
-    const newest = evs.sort((a, b) => b.created_at - a.created_at)[0];
+    const results = await Promise.allSettled(relays.map(async (url) => {
+      await pool.ensureRelay(url, { connectionTimeout: 5000 });
+      return pool.querySync([url], filter, { maxWait: 6000 });
+    }));
+    const answered = results.filter((r) => r.status === 'fulfilled');
+    if (!answered.length) throw new Error('could not reach any relay to look for an existing wallet — check your connection and try again');
+    const newest = answered.flatMap((r) => r.value).sort((a, b) => b.created_at - a.created_at)[0];
     if (!newest) return null;
-    const body = JSON.parse(await signer.decryptSelf(newest.content));
-    return body && body.mnemonic ? body : null;
-  } catch { return null; } finally { try { pool.close(relays); } catch {} }
+    let body;
+    try { body = JSON.parse(await signer.decryptSelf(newest.content)); }
+    catch { throw new Error('found this account’s wallet but could not decrypt it — approve the decryption prompt in your signer and try again'); }
+    if (!body || !body.mnemonic) throw new Error('found this account’s wallet backup but it is unreadable');
+    return body;
+  } finally { try { pool.close(relays); } catch {} }
 }
 
 // Publish (or replace) the encrypted wallet association for this account.
