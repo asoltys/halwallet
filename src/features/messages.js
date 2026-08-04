@@ -1251,6 +1251,13 @@ export function messagesFeature(ctx) {
     });
   };
 
+  // The chat card is sized to the viewport, so the mobile keyboard shrinks it:
+  // the composer stays on screen, but the log keeps its old scroll offset and
+  // the newest messages vanish under the fold. Follow the bottom edge through
+  // every viewport change (keyboard, rotation, browser chrome) — unless the
+  // user has deliberately scrolled up, which msgStick already remembers.
+  const onViewportResize = () => { if (ui.chatOpen) stickToBottom(); };
+
   // A remote signer that a reload dropped: say so where the typing happens,
   // rather than letting someone write a message and only then be told. The
   // identity itself is still known — it's the ability to sign as it that's
@@ -1282,6 +1289,9 @@ export function messagesFeature(ctx) {
         value: ui.msgDraft || '', maxlength: '2000',
         onInput: (e) => { ui.msgDraft = e.target.value; if (onType && e.target.value) onType(); },
         onKeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); } },
+        // Focus summons the keyboard; some browsers resize only after its
+        // animation, so re-stick once now and once when it has settled.
+        onFocus: () => { stickToBottom(); setTimeout(stickToBottom, 350); },
       }),
       h('button', { class: 'btn-primary btn-sm', disabled: ui.msgSending, onClick: onSend },
         ui.msgSending ? h('span', { class: 'spinner sm' }) : t('msgSend'))));
@@ -1782,6 +1792,12 @@ export function messagesFeature(ctx) {
         loadLinkInvite(urlInvite);
         setTimeout(() => { ui.chatOpen = true; ui.msgView = 'home'; render(); }, 0);
       }
+      window.addEventListener('resize', onViewportResize);
+      window.visualViewport?.addEventListener('resize', onViewportResize);
+      allUnsubs.push(() => {
+        window.removeEventListener('resize', onViewportResize);
+        window.visualViewport?.removeEventListener('resize', onViewportResize);
+      });
       startDMs();
       // Communities subscribe up front too, not just when chat opens — the
       // header's unread dot can't report a room nobody is listening to.
