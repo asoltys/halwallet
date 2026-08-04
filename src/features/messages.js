@@ -462,6 +462,7 @@ export function messagesFeature(ctx) {
     const ok = await publishOn(room.relays, wrap);
     if (!ok) { toast(t('msgSendFailed')); return; }
     ui.msgNewChannel = '';
+    ui.msgChannelPanel = false; // the field has done its job — put it away
     toast('#' + name.replace(/^#/, ''));
   }
 
@@ -1494,13 +1495,14 @@ export function messagesFeature(ctx) {
               memberCount ? t('msgMembers', { n: memberCount }) : t('msgEncrypted'),
               onlineCount ? h('span', { class: 'online-count' }, ' · ', t('msgNOnline', { n: onlineCount })) : null))),
         h('div', { class: 'row gap6', style: 'align-items:center' },
+          // One channel needs no label — naming it only asks people to notice a
+          // choice they don't have. Several become a picker.
           chans.length > 1
-            ? h('div', { class: 'seg' }, chans.map((c) =>
-                h('button', {
-                  class: c.id === ch?.id ? 'active' : '',
-                  onClick: () => { ui.msgChannel = c.id; ui.msgStick = true; subChannel(room, c.id); render(); },
-                }, '#' + c.name)))
-            : h('div', { class: 'tag' }, '#' + (ch ? ch.name : '')),
+            ? h('select', {
+                class: 'chan-pick',
+                onChange: (e) => { ui.msgChannel = e.target.value; ui.msgStick = true; subChannel(room, e.target.value); render(); },
+              }, chans.map((c) => h('option', { value: c.id, selected: c.id === ch?.id }, '#' + c.name)))
+            : null,
           h('button', {
             class: 'iconbtn bell' + (roomNotify(jm.community_id) ? ' on' : ''),
             title: roomNotify(jm.community_id) ? t('msgNotifyOn') : t('msgNotifyOff'),
@@ -1510,9 +1512,9 @@ export function messagesFeature(ctx) {
               : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.7 21a2 2 0 0 1-3.4 0"/><path d="M18 8a6 6 0 0 0-9.3-5"/><path d="M6.3 6.3A6 6 0 0 0 6 8c0 7-3 9-3 9h15"/><path d="m2 2 20 20"/></svg>',
           }),
           h('button', {
-            class: 'iconbtn', title: t('msgInviteTitle'),
+            class: 'btn-sm', title: t('msgInviteTitle'),
             onClick: () => { ui.msgInvitePanel = !ui.msgInvitePanel; render(); },
-          }, '+'))),
+          }, t('msgAddPerson')))),
       ui.msgInvitePanel ? invitePanel(room) : null,
       ui.msgMembers ? memberPanel(room, members) : null,
       h('div', {
@@ -1524,7 +1526,7 @@ export function messagesFeature(ctx) {
       }, ...(ch ? messageRows(room, ch.id) : [])),
       ch ? typingLine(room, ch.id) : null,
       composer(
-        t('msgPlaceholder', { channel: ch ? ch.name : '' }),
+        chans.length > 1 ? t('msgPlaceholder', { channel: ch ? ch.name : '' }) : t('msgPlaceholderPlain'),
         () => ch && sendMessage(room, ch.id),
         () => ch && ping(room, ch.id, TYPING)));
   }
@@ -1580,14 +1582,24 @@ export function messagesFeature(ctx) {
           class: 'btn-sm',
           onClick: () => { sendDirectInvite(room, ui.msgInviteTo); ui.msgInviteTo = ''; render(); },
         }, t('msgSend'))),
-      // owners can add channels (an owner-signed control edition)
+      // Owners can add channels (an owner-signed control edition), but a naming
+      // field sitting open is a question nobody asked — it reads as something
+      // you're meant to fill in right after making a community.
       myPubkeys().includes(room.jm.owner)
-        ? h('div', { class: 'row gap6' },
-            h('input', {
-              class: 'grow', type: 'text', placeholder: t('msgChannelPlaceholder'), maxlength: '64',
-              value: ui.msgNewChannel || '', onInput: (e) => { ui.msgNewChannel = e.target.value; },
-            }),
-            h('button', { class: 'btn-sm', onClick: () => createChannel(room, ui.msgNewChannel) }, t('msgCreate')))
+        ? (ui.msgChannelPanel
+            ? h('div', { class: 'row gap6' },
+                h('input', {
+                  class: 'grow', type: 'text', placeholder: t('msgChannelPlaceholder'), maxlength: '64',
+                  value: ui.msgNewChannel || '', onInput: (e) => { ui.msgNewChannel = e.target.value; },
+                  onKeydown: (e) => { if (e.key === 'Enter') createChannel(room, ui.msgNewChannel); },
+                }),
+                h('button', { class: 'btn-sm', onClick: () => createChannel(room, ui.msgNewChannel) }, t('msgCreate')),
+                h('button', { class: 'btn-ghost btn-sm', onClick: () => { ui.msgChannelPanel = false; render(); } }, t('cancel')))
+            : h('div', { class: 'row' },
+                h('button', {
+                  class: 'btn-sm',
+                  onClick: () => { ui.msgChannelPanel = true; render(); },
+                }, t('msgNewChannel'))))
         : null,
       // leaving discards the keys on this identity — two taps, default community exempt
       builtin ? null : h('div', { class: 'row' },

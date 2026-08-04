@@ -314,11 +314,21 @@ hr.divider { margin: 16px 0; }
 .sel-ico svg { display: block; }
 
 /* Messages — Concord community chat. */
-.chat-card { padding: 0; overflow: hidden; }
-.chat-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+/* The composer must never be below the fold. The card is sized to the
+   viewport and the message log is the only part that flexes, so opening the
+   invite or member panel shrinks the scroll area instead of pushing the input
+   off the bottom of the screen. The subtracted space is what sits around the
+   card: #app's padding plus the brand header and its gap. */
+.chat-card {
+  padding: 0; overflow: hidden; display: flex; flex-direction: column;
+  height: calc(100vh - 144px); max-height: calc(100vh - 144px);
+  height: calc(100dvh - 144px); max-height: calc(100dvh - 144px);
+  min-height: 320px;
+}
+.chat-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
 .chat-title { font-weight: 650; }
 .chat-log {
-  height: min(62vh, 640px); overflow-y: auto; padding: 12px 14px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 14px;
   display: flex; flex-direction: column; gap: 10px; background: var(--surface2);
 }
 .chat-row { display: flex; gap: 9px; align-items: flex-start; }
@@ -361,7 +371,7 @@ hr.divider { margin: 16px 0; }
 }
 .chat-compose {
   display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line);
-  align-items: center;
+  align-items: center; flex: 0 0 auto;
 }
 .chat-compose input {
   flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--paper);
@@ -373,7 +383,7 @@ hr.divider { margin: 16px 0; }
 .chat-back { font-size: 22px; line-height: 1; padding: 2px 10px 4px; flex-shrink: 0; }
 .chat-thread-row { display: flex; gap: 10px; align-items: center; cursor: pointer; }
 .chat-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-invite { padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface2); }
+.chat-invite { padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface2); flex: 0 0 auto; max-height: 40vh; overflow-y: auto; }
 .chat-invite input { font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--line-strong); border-radius: 9px; padding: 7px 10px; min-width: 0; }
 .chat-row.dm { justify-content: flex-start; }
 .chat-row.dm.mine { justify-content: flex-end; }
@@ -401,7 +411,7 @@ hr.divider { margin: 16px 0; }
 .typing-dots i:nth-child(2) { animation-delay: .15s; }
 .typing-dots i:nth-child(3) { animation-delay: .3s; }
 @keyframes typing-bounce { 0%, 60%, 100% { opacity: .3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
-.chat-members { max-height: 260px; overflow-y: auto; border-bottom: 1px solid var(--line); }
+.chat-members { flex: 0 0 auto; max-height: min(260px, 40vh); overflow-y: auto; border-bottom: 1px solid var(--line); }
 .ava-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
 .ava-wrap.online::after {
   content: ''; position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px;
@@ -557,3 +567,4 @@ body::after {
 .balance-move .amt-field { flex: 1 1 150px; }
 .balance-move .input-group > button { flex: 1 1 150px; }
 .chat-signer-off { padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); }
+.chan-pick { width: auto; min-width: 0; padding: 6px 32px 6px 10px; font-size: 13px; font-weight: 600; border-radius: 9px; background-position: right 10px center; }
