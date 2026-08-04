@@ -119,7 +119,10 @@ function resubscribeNotify() {
 }
 
 // throttle: chat bursts collapse to one push per device per window
-const COOLDOWN = { payment: 10_000, dm: 10_000, chat: 90_000 };
+// DMs are throttled barely at all now: the device drops the ones it decides
+// are noise (a stranger, or our own sent-copy), and a server-side cooldown
+// would let a discarded push swallow the friend's message that followed it.
+const COOLDOWN = { payment: 10_000, dm: 1_000, chat: 90_000 };
 const lastPush = new Map(); // endpointId:reason -> ts
 const seenNotifyEvents = new Map(); // event id -> ts
 function onNotifyEvent(ev) {
@@ -132,11 +135,17 @@ function onNotifyEvent(ev) {
   const p = ev.tags?.find((t) => t[0] === 'p')?.[1];
   const reason = ev.kind === 9735 || ev.kind === 9737 ? 'payment'
     : p && notifyPtags().includes(p) ? 'dm' : 'chat';
+  // A wrapped DM hides its sender from us by design, so we can't decide here
+  // whether it's from a friend or a stranger — we hand the whole wrap to the
+  // device, which holds the only key that can open it. Web Push tops out
+  // around 4KB after encryption; anything larger goes as a bare nudge and the
+  // device shows its generic notification.
+  const extra = reason === 'dm' && JSON.stringify(ev).length < 3500 ? { wrap: ev } : {};
   for (const [id, r] of Object.entries(notifyRegs)) {
     const hit = reason === 'chat'
       ? (r.authors || []).includes(ev.pubkey)
       : p && (r.ptags || []).includes(p);
-    if (hit) pushNotify(id, r, reason, {}).catch(() => {});
+    if (hit) pushNotify(id, r, reason, extra).catch(() => {});
   }
 }
 
@@ -147,7 +156,16 @@ async function pushNotify(id, r, reason, extra) {
   lastPush.set(key, Date.now());
   const payload = JSON.stringify({ type: 'notify', reason, ...extra });
   try {
-    await webpush.sendNotification(r.sub, payload, { TTL: 3600, urgency: 'normal' });
+    try {
+      await webpush.sendNotification(r.sub, payload, { TTL: 3600, urgency: 'normal' });
+    } catch (e) {
+      // A payload the push service won't take (413, or the library refusing
+      // the size) must not cost the notification itself — send the bare nudge
+      // and let the device show its generic message.
+      if (!extra.wrap || (e.statusCode && e.statusCode !== 413)) throw e;
+      log(`notify(dm): payload rejected (${e.statusCode || e.message}), retrying bare`);
+      await webpush.sendNotification(r.sub, JSON.stringify({ type: 'notify', reason }), { TTL: 3600, urgency: 'normal' });
+    }
     log(`notify(${reason}) -> device ${id}`);
   } catch (e) {
     if (e.statusCode === 404 || e.statusCode === 410) {

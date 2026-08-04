@@ -6,6 +6,7 @@
 
 import { respondFromBg } from './nwc-respond.js';
 import { bgAutoWithdraw } from './bg-autowithdraw.js';
+import { allInboxes, classifyDm, shouldNotifyDm } from './dm-inbox.js';
 
 const NOTIFIER = 'https://nwcpush.coinos.io';
 
@@ -25,9 +26,22 @@ self.addEventListener('push', (e) => {
         try { await bgAutoWithdraw({ log: (m) => console.log('[sw-aw]', m) }); }
         catch (err) { console.warn('[sw-aw] failed:', err && err.message); }
       }
+      // A DM arrives wrapped, so only this device can see who sent it. Open it
+      // here: a message from someone we follow gets their name on it, our own
+      // sent-copy and a stranger's get nothing at all. Anything we can't open
+      // — a remote-signer wallet, an oversized wrap — falls through to the
+      // generic notification rather than being dropped silently.
+      let dmName = null;
+      if (data.reason === 'dm' && data.wrap) {
+        try {
+          const verdict = await classifyDm(data.wrap, await allInboxes());
+          if (!shouldNotifyDm(verdict)) return;
+          if (verdict && verdict.name) dmName = verdict.name;
+        } catch (err) { console.warn('[sw-dm] could not classify:', err && err.message); }
+      }
       const T = {
         payment: ['Payment received', data.amountSat ? `+${Number(data.amountSat).toLocaleString()} sats — open coinos to see it.` : 'Open coinos to see it.'],
-        dm: ['New message', 'You have a new private message.'],
+        dm: dmName ? [dmName, 'sent you a message.'] : ['New message', 'You have a new private message.'],
         chat: ['New chat activity', 'There are new messages in your communities.'],
       };
       const [title, body] = T[data.reason] || T.chat;

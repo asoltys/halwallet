@@ -23,6 +23,7 @@ import {
   communityId, parseInviteLink, makeInviteLink, makeInviteBundleEvent, openInviteBundle,
 } from '../concord.js';
 import { makeDM, unwrapDM, wrapDM } from '../dm.js';
+import { saveInbox } from '../dm-inbox.js';
 import { makeSearcher, resultRows, fallbackAvatar } from '../recipient-search.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { t } from '../i18n.js';
@@ -605,6 +606,37 @@ export function messagesFeature(ctx) {
       toast(t('msgPushFailed'));
       render();
     }
+  }
+
+  // Hand the service worker what it needs to tell a friend's DM from a
+  // stranger's: our key (only if we actually hold one), who we follow, and the
+  // names we already know. See dm-inbox.js for the threat model — a remote
+  // signer stores no key here and simply gets unfiltered notifications.
+  let inboxAt = 0;
+  async function syncInbox({ force = false } = {}) {
+    if (!force && Date.now() - inboxAt < 5 * 60_000) return;
+    inboxAt = Date.now();
+    try {
+      const id = await identity();
+      if (!id) return;
+      const evs = await queryOn([...new Set([...PROFILE_RELAYS, ...DM_RELAYS])],
+        { kinds: [3], authors: [id.pubkey] }, 4000);
+      const newest = evs.sort((a, b) => b.created_at - a.created_at)[0];
+      const follows = newest
+        ? [...new Set(newest.tags.filter((x) => x[0] === 'p' && /^[0-9a-f]{64}$/.test(x[1] || '')).map((x) => x[1]))]
+        : [];
+      const known = [...threads.keys()];
+      const names = {};
+      for (const pk of [...follows, ...known]) {
+        const p = profiles.get(pk);
+        if (p && p.name) names[pk] = p.name;
+      }
+      await saveInbox(wallet._cacheKey(), {
+        pubkey: id.pubkey,
+        sk: id.signer instanceof Uint8Array ? bytesToHex(id.signer) : null,
+        follows, known, names, hasList: !!newest, updated: Date.now(),
+      });
+    } catch { inboxAt = 0; }
   }
 
   async function registerPush({ interactive = false } = {}) {
@@ -1205,6 +1237,9 @@ export function messagesFeature(ctx) {
 
   function homeView() {
     startDMs();
+    // Threads you've since replied to should stop being strangers to the
+    // worker; throttled inside, so this is cheap on every render.
+    syncInbox().catch(() => {});
     for (const jm of communities()) ensureRoom(jm);
 
     const dmRows = [...threads.entries()]
@@ -1639,6 +1674,7 @@ export function messagesFeature(ctx) {
       // header's unread dot can't report a room nobody is listening to.
       for (const jm of communities()) { try { ensureRoom(jm); } catch {} }
       syncLists().catch(() => {});
+      syncInbox().catch(() => {});
       registerPush().catch(() => {}); // silent refresh when permission already granted
     },
     stop() {
