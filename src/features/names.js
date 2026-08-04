@@ -310,6 +310,12 @@ export function namesFeature(ctx) {
       h('div', { html: qrSvg(addr) }),
       h('div', { class: 'addr-box', style: 'width:100%;text-align:center;font-size:16px' }, addr),
       copyBtn(addr, t('namesCopy')),
+      // Still on the npub-shaped default? The people who'd want a real name
+      // are looking right here, not in a collapsed corner of Settings.
+      /^npub1/.test(st.name) ? h('details', { class: 'small faint', style: 'align-self:stretch' },
+        h('summary', {}, t('namesCustom')),
+        h('p', { style: 'margin:4px 0' }, t('namesCustomHow')),
+        claimForm(false)) : null,
       offerSection());
   }
 
