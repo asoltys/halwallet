@@ -210,6 +210,15 @@ textarea { resize: vertical; min-height: 84px; font-family: var(--mono); font-si
   font-family: var(--mono); font-size: 15px; color: var(--ink); background: var(--surface2); border: 1px dashed var(--line-strong);
   border-radius: 11px; padding: 12px 14px; word-break: break-all; text-align: center;
 }
+/* a quiet edit affordance living inside the address box */
+.addr-editable { position: relative; padding-right: 34px; }
+.addr-edit {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; box-shadow: none; padding: 6px; line-height: 0;
+  color: var(--muted); cursor: pointer;
+}
+.addr-edit:hover { color: var(--ink); background: none; }
+.addr-edit:active { transform: translateY(-50%); }
 .path { font-family: var(--mono); font-size: 12px; color: var(--faint); }
 .addr-check { font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--muted); word-break: break-all; padding: 0 2px; }
 .addr-check .hl { color: var(--ink); font-weight: 700; }

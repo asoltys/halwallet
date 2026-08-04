@@ -1660,7 +1660,19 @@ export function messagesFeature(ctx) {
     // Chat lives behind a header button and takes over the whole screen —
     // no balance card, no tabs; each view carries its own way back.
     // The bare avatar node for the app header's identity menu.
-    headerAvatar(pk) { return avatar(pk, 'chat-avatar header-ava', false); },
+    // The header rebuilds every render; recreating the <img> each time makes
+    // the picture visibly flash during boot's render bursts. There is exactly
+    // one header avatar, so the node itself is reused until the profile
+    // (or account) actually changes.
+    headerAvatar(pk) {
+      const p = profileOf(pk);
+      const key = pk + '|' + (p === null ? 'loading' : p.picture || 'fb:' + (p.name || ''));
+      if (!this._headerAva || this._headerAvaKey !== key) {
+        this._headerAvaKey = key;
+        this._headerAva = avatar(pk, 'chat-avatar header-ava', false);
+      }
+      return this._headerAva;
+    },
     // Conversations waiting on us, for the header's message button.
     unreadMessages() { return unreadCount(); },
     screenView() {

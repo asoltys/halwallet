@@ -309,13 +309,13 @@ export function namesFeature(ctx) {
     return h('div', { class: 'card col', style: 'align-items:center;gap:14px' },
       seg,
       h('div', { html: qrSvg(addr) }),
-      h('div', { class: 'row gap6', style: 'width:100%;align-items:center' },
-        h('div', { class: 'addr-box', style: 'flex:1;min-width:0;text-align:center;font-size:16px' }, addr),
-        // the pencil is how you change the name — right where the name is
+      h('div', { class: 'addr-box addr-editable', style: 'width:100%;font-size:16px' },
+        addr,
+        // the pen is how you change the name — right where the name is
         h('button', {
-          class: 'btn-sm', title: t('namesCustom'),
+          class: 'addr-edit', title: t('namesCustom'),
           onClick: () => { ui.nameEditOpen = !ui.nameEditOpen; ui.nameClaimError = null; render(); },
-          html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
+          html: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/></svg>',
         })),
       ui.nameEditOpen ? h('div', { class: 'col', style: 'gap:8px;width:100%' },
         h('p', { class: 'small muted', style: 'margin:0' }, t('namesCustomHow')),
