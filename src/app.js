@@ -2170,8 +2170,11 @@ function onboardScreen() {
     if (saved === 'signin') ui.nostrLoginOpen = true; // reopen the login card
   }
   const o = ui.onb;
-  // steps that were waiting on something advance the moment it exists
-  if ((o.step === 'welcome' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()) {
+  // Steps that were waiting on something advance the moment it exists — unless
+  // the user explicitly stepped back from username (heldFor remembers which
+  // wallet they backed away from); only a different wallet re-advances then.
+  if ((o.step === 'welcome' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()
+      && activeAccount().id !== o.heldFor) {
     o.step = 'username';
     o.enterAddr = featureHook('namesAddress') || null;
   }
@@ -2226,6 +2229,8 @@ function onboardScreen() {
       // Starting is the primary path; bringing a nostr account is the
       // alternative, offered here rather than as a question of its own.
       h('button', { class: 'btn-primary btn-block', style: 'font-size:17px;padding:14px', disabled: ui.onbBusy, onClick: async () => {
+        // back-tracked from username: the wallet is already minted, continue with it
+        if (activeAccount()) { o.heldFor = null; render(); return; }
         ui.onbBusy = true; render();
         try { await enterWallet(newMnemonic(), '', { generated: true }); } catch (e) { ui.onbError = e.message; }
         ui.onbBusy = false; render();
@@ -2248,7 +2253,7 @@ function onboardScreen() {
       h('div', { class: 'onb-mark', html: NOSTR_MARK }),
       title(t('onbSigninTitle')),
       featureHook('unlockExtra') || h('div', { class: 'notice err' }, 'nostr login unavailable'),
-      h('button', { class: 'linklike small', onClick: () => { o.step = 'welcome'; render(); } }, t('back')),
+      h('button', { class: 'linklike small', onClick: () => { o.heldFor = activeAccount()?.id; o.step = 'welcome'; render(); } }, t('back')),
     ]);
   }
   if (o.step === 'username') {
@@ -2263,6 +2268,7 @@ function onboardScreen() {
       // Most people are new. The ones who aren't know it, and can say so here
       // rather than everyone being asked first.
       h('button', { class: 'linklike small', onClick: () => { ui.onbError = ''; o.step = 'legacy'; render(); } }, t('onbHaveCoinos')),
+      h('button', { class: 'linklike small', onClick: () => { o.heldFor = activeAccount()?.id; o.step = 'welcome'; render(); } }, t('back')),
     ]);
   }
   if (o.step === 'avatar') {
