@@ -3597,6 +3597,14 @@ const ctx = {
   getAccount: () => accountSel(),
   // Open (or create) a wallet from a mnemonic — used by nostr login.
   openMnemonic: async (mnemonic, passphrase, opts) => enterWallet(mnemonic, passphrase, opts),
+  // A nostr login that lands mid-wizard: a restored wallet has been through
+  // onboarding elsewhere, so the wizard ends; a fresh one just releases the
+  // back-button hold so the wizard advances to naming it.
+  onbNostrLogin: (restored) => {
+    if (!ui.onb) return;
+    if (restored) { ui.onb = null; try { localStorage.removeItem(ONB_STEP_KEY); } catch {} }
+    else ui.onb.heldFor = null;
+  },
 };
 const FEATURES = buildFeatures(ctx);
 

@@ -98,6 +98,7 @@ export function nostrLoginFeature(ctx) {
       save({ ...load(), pubkey: signer.pubkey, linked: Date.now(), ...sessionOf(signer) });
       // claim the real npub as the payment address while this signer is live
       ctx.hook('namesAdoptIdentity', signer, npubOf(signer.pubkey))?.catch?.(() => {});
+      ctx.onbNostrLogin(res.mode === 'restored');
       toast(res.mode === 'derived' ? t('nlOpenedDerived') : t('nlOpenedRestored'));
       busy(false);
     } catch (e) { fail(e); }
@@ -119,6 +120,7 @@ export function nostrLoginFeature(ctx) {
       await ctx.openMnemonic(mnemonic, (existing && existing.passphrase) || '', { nostrPubkey: st.signer.pubkey });
       save({ ...load(), pubkey: st.signer.pubkey, linked: Date.now(), ...sessionOf(st.signer) });
       ctx.hook('namesAdoptIdentity', st.signer, npubOf(st.signer.pubkey))?.catch?.(() => {});
+      ctx.onbNostrLogin(!!existing);
       toast(existing ? t('nlOpenedRestored') : t('nlCreated'));
       busy(false);
     } catch (e) { fail(e); }
