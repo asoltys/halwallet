@@ -311,9 +311,9 @@ export function namesFeature(ctx) {
         claimForm(false));
     }
     const addr = `${st.name}@${st.domain || DOMAIN}`;
-    // The offer section takes over the card when open: two payment codes on
-    // screen at once is a good way to have someone scan the wrong one.
-    if (ui.namesOfferOpen) return h('div', { class: 'card col', style: 'align-items:center;gap:14px' }, seg, offerSection());
+    // The more-options section takes over the card when open: two payment
+    // codes on screen at once is a good way to have someone scan the wrong one.
+    if (ui.namesMore) return h('div', { class: 'card col', style: 'align-items:center;gap:14px' }, seg, moreSection());
     return h('div', { class: 'card col', style: 'align-items:center;gap:14px' },
       seg,
       h('div', { html: qrSvg(addr) }),
@@ -331,7 +331,7 @@ export function namesFeature(ctx) {
             onClick: () => copy(addr),
             html: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
           }))),
-      offerSection());
+      moreSection());
   }
 
   // ---- BOLT 12 offers with a memo ----------------------------------------
@@ -368,18 +368,9 @@ export function namesFeature(ctx) {
     ui.namesOfferBusy = false; render();
   }
 
-  function offerSection() {
-    if (!ui.namesOfferOpen) {
-      return h('button', {
-        class: 'linklike small',
-        onClick: () => { ui.namesOfferOpen = true; loadOffers(); render(); },
-      }, t('namesOfferOpen'));
-    }
+  function offerPane() {
     const offers = Array.isArray(ui.namesOffers) ? ui.namesOffers : [];
     return h('div', { class: 'col', style: 'gap:10px;width:100%' },
-      h('div', { class: 'row between', style: 'align-items:baseline' },
-        h('strong', {}, t('namesOfferTitle')),
-        h('button', { class: 'linklike small', onClick: () => { ui.namesOfferOpen = false; render(); } }, t('back'))),
       h('div', { class: 'row gap6' },
         h('input', {
           type: 'text', class: 'grow', maxlength: '120',
@@ -401,6 +392,123 @@ export function namesFeature(ctx) {
           ui.namesOfferQr === o.offerId
             ? h('div', { style: 'align-self:center', html: qrSvg(o.bolt12.toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }) })
             : null)));
+  }
+
+  // ---- one-time BOLT 11 invoice (minted by the ASP against this wallet) ---
+
+  async function createInvoice() {
+    const inv = ui.namesInv || (ui.namesInv = {});
+    const sat = Math.floor(Number(inv.amount));
+    if (!sat || sat < 1) { inv.error = t('namesInvBadAmount'); render(); return; }
+    inv.busy = true; inv.error = null; render();
+    try {
+      const a = await hook('arkMakeInvoice', sat, (inv.memo || '').trim().slice(0, 100));
+      inv.invoice = a.invoice;
+    } catch (e) { inv.error = e.message; }
+    inv.busy = false; render();
+  }
+
+  function invoicePane() {
+    const inv = ui.namesInv || (ui.namesInv = {});
+    if (inv.invoice)
+      return h('div', { class: 'col', style: 'gap:10px;width:100%;align-items:center' },
+        h('div', { html: qrSvg(inv.invoice.toUpperCase(), { ec: 'L', mode: 'Alphanumeric' }) }),
+        h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, inv.invoice),
+        h('div', { class: 'row gap6' },
+          copyBtn(inv.invoice, t('copy')),
+          h('button', { class: 'btn-sm', onClick: () => { ui.namesInv = {}; render(); } }, t('namesInvNew'))));
+    return h('div', { class: 'col', style: 'gap:10px;width:100%' },
+      h('input', {
+        type: 'number', inputmode: 'numeric', min: '1',
+        placeholder: t('namesInvAmountPh'),
+        value: inv.amount || '',
+        onInput: (e) => { inv.amount = e.target.value; },
+      }),
+      h('input', {
+        type: 'text', maxlength: '100',
+        placeholder: t('namesInvMemoPh'),
+        value: inv.memo || '',
+        onInput: (e) => { inv.memo = e.target.value; },
+      }),
+      inv.error ? h('div', { class: 'notice err small' }, inv.error) : null,
+      h('button', { class: 'btn-primary btn-block', disabled: !!inv.busy, onClick: createInvoice },
+        inv.busy ? h('span', { class: 'spinner sm' }) : t('namesInvCreate')));
+  }
+
+  // ---- the raw ark address & the CLINK offer code -------------------------
+
+  function arkPane() {
+    if (!ui.namesArkAddr) {
+      ui.namesArkAddr = 'loading';
+      Promise.resolve(hook('arkStaticAddress'))
+        .then((a) => { ui.namesArkAddr = a ? { address: a } : { error: t('namesNeedArk') }; })
+        .catch((e) => { ui.namesArkAddr = { error: e.message }; })
+        .then(render);
+    }
+    const st = ui.namesArkAddr;
+    if (st === 'loading') return h('span', { class: 'spinner', style: 'align-self:center' });
+    if (st.error) return h('div', { class: 'notice err small', style: 'width:100%' }, st.error);
+    return h('div', { class: 'col', style: 'gap:10px;width:100%;align-items:center' },
+      h('div', { html: qrSvg(st.address) }),
+      h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, st.address),
+      copyBtn(st.address, t('copy')));
+  }
+
+  function clinkPane() {
+    const code = hook('nwcOfferString');
+    if (!code) return h('div', { class: 'notice err small', style: 'width:100%' }, t('namesNeedArk'));
+    return h('div', { class: 'col', style: 'gap:10px;width:100%;align-items:center' },
+      h('div', { html: qrSvg(code) }),
+      h('div', { class: 'addr-box break', style: 'width:100%;font-size:10px' }, code),
+      copyBtn(code, t('copy')),
+      h('p', { class: 'small muted', style: 'margin:0' }, t('namesZapCodeHow')));
+  }
+
+  // ---- more options -------------------------------------------------------
+  // The address covers almost everyone; behind one link live the other codes
+  // a payer might insist on.
+
+  function menuPane() {
+    const opt = (id, label, how, onOpen) => h('div', {
+      class: 'item col clickable', style: 'gap:2px;align-items:flex-start',
+      onClick: () => { ui.namesMore = id; if (onOpen) onOpen(); render(); },
+    },
+      h('strong', { class: 'small' }, label),
+      h('span', { class: 'small muted' }, how));
+    return h('div', { class: 'list', style: 'width:100%' },
+      opt('bolt11', t('namesMoreBolt11'), t('namesMoreBolt11How')),
+      opt('bolt12', t('namesMoreBolt12'), t('namesMoreBolt12How'), loadOffers),
+      opt('ark', t('namesMoreArk'), t('namesMoreArkHow')),
+      opt('clink', t('namesMoreClink'), t('namesMoreClinkHow')));
+  }
+
+  function moreSection() {
+    if (!ui.namesMore) {
+      return h('button', {
+        class: 'linklike small',
+        onClick: () => { ui.namesMore = 'menu'; render(); },
+      }, t('namesMoreOpen'));
+    }
+    const titles = {
+      menu: t('namesMoreTitle'),
+      bolt11: t('namesMoreBolt11'),
+      bolt12: t('namesMoreBolt12'),
+      ark: t('namesMoreArk'),
+      clink: t('namesMoreClink'),
+    };
+    const body = ui.namesMore === 'bolt11' ? invoicePane()
+      : ui.namesMore === 'bolt12' ? offerPane()
+      : ui.namesMore === 'ark' ? arkPane()
+      : ui.namesMore === 'clink' ? clinkPane()
+      : menuPane();
+    return h('div', { class: 'col', style: 'gap:10px;width:100%' },
+      h('div', { class: 'row between', style: 'align-items:baseline' },
+        h('strong', {}, titles[ui.namesMore] || titles.menu),
+        h('button', {
+          class: 'linklike small',
+          onClick: () => { ui.namesMore = ui.namesMore === 'menu' ? null : 'menu'; render(); },
+        }, t('back'))),
+      body);
   }
 
   return {
