@@ -513,7 +513,11 @@ body::after {
 .anim-tab-right { animation: tab-in-right .26s cubic-bezier(.25, .8, .35, 1) both; }
 
 /* ---- onboarding wizard + tour ---- */
-.onb { max-width: 420px; margin: 8vh auto 0; padding: 0 8px; }
+/* width:100%, not just max-width: with auto margins the flex item doesn't
+   stretch, and the punks strip's intrinsic width (12 avatars, ~780px — a
+   scroll container still reports its full content width) would size the
+   column to the 420px cap even on narrower phones, overflowing the page. */
+.onb { width: 100%; max-width: 420px; margin: 8vh auto 0; padding: 0 8px; }
 .onb-title { margin: 0; font-size: 26px; letter-spacing: -0.02em; }
 .onb-hero { margin-bottom: 8px; }
 .onb-punks { display: flex; gap: 10px; overflow-x: auto; padding: 6px 2px; }

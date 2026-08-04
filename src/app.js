@@ -338,6 +338,13 @@ function render() {
     fpath = focusPath(a);
     try { selStart = a.selectionStart; selEnd = a.selectionEnd; } catch {}
   }
+  // Same idea for scrollable strips (the punks carousel): a rebuild must not
+  // yank a half-scrolled list back to its start. Anything marked with
+  // data-keep-scroll gets its position carried across the swap.
+  const scrolls = {};
+  for (const el of root.querySelectorAll('[data-keep-scroll]'))
+    if (el.scrollLeft || el.scrollTop)
+      scrolls[el.getAttribute('data-keep-scroll')] = { l: el.scrollLeft, t: el.scrollTop };
   const screen =
     featureHook('screenView')
     || (ui.screen === 'wallet'
@@ -363,6 +370,10 @@ function render() {
     if (el && el !== a && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) {
       try { el.focus({ preventScroll: true }); if (selStart != null && el.setSelectionRange) el.setSelectionRange(selStart, selEnd); } catch {}
     }
+  }
+  for (const el of root.querySelectorAll('[data-keep-scroll]')) {
+    const s = scrolls[el.getAttribute('data-keep-scroll')];
+    if (s) { el.scrollLeft = s.l; el.scrollTop = s.t; }
   }
   // Fast-poll the receive address only while the user is actually watching for a
   // payment (wallet screen, Receive tab, online). Idempotent — safe each render.
@@ -2245,7 +2256,7 @@ function onboardScreen() {
     return page([
       title(t('onbAvatarTitle')),
       h('p', { class: 'muted', style: 'margin:0' }, t('onbAvatarBody')),
-      h('div', { class: 'onb-punks' },
+      h('div', { class: 'onb-punks', 'data-keep-scroll': 'punks' },
         ...PUNK_PICKS.map((n) =>
           h('img', {
             class: 'onb-punk' + (sel === punkImg(n) ? ' sel' : ''),
