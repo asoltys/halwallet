@@ -1270,6 +1270,11 @@ export class ArkManager {
     const tip = await this.chain.tipHeight();
     const totalSat = inputs.reduce((n, v) => n + v.amountSat, 0);
     const feeSat = this.refreshFee(inputs, tip);
+    // The server refuses round outputs under P2TR dust (330), so a wallet
+    // this small can't renew — fail before the action marks coins pending.
+    if (totalSat - feeSat < 330) {
+      throw new Error(`balance too small to refresh: ${totalSat} sat minus ${feeSat} sat fee is under the 330 sat minimum`);
+    }
     const action = {
       id: `refresh-${Date.now()}`, type: 'refresh', step: 'created',
       inputIds: inputs.map((v) => v.id),

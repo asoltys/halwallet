@@ -402,11 +402,16 @@ export function giftsFeature(ctx) {
 
   // An ark gift: send the amount to a fresh bearer identity, off-chain and
   // instant — no coin locking, no split logic, no claim fee.
+  // Gifts go down to 1 sat: the ASP cosigns all-dust arkoor sends, so a
+  // sub-dust bearer vtxo sweeps to the claimer fine (regtest-proven —
+  // tools/ark/dust-gift-test.js). The trade a sub-330 coin carries — no
+  // unilateral exit on its own, renewable in rounds only alongside bigger
+  // siblings — is the same one dust zaps already make.
   async function doCreateArkGift() {
     const info = hook('arkGiftInfo');
     const avail = info ? info.spendableSat : 0;
     const amt = ui.giftMax ? avail : parseAmount(ui.giftAmount, getUnit());
-    if (!amt || amt < 330) { ui.giftError = t('giftAmountInvalid', { n: fmtAmount(330) + ' ' + unitLabel() }); render(); return; }
+    if (!amt || amt < 1) { ui.giftError = t('giftAmountInvalid', { n: fmtAmount(1) + ' ' + unitLabel() }); render(); return; }
     if (amt > avail) { ui.giftError = t('giftExceedsBalance'); render(); return; }
     ui.busy = true; ui.giftError = ''; render();
     try {

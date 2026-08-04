@@ -29,6 +29,9 @@ export function pbWriter() {
   const chunks = [];
   const varint = (n) => {
     n = BigInt(n);
+    // a negative sign-extends under >>= forever — the do/while would push
+    // bytes until the process dies of memory, so refuse it loudly instead
+    if (n < 0n) throw new Error(`varint: negative value ${n}`);
     const bs = [];
     do { let b = Number(n & 0x7fn); n >>= 7n; if (n) b |= 0x80; bs.push(b); } while (n);
     chunks.push(Uint8Array.from(bs));
