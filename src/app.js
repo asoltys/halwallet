@@ -1079,7 +1079,12 @@ function writeVault() {
 // duplicated; one with no directory entry is added fresh.
 function mergeVaultList(list) {
   for (const v of list) {
-    const xpub = v.xprv ? accountXpubFor({ xprv: v.xprv }) : accountXpubFor({ mnemonic: v.mnemonic, passphrase: v.passphrase || '' });
+    // Derive on the wallet's OWN network: accountXpubFor defaults to mainnet,
+    // and a testnet wallet derives under a different coin type, so leaving it
+    // to the default produced an xpub that could never match the stored one —
+    // every unlock re-added the same wallet as a new entry.
+    const net = v.network || getNetwork();
+    const xpub = v.xprv ? accountXpubFor({ xprv: v.xprv }, net) : accountXpubFor({ mnemonic: v.mnemonic, passphrase: v.passphrase || '' }, net);
     const existing = accounts.find((a) => a.xpub === xpub);
     if (existing) {
       existing.type = 'full';
@@ -1142,12 +1147,12 @@ async function doLoadSeed() {
   let next = null;
   try {
     if (isValidMnemonic(raw)) {
-      if (accountXpubFor({ mnemonic: raw, passphrase: ls.passphrase || '' }) !== acc.xpub) { ls.error = t('seedMismatch'); render(); return; }
+      if (accountXpubFor({ mnemonic: raw, passphrase: ls.passphrase || '' }, acc.network || getNetwork()) !== acc.xpub) { ls.error = t('seedMismatch'); render(); return; }
       next = { mnemonic: raw, passphrase: ls.passphrase || '' };
     } else {
       const pk = parseExtendedKey(raw); // throws if not an extended key
       if (pk.kind !== 'xprv') { ls.error = t('seedNeedsPrivate'); render(); return; }
-      if (accountXpubFor({ xprv: pk.key }) !== acc.xpub) { ls.error = t('seedMismatch'); render(); return; }
+      if (accountXpubFor({ xprv: pk.key }, acc.network || getNetwork()) !== acc.xpub) { ls.error = t('seedMismatch'); render(); return; }
       next = { xprv: pk.key };
     }
   } catch { ls.error = t('seedInvalid'); render(); return; }
@@ -1385,7 +1390,14 @@ function lock() {
   vaultPassword = null;
   wallet.load({ mnemonic: '', passphrase: '', netName: getNetwork(), offline: false });
   wallet.mnemonic = '';
-  ui.screen = hasVault() ? 'vault' : 'unlock';
+  // Wallets save themselves to this device without asking, under an empty
+  // password unless one is set. Demanding a password on the way out is then
+  // theatre — it protects nothing and asks for something nobody chose. With no
+  // password, logging out means dropping back to the wallet list; with one, it
+  // means what it says.
+  ui.screen = !hasVault() ? 'unlock'
+    : attemptVaultUnlock('') ? 'accounts'
+    : 'vault';
   ui.unlockTab = 'create';
   ui.fromWallet = false;
   ui.watchXpub = '';
