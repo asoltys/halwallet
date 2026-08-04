@@ -1055,6 +1055,11 @@ function restoreAccountsState() {
 
 // --- encrypted vault (optional password-persisted full accounts) ----------
 const VAULT_KEY = 'btc-wallet-vault';
+// Whether we've offered a password on locking. Asked once, ever: someone who
+// says no has chosen, and a wallet that nags is a wallet people stop reading.
+const LOCK_PW_KEY = 'btc-wallet-lockpw';
+const lockPwAsked = () => { try { return !!localStorage.getItem(LOCK_PW_KEY); } catch { return true; } };
+const markLockPwAsked = () => { try { localStorage.setItem(LOCK_PW_KEY, '1'); } catch {} };
 let vaultPassword = null; // in memory once unlocked/set this session; cleared on lock
 
 function loadVaultBlob() {
@@ -1178,7 +1183,12 @@ function startForget(id) {
   ui.pw = { purpose: 'forget', accId: id, mode: 'enter', v1: '', v2: '', error: '' };
   render();
 }
-function cancelPw() { ui.pw = null; render(); }
+function cancelPw() {
+  // Declining the lock-time offer is an answer, not a postponement.
+  if (ui.pw && ui.pw.purpose === 'lock') markLockPwAsked();
+  ui.pw = null;
+  render();
+}
 function startChangePw() {
   ui.pw = { purpose: 'change', mode: 'change', v0: '', v1: '', v2: '', error: '' };
   render();
@@ -1196,6 +1206,17 @@ function submitPw() {
     ui.pw = null;
     render();
     toast(t('pwChanged'));
+    return;
+  }
+  if (p.purpose === 'lock') {
+    if (!p.v1) { p.error = t('pwNeededToLock'); render(); return; }
+    if (p.v1 !== p.v2) { p.error = t('pwMismatch'); render(); return; }
+    vaultPassword = p.v1;
+    writeVault();
+    persistAccounts();
+    markLockPwAsked();
+    ui.pw = null;
+    lock(); // now there IS a password, so this lands on the unlock screen
     return;
   }
   if (p.mode === 'set') {
@@ -1384,7 +1405,7 @@ function applyBootAutoLogout() {
   } catch {}
 }
 
-function lock() {
+function lock({ offerPassword = false } = {}) {
   wallet.stopRealtime();
   clearAccounts();
   vaultPassword = null;
@@ -1395,9 +1416,8 @@ function lock() {
   // theatre — it protects nothing and asks for something nobody chose. With no
   // password, logging out means dropping back to the wallet list; with one, it
   // means what it says.
-  ui.screen = !hasVault() ? 'unlock'
-    : attemptVaultUnlock('') ? 'accounts'
-    : 'vault';
+  const noPassword = hasVault() && attemptVaultUnlock('');
+  ui.screen = !hasVault() ? 'unlock' : noPassword ? 'accounts' : 'vault';
   ui.unlockTab = 'create';
   ui.fromWallet = false;
   ui.watchXpub = '';
@@ -1427,6 +1447,12 @@ function lock() {
   ui.txDetail = null;
   ui.broadcastTx = null;
   ui.bump = null;
+  // After the resets above (which clear ui.pw): locking with no password locks
+  // nothing, so offer one — once, and only when a person chose to lock, never
+  // when the idle timer did it for them.
+  if (noPassword && offerPassword && !lockPwAsked()) {
+    ui.pw = { purpose: 'lock', mode: 'set', v0: '', v1: '', v2: '', error: '' };
+  }
   render();
 }
 
@@ -1456,7 +1482,7 @@ function avatarMenu() {
             me ? item(t('profEdit'), () => featureHook('showProfile', me)) : null,
             item(t('tabSettings'), () => { ui.chatOpen = false; ui.profilePk = null; ui.screen = 'wallet'; ui.tab = 'settings'; ui.settingsPage = null; }),
             me ? item(t('msgDmsTitle'), () => { ui.profilePk = null; ui.chatOpen = true; }) : null,
-            item(t('lockWallet'), () => lock())); applyAnim(m, 'anim-menu', dt); return m; })())
+            item(t('lockWallet'), () => lock({ offerPassword: true }))); applyAnim(m, 'anim-menu', dt); return m; })())
       : null; })());
 }
 
@@ -2033,16 +2059,18 @@ function clearAll() {
 function pwPromptCard() {
   const p = ui.pw;
   const change = p.purpose === 'change';
+  const atLock = p.purpose === 'lock';
   const newish = change || p.mode === 'set'; // entering a (new) password with confirm
   return h('div', { class: 'card col' },
-    h('h3', {}, change ? t('changePassword') : p.mode === 'set' ? t('setPassword') : t('enterPassword')),
-    h('p', { class: 'small muted', style: 'margin:0' }, change ? t('changePasswordDesc') : p.mode === 'set' ? t('setPasswordDesc') : t('enterPasswordDesc')),
+    h('h3', {}, atLock ? t('lockPwTitle') : change ? t('changePassword') : p.mode === 'set' ? t('setPassword') : t('enterPassword')),
+    h('p', { class: 'small muted', style: 'margin:0' },
+      atLock ? t('lockPwDesc') : change ? t('changePasswordDesc') : p.mode === 'set' ? t('setPasswordDesc') : t('enterPasswordDesc')),
     change ? h('input', { type: 'password', placeholder: t('currentPassword'), value: p.v0, onInput: (e) => (p.v0 = e.target.value) }) : null,
     h('input', { type: 'password', placeholder: newish ? t('passwordOptional') : t('password'), value: p.v1, onInput: (e) => (p.v1 = e.target.value) }),
     newish ? h('input', { type: 'password', placeholder: t('confirmPassword'), value: p.v2, onInput: (e) => (p.v2 = e.target.value) }) : null,
     p.error && h('div', { class: 'notice err' }, p.error),
     h('div', { class: 'row gap6' },
-      h('button', { class: 'btn-ghost grow', onClick: cancelPw }, t('back')),
+      h('button', { class: 'btn-ghost grow', onClick: cancelPw }, atLock ? t('lockPwSkip') : t('back')),
       h('button', { class: 'btn-primary grow', onClick: submitPw }, newish ? t('save') : t('unlock'))
     )
   );
