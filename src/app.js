@@ -2191,7 +2191,11 @@ function onboardScreen() {
     if (addr && addr !== o.enterAddr && !/^npub1/.test(addr)) o.step = 'avatar';
   }
   try { localStorage.setItem(ONB_STEP_KEY, o.step); } catch {}
-  const page = (kids) => h('div', { class: 'col onb', style: 'gap:20px' }, ...kids);
+  // Every step shows the logo (welcome renders it big as the hero instead) —
+  // with a wallet already minted it doubles as the way out, via goHome.
+  const page = (kids) => h('div', { class: 'col onb', style: 'gap:20px' },
+    o.step !== 'welcome' ? brandHeader(false) : null,
+    ...kids);
   const title = (txt) => h('h2', { class: 'onb-title' }, txt);
 
   if (o.step === 'legacy') {
