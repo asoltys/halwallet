@@ -2124,18 +2124,17 @@ function vaultScreen() {
 // ================================================================ onboarding
 // First visit on a fresh device: a full-screen wizard — welcome, nostr
 // yes/no (sign in or silently mint a wallet), username, avatar, confetti —
-// then a three-stop coach-mark tour of the home screen. One time only.
-const ONBOARDED_KEY = 'btc-wallet-onboarded';
+// then a three-stop coach-mark tour of the home screen. Shown whenever the
+// device has no wallet — deleting every wallet brings it back.
 // The wizard mints the wallet on its first step, so "an account exists" stops
 // meaning "wizard done". The current step is persisted so a refresh (or the
 // legacy-migration round trip) resumes exactly where it left off instead of
 // dropping into the half-set-up wallet.
 const ONB_STEP_KEY = 'btc-wallet-onb-step';
 function onbInProgress() {
-  try { return !localStorage.getItem(ONBOARDED_KEY) && !!localStorage.getItem(ONB_STEP_KEY); } catch { return false; }
+  try { return !!localStorage.getItem(ONB_STEP_KEY); } catch { return false; }
 }
 function shouldOnboard() {
-  try { if (localStorage.getItem(ONBOARDED_KEY)) return false; } catch {}
   return !ui.onbSkip && accounts.length === 0 && !hasVault();
 }
 
@@ -2165,6 +2164,8 @@ function onboardScreen() {
   if (!ui.onb) {
     let saved = null;
     try { saved = localStorage.getItem(ONB_STEP_KEY); } catch {}
+    // a saved step past wallet creation only makes sense if the wallet is here
+    if (saved && saved !== 'welcome' && saved !== 'signin' && !activeAccount()) saved = 'welcome';
     ui.onb = { step: saved || 'welcome' };
     if (saved === 'signin') ui.nostrLoginOpen = true; // reopen the login card
   }
@@ -2311,7 +2312,7 @@ function onboardScreen() {
     h('div', { class: 'check-badge onb-check' }, '✓'),
     h('p', { class: 'muted', style: 'margin:0;text-align:center' }, t('onbDoneBody')),
     h('button', { class: 'btn-primary btn-block', style: 'padding:14px', onClick: () => {
-      try { localStorage.setItem(ONBOARDED_KEY, '1'); localStorage.removeItem(ONB_STEP_KEY); } catch {}
+      try { localStorage.removeItem(ONB_STEP_KEY); } catch {}
       ui.onb = null;
       ui.tour = 0;
       ui.tab = 'receive';
@@ -2947,7 +2948,17 @@ function destReady(a) {
 // Recipient search under the destination input: usernames and npubs resolve
 // to candidates with avatars; picking one runs the same path as pasting.
 const sendSearch = { rows: null };
-const sendSearcher = makeSearcher((q, rows) => { sendSearch.rows = rows; render(); });
+// With the phone keyboard up, the space under the recipient field is scarce —
+// park the field at the top of the view so the candidate list gets what's
+// left. Runs on focus and again whenever fresh candidates land (the list
+// growing is what pushes things under the keyboard). The .send-suggest
+// bottom margin (style.css) guarantees there's page below to scroll into.
+function parkSendField() {
+  if (!matchMedia('(pointer: coarse)').matches) return;
+  const el = document.activeElement;
+  if (el && el.isConnected && el.tagName === 'INPUT') el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+const sendSearcher = makeSearcher((q, rows) => { sendSearch.rows = rows; render(); if (rows.length) setTimeout(parkSendField, 50); });
 
 // One recipient: address + amount. Max is only offered for a single recipient.
 function recipientRow(s, r, i) {
@@ -2974,6 +2985,9 @@ function recipientRow(s, r, i) {
   const addrInput = h('input', {
     type: 'text', class: 'mono-input grow', placeholder: i === 0 ? t('destPlaceholder') : 'bc1q…',
     autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: r.address,
+    // the delay lets the keyboard start opening (and any render() swap of
+    // this input) before parkSendField measures the live activeElement
+    onFocus: () => setTimeout(parkSendField, 300),
     onInput: (e) => {
       const v = e.target.value;
       r.address = v; syncCheck();

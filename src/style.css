@@ -102,6 +102,13 @@ a { color: var(--accent-ink); text-decoration: none; }
 a:hover { text-decoration: underline; }
 summary { cursor: pointer; }
 
+/* breathing room when an input is scrolled to the top for the keyboard */
+input { scroll-margin-top: 12px; }
+/* room below the recipient candidates so the field can scroll to the top
+   even when the page would otherwise be too short (the margin sits under
+   the keyboard, never seen) */
+@media (pointer: coarse) { .send-suggest { margin-bottom: 45vh; } }
+
 /* ---- layout helpers ---- */
 .row { display: flex; align-items: center; gap: 10px; }
 .between { justify-content: space-between; }
