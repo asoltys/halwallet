@@ -94,6 +94,26 @@ export function installGiftWallet(wallet) {
 
     _saveGiftRecords() { try { localStorage.setItem(this._giftRecordsKey(), JSON.stringify(this.giftRecords())); } catch {} },
 
+    // We fund a gift from our own coins, so the funding tx is always in our own
+    // history. A record whose tx isn't means it was never issued here — an
+    // earlier build let a wallet keep the previous wallet's records in memory
+    // and then write them back under its own key. Forget those rather than
+    // show someone another wallet's gifts.
+    _pruneForeignGifts() {
+      const recs = this.giftRecords();
+      const ids = Object.keys(recs);
+      if (!ids.length) return;
+      const ours = new Set(this.txs.map((t) => t.txid));
+      let changed = false;
+      for (const id of ids) {
+        const outs = recs[id].outpoints || [];
+        if (outs.some((o) => ours.has(String(o).split(':')[0]))) continue;
+        delete recs[id];
+        changed = true;
+      }
+      if (changed) this._saveGiftRecords();
+    },
+
     // Remember which tx claimed a gift (resolved lazily via outspend) so the
     // history can merge the gift row with its claim transaction.
     setGiftClaimTx(id, txid) {
@@ -125,6 +145,7 @@ export function installGiftWallet(wallet) {
     // once scanned, so an un-synced wallet doesn't mislabel everything as claimed.)
     claimedGifts() {
       if (!this.loaded) return [];
+      this._pruneForeignGifts();
       const live = new Set(this.utxos.map((u) => utxoId(u)));
       return Object.values(this.giftRecords())
         .filter((r) => !r.revoked && r.outpoints && !r.outpoints.some((o) => live.has(o)))

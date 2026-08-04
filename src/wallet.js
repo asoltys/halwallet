@@ -192,6 +192,7 @@ export class Wallet {
     this._addrCache.clear();
     this._reserved = null; // gift coins set aside from spending (lazy-loaded)
     this._reclaimed = null; // gift coins freed for spending but link still live
+    this._giftRecords = null; // gift links this wallet issued (lazy-loaded)
     this._savedAt = 0;
     try {
       for (const fn of this._loadHooks) { try { fn({ spFresh, netName, offline }); } catch {} }
