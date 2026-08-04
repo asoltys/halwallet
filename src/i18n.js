@@ -544,6 +544,7 @@ const STR = {
     onbAvatarBody: 'Pick a punk or upload your own picture. You can change it anytime.',
     onbUpload: 'Upload a photo',
     onbUploadFailed: 'Upload failed — try a punk for now',
+    onbProfileSkipped: 'Couldn’t publish your profile — set it later from Edit profile',
     onbContinue: 'Continue',
     onbSkipAvatar: 'Continue with my default',
     onbDoneTitle: "You're all set!",

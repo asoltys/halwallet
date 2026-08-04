@@ -1808,7 +1808,10 @@ function goHome() {
   // so the logo is always a way back to your wallet.
   if (activeAccount()) {
     ui.screen = 'wallet';
-    // Home means home: clear every takeover a feature or subpage may hold —
+    // Home means home: with a wallet already minted, even the wizard yields —
+    // its remaining steps are niceties, not something to be trapped in.
+    if (ui.onb || onbInProgress()) { ui.onb = null; try { localStorage.removeItem(ONB_STEP_KEY); } catch {} }
+    // Clear every takeover a feature or subpage may hold —
     // chat, profile, ark exit, settings subpages, the address rescan list.
     ui.chatOpen = false;
     ui.profilePk = null;
@@ -2306,7 +2309,12 @@ function onboardScreen() {
           // their face on every nostr client, not just here
           const picture = o.avatar || (me ? 'https://v3.coinos.io/' + punkUrl(me) : undefined);
           const fields = { name: addr ? addr.split('@')[0] : undefined, picture };
-          if (fields.name || fields.picture) await featureHook('publishProfile', fields);
+          // Publishing the profile is a nicety — a signer that can't sign
+          // right now (a sleeping phone bunker) must not trap the wizard.
+          if (fields.name || fields.picture) {
+            try { await featureHook('publishProfile', fields); }
+            catch (e) { toast(t('onbProfileSkipped')); console.warn('onboarding: profile publish failed —', e.message); }
+          }
           o.step = 'success';
         } catch (e) { ui.onbError = e.message; }
         ui.onbBusy = false; render();
