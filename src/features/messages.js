@@ -1344,9 +1344,14 @@ export function messagesFeature(ctx) {
             ? h('div', { class: 'list' }, resultRows(h, dmSearch.rows, (r) => openThread(r.pk)))
             : h('div', { class: 'small muted' }, t('msgNoMatches'))));
     }
+    // A long DM history must not bury the communities below it: past a
+    // handful, the rest waits behind "show all". (No cap for barely-over —
+    // a "show 2 more" button costs more than the rows it hides.)
+    const DM_PREVIEW = 5;
+    const shownDms = (ui.msgAllDms || dmRows.length <= DM_PREVIEW + 2) ? dmRows : dmRows.slice(0, DM_PREVIEW);
     kids.push(
       dmRows.length
-        ? h('div', { class: 'list' }, dmRows.map(({ peer, last }) =>
+        ? h('div', { class: 'list' }, shownDms.map(({ peer, last }) =>
             h('div', {
               class: 'item chat-thread-row',
               onClick: () => { ui.msgView = 'dm'; ui.msgPeer = peer; ui.msgStick = true; render(); },
@@ -1358,6 +1363,12 @@ export function messagesFeature(ctx) {
                 h('span', { class: 'chat-time' }, timeLabel(last.rumor.created_at * 1000))),
               h('div', { class: 'muted small chat-preview' }, (last.mine ? t('msgYouPrefix') + ' ' : '') + last.rumor.content)))))
         : h('div', { class: 'muted small' }, t('msgNoDms')));
+    if (shownDms.length < dmRows.length)
+      kids.push(h('button', { class: 'linklike small', onClick: () => { ui.msgAllDms = true; render(); } },
+        t('msgShowAllDms', { n: dmRows.length })));
+    else if (ui.msgAllDms && dmRows.length > DM_PREVIEW + 2)
+      kids.push(h('button', { class: 'linklike small', onClick: () => { ui.msgAllDms = false; render(); } },
+        t('msgShowFewerDms')));
 
     // ---- communities
     kids.push(h('div', { class: 'row between mt16', style: 'align-items:baseline' },

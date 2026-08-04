@@ -172,6 +172,8 @@ const STR = {
     msgCommunitiesTitle: 'Communities',
     msgNewDm: 'New message',
     msgNoDms: 'No conversations yet.',
+    msgShowAllDms: 'Show all {n} conversations',
+    msgShowFewerDms: 'Show fewer',
     msgNoDmsYet: 'No messages yet — say hi!',
     msgDmPlaceholder: 'Message',
     msgDmEncrypted: 'Private message · end-to-end encrypted',
