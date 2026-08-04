@@ -355,7 +355,6 @@ export function namesFeature(ctx) {
       h('div', { class: 'row between', style: 'align-items:baseline' },
         h('strong', {}, t('namesOfferTitle')),
         h('button', { class: 'linklike small', onClick: () => { ui.namesOfferOpen = false; render(); } }, t('back'))),
-      h('p', { class: 'small muted', style: 'margin:0' }, t('namesOfferDesc')),
       h('div', { class: 'row gap6' },
         h('input', {
           type: 'text', class: 'grow', maxlength: '120',

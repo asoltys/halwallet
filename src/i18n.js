@@ -596,7 +596,6 @@ const STR = {
     namesCopy: 'Copy address',
     namesOfferOpen: 'Need a Lightning offer (BOLT 12)?',
     namesOfferTitle: 'Lightning offer',
-    namesOfferDesc: 'A reusable BOLT 12 offer some payers want instead of an address — mining pools like Ocean pay to one. Payments land in Spending exactly like your address.',
     namesOfferMemoPh: 'Label (e.g. Ocean payout)',
     namesOfferCreate: 'Create',
     namesOfferNoMemo: 'No label',
