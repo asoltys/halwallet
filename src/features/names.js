@@ -23,7 +23,7 @@ const DOMAIN = 'coinos.io';
 const AUTH_KIND = 21353;
 
 export function namesFeature(ctx) {
-  const { h, ui, render, wallet, hook, toast, copyBtn, brandHeader, goBack } = ctx;
+  const { h, ui, render, wallet, hook, toast, copy, copyBtn, brandHeader, goBack } = ctx;
 
   // The wallet's own key signs registrar requests: it's the one key that is
   // always available — offline, in the background, with no signer attached.
@@ -311,13 +311,18 @@ export function namesFeature(ctx) {
       h('div', { html: qrSvg(addr) }),
       h('div', { class: 'addr-box addr-editable', style: 'width:100%;font-size:16px' },
         addr,
-        // the pen is how you change the name — right where the name is
-        h('button', {
-          class: 'addr-edit', title: t('namesCustom'),
-          onClick: () => { ui.nameEditOpen = true; ui.nameClaimError = null; render(); },
-          html: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>',
-        })),
-      copyBtn(addr, t('namesCopy')),
+        // editing and copying live right where the name is
+        h('span', { class: 'addr-actions' },
+          h('button', {
+            title: t('namesCustom'),
+            onClick: () => { ui.nameEditOpen = true; ui.nameClaimError = null; render(); },
+            html: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>',
+          }),
+          h('button', {
+            title: t('namesCopy'),
+            onClick: () => copy(addr),
+            html: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
+          }))),
       offerSection());
   }
 

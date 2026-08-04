@@ -3585,7 +3585,7 @@ async function importSnapshotFile(e) {
 // sits just before boot so every helper it captures is defined; the hooks are
 // only invoked at runtime (first render happens after loadLocale below).
 const ctx = {
-  h, ui, render, wallet, toast, copyBtn, pasteBtn, blankSend, goBack, goHome, openExternal,
+  h, ui, render, wallet, toast, copy, copyBtn, pasteBtn, blankSend, goBack, goHome, openExternal,
   fmtAmount, unitLabel, unitTag, parseAmount, getUnit: () => unit, toggleUnit, download,
   brandHeader, activeAccount, setAccounts: (list) => { accounts = list; },
   getAccounts: () => accounts,
