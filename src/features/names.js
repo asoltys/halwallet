@@ -237,7 +237,11 @@ export function namesFeature(ctx) {
         if (!name) return;
         ui.busy = true; ui.nameClaimError = null; render();
         try {
-          await claim(name);
+          // Sign with the login identity when one can be (re)attached: the
+          // registrar lets a migrated coinos user's own identity take their
+          // name back, which the wallet key alone could never prove.
+          const signer = await Promise.resolve(hook('nostrLoginResume')).catch(() => null);
+          await claim(name, signer ? { signer, manager: wallet.nostrPubkey() } : {});
           ui.nameClaim = '';
           toast(t('namesClaimed', { name: `${name}@${DOMAIN}` }));
         } catch (e) { ui.nameClaimError = e.message; }
