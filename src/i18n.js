@@ -459,6 +459,8 @@ const STR = {
     giftSourceChain: 'On-chain',
     giftSourceArk: 'Spending',
     giftArkNote: 'Sent from Spending — the link claims instantly, with no fee.',
+    arkRenewWarn: 'Your Spending balance ({amount}) is too small to renew itself and will expire around {date}. Receiving any amount — or spending it — keeps it alive.',
+    arkRenewWarnPush: 'Your Spending balance is too small to renew itself and expires around {date}. Receive any amount or spend it to keep it alive.',
     giftArkOutstanding: '{n} unclaimed instant gift(s)',
     giftArkRevoked: 'Gift swept back into Spending.',
     claimArkFree: 'instant, no fee',

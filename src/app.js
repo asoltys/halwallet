@@ -2447,6 +2447,7 @@ function walletScreen() {
     brandHeader(true),
     h('div', { class: 'mt16' }, balanceCard()),
     ui.offlineFallback && wallet.offline ? offlineBanner() : null,
+    ...featureAll('walletNotices'),
     tabsBar(),
     pane,
     ui.tour != null ? tourOverlay() : null

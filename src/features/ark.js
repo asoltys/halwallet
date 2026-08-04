@@ -1573,11 +1573,15 @@ export function arkFeature(ctx) {
   // vtxo is inside the renewal window or fragmentation builds up. The round
   // fee this spends is the cost of keeping the money spendable at all.
   let arkAutoRefreshAt = 0;
+  // Set when the balance is too small to renew itself (total minus round fee
+  // under the server's 330-sat output minimum) AND a vtxo is inside the
+  // renewal window: { deadlineMs, sat }. The wallet-screen notice reads this.
+  let arkRenewWarn = null;
   async function maybeAutoRefresh(mgr) {
     if (wallet.watchOnly || !mgr || !mgr.state) return;
     if (Date.now() - arkAutoRefreshAt < 30 * 60_000) return;
     const spendables = (mgr.state.vtxos || []).filter((v) => v.state === 'spendable');
-    if (!spendables.length) return;
+    if (!spendables.length) { arkRenewWarn = null; return; }
     // never start a round while any other action is still in flight
     if ((mgr.state.actions || []).some((a) => !['done', 'failed'].includes(a.step))) return;
     arkAutoRefreshAt = Date.now();
@@ -1586,9 +1590,40 @@ export function arkFeature(ctx) {
       const RENEW_BLOCKS = getNetwork() === 'regtest' ? 24 : 1008; // ~1 week of margin on mainnet
       const expiring = spendables.some((v) => v.expiryHeight && v.expiryHeight - tip < RENEW_BLOCKS);
       const fragmented = spendables.length >= 6;
+      const totalSat = spendables.reduce((n, v) => n + v.amountSat, 0);
+      const renewable = totalSat - mgr.refreshFee(spendables, tip) >= 330;
+      if (expiring && !renewable) {
+        // Can't save these coins ourselves — tell the user while receiving
+        // any amount (or spending) can still beat the clock.
+        const minExpiry = Math.min(...spendables.map((v) => v.expiryHeight || Infinity));
+        const blockMs = getNetwork() === 'regtest' ? 10_000 : 600_000;
+        arkRenewWarn = { deadlineMs: Date.now() + Math.max(0, minExpiry - tip) * blockMs, sat: totalSat };
+        notifyRenewWarn();
+        render();
+        return;
+      }
+      arkRenewWarn = null;
       if (!expiring && !fragmented) return;
       await mgr.refresh();
+      render();
     } catch {} // transient — the next throttled attempt retries
+  }
+
+  // A local heads-up (at most one a day) for users who granted notifications —
+  // the in-app notice alone can't reach someone who isn't looking.
+  function notifyRenewWarn() {
+    try {
+      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+      const KEY = 'arkRenewNotifiedAt';
+      if (Date.now() - (Number(localStorage.getItem(KEY)) || 0) < 24 * 3600_000) return;
+      localStorage.setItem(KEY, String(Date.now()));
+      const body = t('arkRenewWarnPush', {
+        date: new Date(arkRenewWarn.deadlineMs).toLocaleDateString(),
+      });
+      navigator.serviceWorker?.ready
+        .then((reg) => reg.showNotification('coinos', { body }))
+        .catch(() => { try { new Notification('coinos', { body }); } catch {} });
+    } catch {}
   }
 
   // Moving money between the two balances, in plain terms. This is the only
@@ -1966,6 +2001,14 @@ export function arkFeature(ctx) {
       // Money mid-move: it has left Saving but hasn't landed in Spending, so
       // say where it went rather than letting it vanish for a confirmation.
       return b.boardingSat > 0 ? [{ label: t('movingLabel'), sat: b.boardingSat }] : [];
+    },
+    walletNotices() {
+      if (!arkRenewWarn || wallet.watchOnly) return [];
+      return [h('div', { class: 'notice err', style: 'margin:12px 0 0' },
+        t('arkRenewWarn', {
+          amount: fmtAmount(arkRenewWarn.sat) + ' ' + unitLabel(),
+          date: new Date(arkRenewWarn.deadlineMs).toLocaleDateString(),
+        }))];
     },
     decorateTxRow(tx) {
       const s = arkStateNow();

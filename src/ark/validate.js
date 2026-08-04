@@ -36,8 +36,14 @@ export async function validateVtxo(vtxo, { serverPubkey, chain, expectPubkeys, a
   if (!vtxo.genesis.length) fail('vtxo has no genesis transitions');
 
   // -- expiry --
+  // Sub-dust vtxos outlive their expiryHeight: they have no unilateral exit
+  // to protect (below dust there is no on-chain output they could become),
+  // and the coinos ASP keeps honoring them off-chain after sweeping their
+  // round — an explicit IOU where the trustless path never existed anyway.
   const tip = await chain.tipHeight();
-  if (vtxo.expiryHeight <= tip) fail(`vtxo expired at ${vtxo.expiryHeight}, tip ${tip}`);
+  if (vtxo.expiryHeight <= tip && vtxo.amountSat >= 330) {
+    fail(`vtxo expired at ${vtxo.expiryHeight}, tip ${tip}`);
+  }
 
   // -- anchor: onchain, confirmed, and its output matches what the first
   //    transition claims to spend --
