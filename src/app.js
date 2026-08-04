@@ -2126,6 +2126,14 @@ function vaultScreen() {
 // yes/no (sign in or silently mint a wallet), username, avatar, confetti —
 // then a three-stop coach-mark tour of the home screen. One time only.
 const ONBOARDED_KEY = 'btc-wallet-onboarded';
+// The wizard mints the wallet on its first step, so "an account exists" stops
+// meaning "wizard done". The current step is persisted so a refresh (or the
+// legacy-migration round trip) resumes exactly where it left off instead of
+// dropping into the half-set-up wallet.
+const ONB_STEP_KEY = 'btc-wallet-onb-step';
+function onbInProgress() {
+  try { return !localStorage.getItem(ONBOARDED_KEY) && !!localStorage.getItem(ONB_STEP_KEY); } catch { return false; }
+}
 function shouldOnboard() {
   try { if (localStorage.getItem(ONBOARDED_KEY)) return false; } catch {}
   return !ui.onbSkip && accounts.length === 0 && !hasVault();
@@ -2154,7 +2162,12 @@ async function onbUpload(file) {
 }
 
 function onboardScreen() {
-  ui.onb ||= { step: 'welcome' };
+  if (!ui.onb) {
+    let saved = null;
+    try { saved = localStorage.getItem(ONB_STEP_KEY); } catch {}
+    ui.onb = { step: saved || 'welcome' };
+    if (saved === 'signin') ui.nostrLoginOpen = true; // reopen the login card
+  }
   const o = ui.onb;
   // steps that were waiting on something advance the moment it exists
   if ((o.step === 'welcome' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()) {
@@ -2169,6 +2182,7 @@ function onboardScreen() {
     // appear. A restored login whose custom name recovers skips ahead too.
     if (addr && addr !== o.enterAddr && !/^npub1/.test(addr)) o.step = 'avatar';
   }
+  try { localStorage.setItem(ONB_STEP_KEY, o.step); } catch {}
   const page = (kids) => h('div', { class: 'col onb', style: 'gap:20px' }, ...kids);
   const title = (txt) => h('h2', { class: 'onb-title' }, txt);
 
@@ -2225,7 +2239,7 @@ function onboardScreen() {
         h('span', { style: 'display:flex;flex-shrink:0', html: NOSTR_MARK }),
         t('nlSignIn'))),
       ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
-      h('button', { class: 'linklike small', onClick: () => { ui.onbSkip = true; ui.onb = null; render(); } }, t('onbHaveWallet')),
+      h('button', { class: 'linklike small', onClick: () => { ui.onbSkip = true; ui.onb = null; try { localStorage.removeItem(ONB_STEP_KEY); } catch {} render(); } }, t('onbHaveWallet')),
     ]);
   }
   if (o.step === 'signin') {
@@ -2297,7 +2311,7 @@ function onboardScreen() {
     h('div', { class: 'check-badge onb-check' }, '✓'),
     h('p', { class: 'muted', style: 'margin:0;text-align:center' }, t('onbDoneBody')),
     h('button', { class: 'btn-primary btn-block', style: 'padding:14px', onClick: () => {
-      try { localStorage.setItem(ONBOARDED_KEY, '1'); } catch {}
+      try { localStorage.setItem(ONBOARDED_KEY, '1'); localStorage.removeItem(ONB_STEP_KEY); } catch {}
       ui.onb = null;
       ui.tour = 0;
       ui.tab = 'receive';
@@ -2365,7 +2379,7 @@ function tourOverlay() {
 }
 
 function walletScreen() {
-  if (ui.onb) return onboardScreen();
+  if (ui.onb || onbInProgress()) return onboardScreen();
   // A feature can hold the wallet behind a required onboarding step (picking
   // a username). Imported wallets skip it once their name is recovered.
   const ob = featureHook('onboardingView');

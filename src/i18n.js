@@ -548,7 +548,7 @@ const STR = {
     onbDoneBody: 'Your wallet is ready, your address is live, and the coinos community chat is waiting for you.',
     onbEnter: 'Enter coinos',
     tourAvatar: 'Your avatar lives here — profile, messages, settings, and logout are all behind it.',
-    tourBalance: 'Two balances: Spending is instant and free, Savings is on-chain. Tap to switch — everything follows.',
+    tourBalance: 'Two balances: Spending is instant and free, Savings is on-chain. Tap to switch.',
     tourTabs: 'Receive, send, and your history. Tip: swipe left and right to move between them.',
     tourNext: 'Next',
     tourReplayTitle: 'Tour',
