@@ -315,7 +315,7 @@ export function namesFeature(ctx) {
         h('button', {
           class: 'addr-edit', title: t('namesCustom'),
           onClick: () => { ui.nameEditOpen = !ui.nameEditOpen; ui.nameClaimError = null; render(); },
-          html: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/></svg>',
+          html: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>',
         })),
       ui.nameEditOpen ? h('div', { class: 'col', style: 'gap:8px;width:100%' },
         h('p', { class: 'small muted', style: 'margin:0' }, t('namesCustomHow')),
