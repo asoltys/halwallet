@@ -61,6 +61,8 @@ export function messagesFeature(ctx) {
     s.dms ||= {}; // { [peerPk]: [{ id, from, text, t }] }
     s.declined ||= {}; // direct-invite rumor ids dismissed
     s.tombstones ||= {}; // { [cid]: removed_at ms } — left communities (CORD-02 §8)
+    s.read ||= {}; // { ['dm:'+pk | 'ch:'+id]: created_at } — last message we've seen
+    s.notify ||= {}; // { [cid]: true } — communities that may buzz your phone (opt-in)
     for (const c of s.communities) c.added_at ||= Date.now();
     // pre-multi-community shape: joined was { [pubkey]: true } for coinos
     for (const k of Object.keys(s.joined))
@@ -70,6 +72,43 @@ export function messagesFeature(ctx) {
   const save = (s) => wallet.saveFeatureState('messages', s);
 
   const communities = () => [COMMUNITY, ...st().communities];
+
+  // ---- unread -------------------------------------------------------------
+  // A conversation is unread when its newest message from someone else is
+  // newer than the last one we looked at. The watermark is the rumor's own
+  // created_at, not a local clock, so it means the same thing on every device
+  // the state syncs to. Our own messages never count — sending isn't reading,
+  // but you've obviously seen what you wrote.
+
+  const dmRead = (pk) => 'dm:' + pk;
+  const chRead = (id) => 'ch:' + id;
+
+  const newestFrom = (entries, theirs) => {
+    let ts = 0;
+    for (const m of entries) if (theirs(m)) ts = Math.max(ts, m.rumor.created_at || 0);
+    return ts;
+  };
+
+  function markRead(key, ts) {
+    const s = st();
+    if (!ts || (s.read[key] || 0) >= ts) return;
+    s.read[key] = ts;
+    save(s);
+  }
+
+  // How many conversations are waiting on us — the header only draws a dot, but
+  // a count keeps the door open for a number later.
+  function unreadCount() {
+    const s = st();
+    const my = myPubkeys();
+    let n = 0;
+    for (const [pk, msgs] of threads)
+      if (newestFrom(msgs.values(), (m) => !m.mine) > (s.read[dmRead(pk)] || 0)) n++;
+    for (const room of rooms.values())
+      for (const [id, msgs] of room.byChannel)
+        if (newestFrom(msgs.values(), (m) => !my.includes(m.author)) > (s.read[chRead(id)] || 0)) n++;
+    return n;
+  }
   const communityById = (cid) => communities().find((c) => c.community_id === cid);
 
   // ---- identity -----------------------------------------------------------
@@ -170,6 +209,8 @@ export function messagesFeature(ctx) {
       edits: new Map(),
       deletes: new Set(),
       reactions: new Map(),
+      presence: new Map(), // pubkey -> ms of their last beat (this session only)
+      typing: new Map(), // pubkey -> { ch, t }
       subbed: new Set(),
       relays: jm.relays && jm.relays.length ? jm.relays : DM_RELAYS,
     };
@@ -219,7 +260,7 @@ export function messagesFeature(ctx) {
   function subChannel(room, id) {
     if (room.subbed.has(id)) return;
     room.subbed.add(id);
-    allUnsubs.push(subscribeOn(room.relays, { kinds: [1059], authors: [room.chStream(id).pk], limit: 200 }, (wrap) => {
+    allUnsubs.push(subscribeOn(room.relays, { kinds: [1059, 21059], authors: [room.chStream(id).pk], limit: 200 }, (wrap) => {
       if (seenWraps.has(wrap.id)) return;
       seenWraps.add(wrap.id);
       const opened = openWrap(wrap, room.chStream(id));
@@ -233,9 +274,24 @@ export function messagesFeature(ctx) {
     // CORD-03 §3: the rumor must commit to the channel/epoch that decrypted it
     if (tag('channel')?.[1] !== channelId || tag('epoch')?.[1] !== String(EPOCH)) return;
     if (room.folded && room.folded.banned.has(author)) return;
+    if (rumor.kind === PRESENCE || rumor.kind === TYPING) {
+      // Dated by the beat itself, never by arrival. Relays hand back stored
+      // beats when we subscribe, and treating those as "just now" would light
+      // up the whole member list as online. Clamped to now so a fast clock
+      // can't hold someone online forever.
+      const ts = Math.min(Date.now(), eventMs(rumor) || rumor.created_at * 1000);
+      if (ts > (room.presence.get(author) || 0)) room.presence.set(author, ts);
+      if (rumor.kind === TYPING && Date.now() - ts < TYPING_MS) {
+        room.typing.set(author, { ch: channelId, t: ts });
+        setTimeout(scheduleRepaint, TYPING_MS + 100); // clear itself when it lapses
+      }
+      scheduleRepaint();
+      return;
+    }
     if (rumor.kind === 9) {
       const msgs = room.byChannel.get(channelId) || room.byChannel.set(channelId, new Map()).get(channelId);
       msgs.set(rumor.id, { rumor, author });
+      room.typing.delete(author); // the message itself ends the "typing…"
     } else if (rumor.kind === 5) {
       for (const e of rumor.tags.filter((x) => x[0] === 'e')) {
         const m = room.byChannel.get(channelId)?.get(e[1]);
@@ -519,13 +575,36 @@ export function messagesFeature(ctx) {
     return Uint8Array.from(raw, (c) => c.charCodeAt(0));
   };
 
+  // What the notifier is allowed to wake us for. Communities are opt-in and
+  // off by default: a busy room would otherwise buzz a phone all day for
+  // conversations that aren't addressed to anyone in particular.
   function pushWatch() {
+    const on = st().notify;
     const authors = [];
     for (const jm of communities()) {
+      if (!on[jm.community_id]) continue;
       const root = hexToBytes(jm.community_root);
       for (const c of (jm.channels || []).slice(0, 8)) authors.push(channelKey(root, c.id, EPOCH).pk);
     }
     return { ptags: myPubkeys(), authors };
+  }
+
+  const roomNotify = (cid) => !!st().notify[cid];
+  async function toggleRoomNotify(cid) {
+    const s = st();
+    if (s.notify[cid]) delete s.notify[cid]; else s.notify[cid] = true;
+    save(s);
+    render();
+    // The server keeps the watch list, so the change only lands once we
+    // re-register. Asking for permission is fair here — they just opted in.
+    const ok = await registerPush({ interactive: !!s.notify[cid] });
+    if (!ok && s.notify[cid]) {
+      const s2 = st();
+      delete s2.notify[cid];
+      save(s2);
+      toast(t('msgPushFailed'));
+      render();
+    }
   }
 
   async function registerPush({ interactive = false } = {}) {
@@ -996,6 +1075,100 @@ export function messagesFeature(ctx) {
 
   const backBtn = (onClick) => h('button', { class: 'iconbtn chat-back', onClick }, '‹');
 
+  // ---- presence & typing --------------------------------------------------
+  // Both ride the channel stream as 21059 wraps, so they stay inside the
+  // community's encryption — who's around is members-only, not a public
+  // status broadcast. 21059 sits in NIP-01's ephemeral range, but measured
+  // against the relays we actually use (relay.coinos.io, nos.lol) neither
+  // drops them, so they carry a NIP-40 expiration and relay.coinos.io sweeps
+  // the kind on a timer; nothing here may assume the relay forgets.
+  // Presence only exists while someone is watching a room. A member nobody
+  // saw beat is dated by their last message instead, the way an offline
+  // contact still shows a last-seen.
+
+  const PRESENCE = 20100;
+  const TYPING = 20101;
+  const BEAT_MS = 60_000; // how often we announce ourselves
+  const ONLINE_MS = 100_000; // a beat older than this is no longer "online"
+  const TYPING_MS = 7_000; // how long a typing ping stands
+  const TYPE_THROTTLE = 5_000; // and how rarely we send one
+
+  const lastPing = new Map(); // channelId + kind -> ms
+
+  async function ping(room, chId, kind) {
+    const key = chId + ':' + kind;
+    const gap = kind === PRESENCE ? BEAT_MS : TYPE_THROTTLE;
+    if (Date.now() - (lastPing.get(key) || 0) < gap) return;
+    lastPing.set(key, Date.now());
+    try {
+      const id = await identity();
+      if (!id) return;
+      const { created_at, ms } = msTags(Date.now());
+      const rumor = {
+        kind, pubkey: id.pubkey, content: '',
+        tags: [['channel', chId], ['epoch', String(EPOCH)], ms], created_at,
+      };
+      // NIP-40: a beat is worthless once it's stale, so relays that honour
+      // expiration may drop it instead of keeping it forever.
+      const wrap = await wrapRumor(rumor, id.signer, room.chStream(chId),
+        { ephemeral: true, expiration: created_at + 300 });
+      await publishOn(room.relays, wrap);
+    } catch { lastPing.delete(key); }
+  }
+
+  // Keep beating while a room is on screen — otherwise everyone would look
+  // online for exactly one render and then go dark.
+  let beatTimer = null;
+  function keepBeating() {
+    if (beatTimer) return;
+    beatTimer = setInterval(() => {
+      if (!ui.chatOpen || ui.msgView !== 'room') return;
+      const jm = communityById(ui.msgCommunity) || COMMUNITY;
+      const room = rooms.get(jm.community_id);
+      if (!room) return;
+      const chans = roomChannels(room);
+      const ch = chans.find((c) => c.id === ui.msgChannel) || chans[0];
+      if (ch) ping(room, ch.id, PRESENCE);
+      scheduleRepaint(); // let "online" lapse into "last seen" on its own
+    }, 30_000);
+  }
+
+  // When we last had any sign of someone: a beat, or failing that the newest
+  // thing they said anywhere in the community.
+  function lastSeenMs(room, pk) {
+    let ts = room.presence.get(pk) || 0;
+    for (const msgs of room.byChannel.values())
+      for (const m of msgs.values())
+        if (m.author === pk) ts = Math.max(ts, eventMs(m.rumor) || 0);
+    return ts;
+  }
+
+  const isOnline = (room, pk) => Date.now() - (room.presence.get(pk) || 0) < ONLINE_MS;
+
+  function typingNow(room, chId) {
+    const my = myPubkeys();
+    const out = [];
+    for (const [pk, ts] of room.typing)
+      if (ts.ch === chId && Date.now() - ts.t < TYPING_MS && !my.includes(pk)) out.push(pk);
+    return out;
+  }
+
+  // Telegram's wording, and its kindness: exact minutes while it's fresh,
+  // then a vague "recently" rather than advertising how long someone's been away.
+  function seenLabel(room, pk) {
+    if (isOnline(room, pk)) return t('msgOnline');
+    const ts = lastSeenMs(room, pk);
+    if (!ts) return t('msgSeenRecently');
+    const mins = Math.floor((Date.now() - ts) / 60_000);
+    if (mins < 1) return t('msgSeenJustNow');
+    if (mins < 60) return t('msgSeenMins', { n: mins });
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return t('msgSeenHours', { n: hrs });
+    const days = Math.floor(hrs / 24);
+    if (days <= 7) return t('msgSeenDays', { n: days });
+    return t('msgSeenRecently');
+  }
+
   // Recipient search for New message: debounced, sequenced, cached upstream.
   const dmSearch = { rows: null, busy: false };
   const dmSearcher = makeSearcher((q, rows) => {
@@ -1017,12 +1190,12 @@ export function messagesFeature(ctx) {
     });
   };
 
-  const composer = (placeholder, onSend) =>
+  const composer = (placeholder, onSend, onType) =>
     h('div', { class: 'chat-compose' },
       h('input', {
         class: 'grow', type: 'text', id: 'msg-draft', placeholder,
         value: ui.msgDraft || '', maxlength: '2000',
-        onInput: (e) => { ui.msgDraft = e.target.value; },
+        onInput: (e) => { ui.msgDraft = e.target.value; if (onType && e.target.value) onType(); },
         onKeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); } },
       }),
       h('button', { class: 'btn-primary btn-sm', disabled: ui.msgSending, onClick: onSend },
@@ -1191,6 +1364,7 @@ export function messagesFeature(ctx) {
       .filter((m) => !room.deletes.has(m.rumor.id))
       .filter((m) => !(room.folded && room.folded.banned.has(m.author)))
       .sort((a, b) => eventMs(a.rumor) - eventMs(b.rumor));
+    markRead(chRead(chId), newestFrom(msgs, (m) => !my.includes(m.author)));
     if (!msgs.length)
       return [h('div', { class: 'muted small', style: 'text-align:center;padding:24px 0' }, t('msgEmpty'))];
     let lastAuthor = null, lastT = 0;
@@ -1237,17 +1411,25 @@ export function messagesFeature(ctx) {
     const chans = roomChannels(room);
     const ch = chans.find((c) => c.id === ui.msgChannel) || chans[0];
     const name = room.folded?.metadata?.name || jm.name;
-    const memberCount = [...room.members.values()].filter((m) => m.state === 'join').length;
+    const members = [...room.members.entries()].filter(([, m]) => m.state === 'join');
+    const memberCount = members.length;
+    const onlineCount = members.filter(([pk]) => isOnline(room, pk)).length;
     stickToBottom();
+    keepBeating();
+    if (ch) ping(room, ch.id, PRESENCE);
 
     return h('div', { class: 'card col chat-card' },
       h('div', { class: 'row between chat-head' },
         h('div', { class: 'row gap6', style: 'align-items:center;min-width:0' },
           backBtn(() => { ui.msgView = 'home'; render(); }),
-          h('div', { class: 'col', style: 'gap:2px;min-width:0' },
+          h('div', {
+            class: 'col clickable', style: 'gap:2px;min-width:0',
+            onClick: () => { ui.msgMembers = !ui.msgMembers; render(); },
+          },
             h('div', { class: 'chat-title' }, name),
             h('div', { class: 'muted small' },
-              memberCount ? t('msgMembers', { n: memberCount }) : t('msgEncrypted')))),
+              memberCount ? t('msgMembers', { n: memberCount }) : t('msgEncrypted'),
+              onlineCount ? h('span', { class: 'online-count' }, ' · ', t('msgNOnline', { n: onlineCount })) : null))),
         h('div', { class: 'row gap6', style: 'align-items:center' },
           chans.length > 1
             ? h('div', { class: 'seg' }, chans.map((c) =>
@@ -1257,10 +1439,19 @@ export function messagesFeature(ctx) {
                 }, '#' + c.name)))
             : h('div', { class: 'tag' }, '#' + (ch ? ch.name : '')),
           h('button', {
+            class: 'iconbtn bell' + (roomNotify(jm.community_id) ? ' on' : ''),
+            title: roomNotify(jm.community_id) ? t('msgNotifyOn') : t('msgNotifyOff'),
+            onClick: () => toggleRoomNotify(jm.community_id),
+            html: roomNotify(jm.community_id)
+              ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0" fill="none"/></svg>'
+              : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.7 21a2 2 0 0 1-3.4 0"/><path d="M18 8a6 6 0 0 0-9.3-5"/><path d="M6.3 6.3A6 6 0 0 0 6 8c0 7-3 9-3 9h15"/><path d="m2 2 20 20"/></svg>',
+          }),
+          h('button', {
             class: 'iconbtn', title: t('msgInviteTitle'),
             onClick: () => { ui.msgInvitePanel = !ui.msgInvitePanel; render(); },
           }, '+'))),
       ui.msgInvitePanel ? invitePanel(room) : null,
+      ui.msgMembers ? memberPanel(room, members) : null,
       h('div', {
         class: 'chat-log',
         onScroll: (e) => {
@@ -1268,7 +1459,40 @@ export function messagesFeature(ctx) {
           ui.msgStick = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
         },
       }, ...(ch ? messageRows(room, ch.id) : [])),
-      composer(t('msgPlaceholder', { channel: ch ? ch.name : '' }), () => ch && sendMessage(room, ch.id)));
+      ch ? typingLine(room, ch.id) : null,
+      composer(
+        t('msgPlaceholder', { channel: ch ? ch.name : '' }),
+        () => ch && sendMessage(room, ch.id),
+        () => ch && ping(room, ch.id, TYPING)));
+  }
+
+  // "Alice is typing…" — named up to two, counted beyond that.
+  function typingLine(room, chId) {
+    const who = typingNow(room, chId);
+    if (!who.length) return null;
+    const label = who.length === 1 ? t('msgTyping', { name: displayName(who[0]) })
+      : who.length === 2 ? t('msgTyping2', { a: displayName(who[0]), b: displayName(who[1]) })
+      : t('msgTypingMany', { n: who.length });
+    return h('div', { class: 'chat-typing' },
+      h('span', { class: 'typing-dots' }, h('i'), h('i'), h('i')),
+      h('span', { class: 'small muted' }, label));
+  }
+
+  function memberPanel(room, members) {
+    const rows = members
+      .map(([pk]) => ({ pk, online: isOnline(room, pk), seen: lastSeenMs(room, pk) }))
+      .sort((a, b) => (b.online - a.online) || (b.seen - a.seen));
+    return h('div', { class: 'col chat-members' },
+      ...rows.map((r) => h('div', {
+        class: 'item chat-thread-row',
+        onClick: () => openProfile(r.pk),
+      },
+        h('span', { class: 'ava-wrap' + (r.online ? ' online' : '') }, avatar(r.pk)),
+        h('div', { class: 'col grow', style: 'min-width:0;gap:1px' },
+          h('div', { class: 'row gap6', style: 'align-items:center;min-width:0' },
+            h('span', { class: 'chat-name' }, displayName(r.pk)),
+            r.pk === room.jm.owner ? h('span', { class: 'chat-badge' }, t('msgAdmin')) : null),
+          h('div', { class: 'muted small' + (r.online ? ' is-online' : '') }, seenLabel(room, r.pk))))));
   }
 
   function invitePanel(room) {
@@ -1320,6 +1544,9 @@ export function messagesFeature(ctx) {
     const peer = ui.msgPeer;
     if (!peer) { ui.msgView = 'home'; return homeView(); }
     const msgs = [...(threads.get(peer)?.values() || [])].sort((a, b) => a.rumor.created_at - b.rumor.created_at);
+    // Looking at the thread is reading it — including anything that lands while
+    // it's still open, since every arrival repaints us.
+    markRead(dmRead(peer), newestFrom(msgs, (m) => !m.mine));
     stickToBottom();
     return h('div', { class: 'card col chat-card' },
       h('div', { class: 'row chat-head gap6', style: 'align-items:center' },
@@ -1359,6 +1586,8 @@ export function messagesFeature(ctx) {
     // no balance card, no tabs; each view carries its own way back.
     // The bare avatar node for the app header's identity menu.
     headerAvatar(pk) { return avatar(pk, 'chat-avatar header-ava', false); },
+    // Conversations waiting on us, for the header's message button.
+    unreadMessages() { return unreadCount(); },
     screenView() {
       if (ui.screen !== 'wallet') return null;
       if (ui.profilePk) return profileScreen();
@@ -1406,6 +1635,9 @@ export function messagesFeature(ctx) {
         setTimeout(() => { ui.chatOpen = true; ui.msgView = 'home'; render(); }, 0);
       }
       startDMs();
+      // Communities subscribe up front too, not just when chat opens — the
+      // header's unread dot can't report a room nobody is listening to.
+      for (const jm of communities()) { try { ensureRoom(jm); } catch {} }
       syncLists().catch(() => {});
       registerPush().catch(() => {}); // silent refresh when permission already granted
     },

@@ -395,6 +395,32 @@ hr.divider { margin: 16px 0; }
 .chat-avatar.fallback { position: relative; overflow: hidden; }
 .chat-avatar.fallback .punk { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .header-avatar { padding: 0; border: none; background: none; cursor: pointer; display: flex; }
+.chat-typing { display: flex; align-items: center; gap: 7px; padding: 2px 4px 6px; min-height: 20px; }
+.typing-dots { display: inline-flex; gap: 3px; align-items: center; }
+.typing-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--muted); animation: typing-bounce 1.2s infinite ease-in-out; }
+.typing-dots i:nth-child(2) { animation-delay: .15s; }
+.typing-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes typing-bounce { 0%, 60%, 100% { opacity: .3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+.chat-members { max-height: 260px; overflow-y: auto; border-bottom: 1px solid var(--line); }
+.ava-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+.ava-wrap.online::after {
+  content: ''; position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px;
+  border-radius: 50%; background: #3fbf5f; box-shadow: 0 0 0 2px var(--paper);
+}
+.small.is-online { color: #3fbf5f; }
+.online-count { color: #3fbf5f; }
+.iconbtn.bell.on { color: var(--ink); }
+.header-msgs { position: relative; padding: 4px; border: none; background: none; cursor: pointer; display: flex; color: var(--muted); }
+.header-msgs:hover { color: var(--ink); }
+.header-msgs .hm-ico { display: flex; transition: transform .15s ease; }
+.header-msgs:hover .hm-ico { transform: scale(1.08); }
+.header-msgs.unread { color: var(--ink); }
+.header-msgs.unread::after {
+  content: ''; position: absolute; top: 2px; right: 2px; width: 9px; height: 9px;
+  border-radius: 50%; background: var(--red);
+  box-shadow: 0 0 0 2px var(--bg); animation: dot-pop .3s ease-out;
+}
+@keyframes dot-pop { from { transform: scale(0); } to { transform: scale(1); } }
 .chat-avatar.header-ava { width: 30px; height: 30px; font-size: 11px; }
 .npub-box { display: flex; align-items: center; gap: 8px; }
 .copy-ico { flex-shrink: 0; background: none; border: none; padding: 2px; color: var(--muted); cursor: pointer; display: flex; }

@@ -95,13 +95,17 @@ export const makeSeal = async (rumor, signer, streamConvKey, { plaintext = false
   return signer instanceof Uint8Array ? finalizeEvent(seal, signer) : signer.signEvent(seal);
 };
 
-export const makeWrap = (seal, stream, { ephemeral = false } = {}) => {
+// `expiration` is NIP-40, in seconds: for wraps whose whole value is being
+// current (presence, typing), it tells a relay it may drop this rather than
+// keep it forever. It has to be in the event before signing, so it lives here.
+export const makeWrap = (seal, stream, { ephemeral = false, expiration = 0 } = {}) => {
   let wrap = {
     kind: ephemeral ? 21059 : 1059,
     content: nip44.encrypt(JSON.stringify(seal), stream.convKey),
     tags: [["p", getPublicKey(generateSecretKey())]],
     created_at: seal.created_at,
   };
+  if (expiration) wrap.tags.push(["expiration", String(expiration)]);
   return finalizeEvent(wrap, stream.sk);
 };
 
