@@ -1817,6 +1817,7 @@ function goHome() {
     ui.settingsPage = null;
     ui.addrScan = false;
     ui.arkMoveOpen = false;
+    ui.nameEditOpen = null;
     ui.tab = wallet.offline ? 'settings' : 'receive';
     ui.draft = null;
     ui.sendResult = null;
