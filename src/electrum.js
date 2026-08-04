@@ -152,9 +152,11 @@ export class ElectrumApi {
     // parallel — needed to compute the fee and which inputs are ours.
     const vin = await parallelMap(Array.from({ length: tx.inputsLength }, (_, i) => i), 6, async (i) => {
       const inp = tx.getInput(i);
+      if (!inp.txid) return { is_coinbase: true };
       const ptxid = bytesToHex(inp.txid); // btc-signer stores txids in display order
       if (/^0+$/.test(ptxid)) return { is_coinbase: true };
       const ptx = await this._parsed(ptxid);
+      if (inp.index >= ptx.outputsLength) throw new Error(`prevout index ${inp.index} out of range for ${ptxid}`);
       const po = ptx.getOutput(inp.index);
       return { txid: ptxid, vout: inp.index, prevout: { scriptpubkey_address: this._addrOf(po.script), value: Number(po.amount) }, _value: po.amount };
     });
