@@ -36,6 +36,26 @@ export function nostrLoginFeature(ctx) {
   let resuming = null;
   let resumeFailedAt = 0;
 
+  // A remote signer's connection can die quietly — the app is left holding a
+  // signer object that will never answer again, and every send after that
+  // fails until the page is reloaded. Notice the first failure and drop it, so
+  // the next attempt resumes a fresh connection instead.
+  const selfHealing = (signer) => {
+    if (!signer || signer.kind !== 'bunker') return signer;
+    const guard = (fn) => async (...args) => {
+      try { return await fn(...args); } catch (e) { if (live === wrapped) live = null; throw e; }
+    };
+    const wrapped = {
+      ...signer,
+      signEvent: guard(signer.signEvent.bind(signer)),
+      encryptSelf: guard(signer.encryptSelf.bind(signer)),
+      decryptSelf: guard(signer.decryptSelf.bind(signer)),
+      encryptTo: guard(signer.encryptTo.bind(signer)),
+      decryptFrom: guard(signer.decryptFrom.bind(signer)),
+    };
+    return wrapped;
+  };
+
   // What it takes to be this identity again after a reload. Without it the app
   // shows your face in the header but signs everything else with the wallet's
   // own key — a different pubkey, which is exactly the mismatch people notice
@@ -75,7 +95,7 @@ export function nostrLoginFeature(ctx) {
       // so an extension login later finds this wallet instead of making a new
       // one. Costs nothing — anyone with the key could derive it anyway.
       if (res.publish) await publishWalletBackup(signer, { mnemonic: res.mnemonic }).catch(() => {});
-      live = signer;
+      live = selfHealing(signer);
       await ctx.openMnemonic(res.mnemonic, res.passphrase || '', { nostrPubkey: signer.pubkey });
       save({ ...load(), pubkey: signer.pubkey, linked: Date.now(), ...sessionOf(signer) });
       // claim the real npub as the payment address while this signer is live
@@ -93,7 +113,7 @@ export function nostrLoginFeature(ctx) {
       const mnemonic = newMnemonic();
       await publishWalletBackup(st.signer, { mnemonic });
       ui.nostrLoginNew = null;
-      live = st.signer;
+      live = selfHealing(st.signer);
       await ctx.openMnemonic(mnemonic, '', { nostrPubkey: st.signer.pubkey });
       save({ ...load(), pubkey: st.signer.pubkey, linked: Date.now(), ...sessionOf(st.signer) });
       ctx.hook('namesAdoptIdentity', st.signer, npubOf(st.signer.pubkey))?.catch?.(() => {});
@@ -116,7 +136,7 @@ export function nostrLoginFeature(ctx) {
         throw new Error(t('nlAlreadyLinked'));
       }
       await publishWalletBackup(signer, { mnemonic: wallet.mnemonic, passphrase: wallet.passphrase || '' });
-      live = signer;
+      live = selfHealing(signer);
       save({ ...load(), pubkey: signer.pubkey, linked: Date.now(), ...sessionOf(signer) });
       ctx.hook('namesAdoptIdentity', signer, npubOf(signer.pubkey))?.catch?.(() => {});
       toast(t('nlLinked'));
@@ -300,7 +320,7 @@ export function nostrLoginFeature(ctx) {
         if (st.session) {
           try {
             const s = await resumeBunker(st.session, { onAuth: (url) => { ui.nostrLoginAuthUrl = url; render(); } });
-            if (s && s.pubkey === st.pubkey) return (live = s);
+            if (s && s.pubkey === st.pubkey) return (live = selfHealing(s));
           } catch {}
         }
         return null;
