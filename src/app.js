@@ -8,6 +8,7 @@ import { Wallet, newMnemonic, isValidMnemonic, accountXpubFor, cacheKeyFor, utxo
 import { qrSvg } from './qr.js';
 import { makeSearcher, resultRows, searchable, punkUrl } from './recipient-search.js';
 import { npubOf } from './nostr.js';
+import { nip98Header } from './nostr-login.js';
 import { NOSTR_MARK } from './features/nostrlogin.js';
 import { scanQr } from './scan.js';
 import { dataSources, getSource, setSource, getNetwork, setNetwork, NETWORKS } from './api.js';
@@ -2125,7 +2126,16 @@ const punkImg = (n) => `punks/${n}.webp`;
 async function onbUpload(file) {
   const fd = new FormData();
   fd.append('file', file);
-  const r = await fetch('https://nostr.build/api/v2/upload/files', { method: 'POST', body: fd });
+  const endpoint = 'https://nostr.build/api/v2/upload/files';
+  // nostr.build no longer takes anonymous uploads — sign with the wallet's
+  // nostr key, the one key that's always available without a signer prompt.
+  const headers = {};
+  try {
+    if (wallet.nostrPubkey && wallet.nostrPubkey()) {
+      headers.authorization = await nip98Header({ signEvent: (e) => wallet.nostrSign(e) }, endpoint, 'POST');
+    }
+  } catch {}
+  const r = await fetch(endpoint, { method: 'POST', body: fd, headers });
   const j = await r.json();
   const url = j?.data?.[0]?.url;
   if (!url) throw new Error(t('onbUploadFailed'));
