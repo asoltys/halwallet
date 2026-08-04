@@ -243,6 +243,7 @@ export function namesFeature(ctx) {
           const signer = await Promise.resolve(hook('nostrLoginResume')).catch(() => null);
           await claim(name, signer ? { signer, manager: wallet.nostrPubkey() } : {});
           ui.nameClaim = '';
+          ui.nameEditOpen = false;
           toast(t('namesClaimed', { name: `${name}@${DOMAIN}` }));
         } catch (e) { ui.nameClaimError = e.message; }
         ui.busy = false; render();
@@ -308,14 +309,18 @@ export function namesFeature(ctx) {
     return h('div', { class: 'card col', style: 'align-items:center;gap:14px' },
       seg,
       h('div', { html: qrSvg(addr) }),
-      h('div', { class: 'addr-box', style: 'width:100%;text-align:center;font-size:16px' }, addr),
-      copyBtn(addr, t('namesCopy')),
-      // Still on the npub-shaped default? The people who'd want a real name
-      // are looking right here, not in a collapsed corner of Settings.
-      /^npub1/.test(st.name) ? h('details', { class: 'small faint', style: 'align-self:stretch' },
-        h('summary', {}, t('namesCustom')),
-        h('p', { style: 'margin:4px 0' }, t('namesCustomHow')),
+      h('div', { class: 'row gap6', style: 'width:100%;align-items:center' },
+        h('div', { class: 'addr-box', style: 'flex:1;min-width:0;text-align:center;font-size:16px' }, addr),
+        // the pencil is how you change the name — right where the name is
+        h('button', {
+          class: 'btn-sm', title: t('namesCustom'),
+          onClick: () => { ui.nameEditOpen = !ui.nameEditOpen; ui.nameClaimError = null; render(); },
+          html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
+        })),
+      ui.nameEditOpen ? h('div', { class: 'col', style: 'gap:8px;width:100%' },
+        h('p', { class: 'small muted', style: 'margin:0' }, t('namesCustomHow')),
         claimForm(false)) : null,
+      copyBtn(addr, t('namesCopy')),
       offerSection());
   }
 
