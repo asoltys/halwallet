@@ -49,13 +49,18 @@ export function buildBoard({ userPub, serverPub, amountSat, feeSat, expiryHeight
   return { fundingTaproot, exitTaproot, exitTx, sighash };
 }
 
-export async function requestBoardCosign(ark, { amountSat, fundingOutpointRaw, expiryHeight, userPub, pubNonce }) {
+export async function requestBoardCosign(ark, { amountSat, fundingOutpointRaw, expiryHeight, userPub, pubNonce, fundingTxBytes }) {
   const w = pbWriter();
   w.varintField(1, amountSat);
   w.bytesField(2, fundingOutpointRaw);
   w.varintField(3, expiryHeight);
   w.bytesField(4, userPub);
   w.bytesField(5, pubNonce);
+  // Mandatory on mainnet since 0.6.0 (require_board_funding_tx): the server
+  // validates the board outpoint against the funding tx and refuses inputs
+  // that are VTXOs. The txid check ignores witnesses, so the broadcast
+  // (signed) serialization is fine here.
+  if (fundingTxBytes) w.bytesField(6, fundingTxBytes);
   const resp = await grpcCall(ark, 'bark_server.ArkService/RequestBoardCosign', w.finish());
   const out = {};
   for (const { field, value } of pbFields(resp)) {

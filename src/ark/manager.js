@@ -1223,9 +1223,11 @@ export class ArkManager {
         fundingOutpointRaw,
       });
       const nonces = musig2.nonceGen(keys.pubkey, keys.privkey, undefined, board.sighash);
+      const fundingTxHex = await this.chain.getTxHex(action.fundingTxid);
       const cosign = await requestBoardCosign(this.arkUrl, {
         amountSat: action.amountSat, fundingOutpointRaw,
         expiryHeight: action.expiryHeight, userPub: keys.pubkey, pubNonce: nonces.public,
+        fundingTxBytes: fundingTxHex ? hex.decode(fundingTxHex.trim()) : undefined,
       });
       const finalSig = combineBoardSignature({ board, serverCosign: cosign, userNonces: nonces, vtxoKeys: keys, serverPub: this.serverPub });
       action.vtxoBytes = hex.encode(encodeBoardVtxo({
