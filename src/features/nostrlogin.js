@@ -9,7 +9,8 @@
 // published, because it means the nostr key can recover the money.
 
 import { newMnemonic } from '../wallet.js';
-import { npubOf, nsecOf } from '../nostr.js';
+import { npubOf, nsecOf, fetchNostrProfile } from '../nostr.js';
+import { shortAddr } from '../format.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import {
@@ -102,6 +103,36 @@ export function nostrLoginFeature(ctx) {
       toast(res.mode === 'derived' ? t('nlOpenedDerived') : t('nlOpenedRestored'));
       busy(false);
     } catch (e) { fail(e); }
+  }
+
+  // Kind-0 names for the accounts these cards have to name, asked for once per
+  // pubkey. Called from render, so the cache is what stops a repaint from
+  // queueing another lookup: the key is claimed before the fetch goes out, and
+  // a miss stays a miss rather than retrying against the relays on every frame.
+  const acctNames = new Map(); // pubkey hex → name, or null for asked-and-nothing
+  function acctName(pubkeyHex) {
+    if (!pubkeyHex) return null;
+    if (acctNames.has(pubkeyHex)) return acctNames.get(pubkeyHex);
+    acctNames.set(pubkeyHex, null);
+    fetchNostrProfile(pubkeyHex).then((p) => {
+      if (!p || !p.name) return;
+      acctNames.set(pubkeyHex, p.name);
+      render();
+    }).catch(() => {});
+    return null;
+  }
+
+  // Which account a card is about: the kind-0 name up front, the npub under it
+  // for the check no display name can settle. A bare npub is 63 unbreakable
+  // characters — the overflow this replaces — so it is always truncated, with
+  // the whole thing on the title for a hover or a copy.
+  function acctIdent(npub, name) {
+    const short = npub ? shortAddr(npub, 12, 8) : '';
+    // Nothing published: the npub is the only identifier, so it takes the pill.
+    if (!name) return npub ? h('div', { class: 'acct-pill mono', title: npub }, short) : null;
+    return h('div', { class: 'col', style: 'gap:5px' },
+      h('div', { class: 'acct-pill' }, name),
+      npub ? h('div', { class: 'acct-npub', title: npub }, short) : null);
   }
 
   async function createForSigner() {
@@ -237,7 +268,7 @@ export function nostrLoginFeature(ctx) {
     if (ui.nostrLoginNew) {
       return h('div', { class: 'card col', style: 'gap:10px' },
         h('h3', { style: 'margin:0' }, t('nlNewTitle')),
-        h('div', { class: 'small muted' }, ui.nostrLoginNew.npub || ''),
+        acctIdent(ui.nostrLoginNew.npub, acctName(ui.nostrLoginNew.signer.pubkey)),
         h('p', { class: 'small muted', style: 'margin:0' }, t('nlNewDesc')),
         h('div', { class: 'notice info small' }, t('nlBackupWarning')),
         ui.nostrLoginError ? h('div', { class: 'notice err' }, ui.nostrLoginError) : null,
@@ -359,7 +390,7 @@ export function nostrLoginFeature(ctx) {
         h('div', { class: 'row between' },
           h('h3', {}, t('nlLinkTitle')),
           h('span', { class: 'badge dot' + (live ? ' live' : ' off') }, live ? t('nlConnected') : t('nlDisconnected'))),
-        h('div', { class: 'small muted break' }, npubOf(st.pubkey) || st.pubkey),
+        acctIdent(npubOf(st.pubkey) || st.pubkey, acctName(st.pubkey)),
         h('p', { class: 'small faint', style: 'margin:0' }, t('nlLinkedDesc')),
         // Signing needs a live signer, and a reload always drops a remote one.
         // Without this the app can tell you it isn't connected and offer you
@@ -376,7 +407,7 @@ export function nostrLoginFeature(ctx) {
     const npub = wallet.nostrNpub && wallet.nostrNpub();
     return h('div', { class: 'card col' },
       h('h3', {}, t('nlLinkTitle')),
-      npub ? h('div', { class: 'small muted break' }, npub) : null,
+      acctIdent(npub, acctName(wallet.nostrPubkey && wallet.nostrPubkey())),
       h('p', { class: 'small muted', style: 'margin:0' }, t('nlBuiltinDesc')),
       exportSection(),
       linkSection());

@@ -577,6 +577,22 @@ body::after {
 @keyframes mark-float { 50% { transform: translateY(-6px); } }
 @media (prefers-reduced-motion: reduce) { .onb-mark { animation: none; } }
 .onb-addr { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+/* Which nostr account a sign-in step is about. A kind-0 name is arbitrary
+   user text and the npub fallback is long either way, so the pill clips with
+   an ellipsis instead of growing — the full npub stays in the title. */
+.acct-pill {
+  align-self: start; max-width: 100%; padding: 5px 12px; border-radius: 999px;
+  font-size: 14px; font-weight: 600; color: var(--ink);
+  background: var(--surface2); border: 1px solid var(--line);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.acct-pill.mono { font-family: var(--mono); font-weight: 500; }
+/* the npub under that name — secondary, and clipped on the same terms */
+.acct-npub {
+  max-width: 100%; padding-left: 2px; color: var(--faint);
+  font-family: var(--mono); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* balance card: one account at a time, dots to flip */
 .balance-face { min-height: 78px; }
 /* amount input with an inline Max affordance */
