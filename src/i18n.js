@@ -326,6 +326,7 @@ const STR = {
     giftMinNote: 'Minimum {n}.',
     giftAllNote: 'Gifts your whole balance; the recipient pays the claim fee.',
     giftExceedsBalance: 'That’s more than your balance.',
+    giftSettling: '{n} of your balance is still settling — try again in a moment.',
     giftNeedsHeadroom: 'Gift up to {n}, or tap Max to gift your whole balance.',
     giftAnother: 'Create another',
     giftForYou: 'A gift for you',

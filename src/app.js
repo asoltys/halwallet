@@ -2525,9 +2525,11 @@ function balanceCard() {
     h('div', { class: 'amt', style: firstLoad ? 'opacity:.3' : '' },
       firstLoad ? h('span', { class: 'spinner sm', style: 'margin-right:8px' }) : null,
       animatedAmount('bal:' + sel, isSpending ? spending : saving), ' ', unitTag('unit')),
-    pending > 0 || featLines.length
+    (pending > 0 && !isSpending) || featLines.length
       ? h('div', { class: 'split' },
-          pending > 0
+          // Pending incoming is an on-chain fact — it belongs to the Saving
+          // face, not to whichever account happens to be showing.
+          pending > 0 && !isSpending
             ? h('div', {}, h('div', { class: 'k' }, t('pending')), h('div', { class: 'v pending' }, fmtAmount(pending), ' ', unitTag()))
             : null,
           ...featLines.map((l) =>

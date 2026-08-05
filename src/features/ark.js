@@ -2044,9 +2044,14 @@ export function arkFeature(ctx) {
 
     // ---- ark-gift hooks (called by the gifts feature via ctx.hook) ----
     arkGiftInfo() {
-      if (!arkAvailable() || !ark || !ark.state) return null;
+      // Persisted state, not the live manager: the gift form renders before
+      // connectArk() has run, and a null here silently flips the gift to the
+      // on-chain source — "more than your balance" against Savings while the
+      // header shows a healthy Spending balance. Creation connects on demand.
+      const b = arkAvailable() ? arkBalance() : null;
+      if (!b) return null;
       maybeReconcile(); // the gift form is a send-intent signal too (throttled)
-      return { spendableSat: ark.balance().spendableSat };
+      return { spendableSat: b.spendableSat, pendingSat: b.pendingSat };
     },
     arkGiftDecode(code) { return decodeArkGiftCode(code); },
     // A fresh visitor (no wallets) opening a gift link lands on the gift's

@@ -412,7 +412,15 @@ export function giftsFeature(ctx) {
     const avail = info ? info.spendableSat : 0;
     const amt = ui.giftMax ? avail : parseAmount(ui.giftAmount, getUnit());
     if (!amt || amt < 1) { ui.giftError = t('giftAmountInvalid', { n: fmtAmount(1) + ' ' + unitLabel() }); render(); return; }
-    if (amt > avail) { ui.giftError = t('giftExceedsBalance'); render(); return; }
+    if (amt > avail) {
+      // The headline Spending number includes settling coins; when those are
+      // what's missing, say so instead of disputing the user's own balance.
+      const pend = (info && info.pendingSat) || 0;
+      ui.giftError = amt <= avail + pend
+        ? t('giftSettling', { n: fmtAmount(pend) + ' ' + unitLabel() })
+        : t('giftExceedsBalance');
+      render(); return;
+    }
     ui.busy = true; ui.giftError = ''; render();
     try {
       const g = await hook('arkGiftCreate', amt);
