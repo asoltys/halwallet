@@ -15,10 +15,8 @@ import { concatBytes, reader, grpcCall, pbWriter, pbFields } from './proto.js';
 const asBytes = (v) => (typeof v === 'string' ? hex.decode(v) : Uint8Array.from(v));
 
 // The key that cosigns arkoor spends of a vtxo with this policy (bark's
-// VtxoPolicy::arkoor_pubkey). For a third-party HTLC that's the claimer, who
-// holds the taproot keyspend path together with the server.
-export const policyOwnerPubkey = (policy) =>
-  policy.type === 'htlc' ? policy.claimPubkey : policy.userPubkey;
+// VtxoPolicy::arkoor_pubkey).
+export const policyOwnerPubkey = (policy) => policy.userPubkey;
 
 const te = new TextEncoder();
 
@@ -57,7 +55,7 @@ function pushInt(n) {
   return Uint8Array.of(bytes.length, ...bytes);
 }
 
-const OP = { CSV: 0xb2, CLTV: 0xb1, DROP: 0x75, CHECKSIG: 0xac, HASH160: 0xa9, EQUALVERIFY: 0x88 };
+const OP = { CSV: 0xb2, CLTV: 0xb1, DROP: 0x75, CHECKSIG: 0xac, HASH160: 0xa9, EQUALVERIFY: 0x88, SIZE: 0x82 };
 export const P2A_SCRIPT = hex.decode('51024e73');
 
 // delayed_sign: <csv> OP_CSV OP_DROP <xonly> OP_CHECKSIG
@@ -68,10 +66,18 @@ const delayedSignScript = (delta, xonly) =>
 const timelockSignScript = (height, xonly) =>
   concatBytes(pushInt(height), Uint8Array.of(OP.CLTV, OP.DROP, 0x20), xonly, Uint8Array.of(OP.CHECKSIG));
 
-// hash_delay_sign: <csv> OP_CSV OP_DROP OP_HASH160 <ripemd160(hash)> OP_EQUALVERIFY <xonly> OP_CHECKSIG
+// hash_delay_sign_v0: <csv> OP_CSV OP_DROP OP_HASH160 <ripemd160(hash)> OP_EQUALVERIFY <xonly> OP_CHECKSIG
 // (the witness reveals the 32B preimage; HASH160(preimage) = ripemd160(sha256(preimage)))
 const hashDelaySignScript = (paymentHash, delta, xonly) => concatBytes(
   pushInt(delta), Uint8Array.of(OP.CSV, OP.DROP, OP.HASH160, 0x14), ripemd160(paymentHash),
+  Uint8Array.of(OP.EQUALVERIFY, 0x20), xonly, Uint8Array.of(OP.CHECKSIG));
+
+// hash_delay_sign (v1, pver 5): same, but the preimage's size is checked to be
+// 32 bytes before hashing — OP_SIZE <32> OP_EQUALVERIFY inserted after the
+// timelock, mirroring Lightning's own on-chain check.
+const hashDelaySignScriptV1 = (paymentHash, delta, xonly) => concatBytes(
+  pushInt(delta), Uint8Array.of(OP.CSV, OP.DROP, OP.SIZE, 0x01, 0x20, OP.EQUALVERIFY, OP.HASH160, 0x14),
+  ripemd160(paymentHash),
   Uint8Array.of(OP.EQUALVERIFY, 0x20), xonly, Uint8Array.of(OP.CHECKSIG));
 
 // delay_timelock_sign: <height> OP_CLTV OP_DROP <csv> OP_CSV OP_DROP <xonly> OP_CHECKSIG
@@ -138,33 +144,27 @@ export const checkpointPolicyTaproot = (userPub, serverPub, expiryHeight) =>
 // Taproot for any user-facing VTXO policy (mirror of bark's VtxoPolicy::taproot).
 // policy fields may be hex strings (decoded form) or byte arrays.
 export function policyTaproot(policy, serverPub, exitDelta) {
-  if (policy.type === 'htlc') {
-    // third-party HTLC: keyspend musig(claimer, server)
-    // leaf 1: claimer spends with the preimage after exit_delta
-    // leaf 2: refunder spends after htlc expiry + 2*exit_delta
-    const claim = asBytes(policy.claimPubkey);
-    const refund = asBytes(policy.refundPubkey);
-    const hash = asBytes(policy.paymentHash);
-    const claimLeaf = hashDelaySignScript(hash, exitDelta, xonly(claim));
-    const refundLeaf = delayTimelockSignScript(policy.htlcExpiry, 2 * exitDelta, xonly(refund));
-    return { ...taprootFromLeaves(claim, serverPub, [claimLeaf, refundLeaf]), claimLeaf, refundLeaf };
-  }
   const user = asBytes(policy.userPubkey);
   if (policy.type === 'pubkey') return pubkeyPolicyTaproot(user, serverPub, exitDelta);
-  if (policy.type === 'serverHtlcSend') {
+  // The bare types are the 0.6.0 (pver 5) policies whose hashlock leaves
+  // check the preimage size; _v0 keeps building the legacy scripts so vtxos
+  // minted before the upgrade still reconstruct, sign, and exit correctly.
+  if (policy.type === 'serverHtlcSend' || policy.type === 'serverHtlcSend_v0') {
+    const hashDelay = policy.type === 'serverHtlcSend' ? hashDelaySignScriptV1 : hashDelaySignScript;
     const hash = asBytes(policy.paymentHash);
     // leaf 1: server spends with preimage after exit_delta
     // leaf 2: user refund after htlc expiry + 2*exit_delta delay
-    const serverClaim = hashDelaySignScript(hash, exitDelta, xonly(serverPub));
+    const serverClaim = hashDelay(hash, exitDelta, xonly(serverPub));
     const userRefund = delayTimelockSignScript(policy.htlcExpiry, 2 * exitDelta, xonly(user));
     return { ...taprootFromLeaves(user, serverPub, [serverClaim, userRefund]), serverClaim, userRefund };
   }
-  if (policy.type === 'serverHtlcRecv') {
+  if (policy.type === 'serverHtlcRecv' || policy.type === 'serverHtlcRecv_v0') {
+    const hashDelay = policy.type === 'serverHtlcRecv' ? hashDelaySignScriptV1 : hashDelaySignScript;
     const hash = asBytes(policy.paymentHash);
     // leaf 1: server reclaim after htlc expiry + exit_delta delay
     // leaf 2: user spends with preimage after htlc_expiry_delta + exit_delta
     const serverRefund = delayTimelockSignScript(policy.htlcExpiry, exitDelta, xonly(serverPub));
-    const userClaim = hashDelaySignScript(hash, policy.htlcExpiryDelta + exitDelta, xonly(user));
+    const userClaim = hashDelay(hash, policy.htlcExpiryDelta + exitDelta, xonly(user));
     return { ...taprootFromLeaves(user, serverPub, [serverRefund, userClaim]), serverRefund, userClaim };
   }
   throw new Error('unsupported vtxo policy type ' + policy.type);
@@ -214,16 +214,19 @@ const encodePubkeyPolicy = (pub33) => concatBytes(Uint8Array.of(0x00), pub33);
 
 // Serialize any user-facing VtxoPolicy (mirror of proto.js decodePolicy).
 export function encodePolicy(p) {
-  if (p.type === 'htlc') {
-    return concatBytes(Uint8Array.of(0x08), asBytes(p.claimPubkey), asBytes(p.refundPubkey),
-      asBytes(p.paymentHash), u32le(p.htlcExpiry));
-  }
   const user = asBytes(p.userPubkey);
   if (p.type === 'pubkey') return encodePubkeyPolicy(user);
   if (p.type === 'serverHtlcSend') {
-    return concatBytes(Uint8Array.of(0x01), user, asBytes(p.paymentHash), u32le(p.htlcExpiry));
+    return concatBytes(Uint8Array.of(0x09), user, asBytes(p.paymentHash), u32le(p.htlcExpiry));
   }
   if (p.type === 'serverHtlcRecv') {
+    return concatBytes(Uint8Array.of(0x08), user, asBytes(p.paymentHash),
+      u32le(p.htlcExpiry), u16le(p.htlcExpiryDelta));
+  }
+  if (p.type === 'serverHtlcSend_v0') {
+    return concatBytes(Uint8Array.of(0x01), user, asBytes(p.paymentHash), u32le(p.htlcExpiry));
+  }
+  if (p.type === 'serverHtlcRecv_v0') {
     return concatBytes(Uint8Array.of(0x02), user, asBytes(p.paymentHash),
       u32le(p.htlcExpiry), u16le(p.htlcExpiryDelta));
   }

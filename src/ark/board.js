@@ -23,8 +23,9 @@ const u64le = (n) => {
 
 // Fee fields are absent when zero (proto3) — e.g. Second's signet server
 // boards for free — so every term defaults to 0.
+// pver >= 4 rounds the ppm component UP to the satoshi (server-side calculate()).
 export const boardFee = (amountSat, fees = {}) =>
-  Math.max(fees.minFeeSat || 0, (fees.baseFeeSat || 0) + Math.floor((amountSat * (fees.ppm || 0)) / 1_000_000));
+  Math.max(fees.minFeeSat || 0, (fees.baseFeeSat || 0) + Math.ceil((amountSat * (fees.ppm || 0)) / 1_000_000));
 
 export const p2trAddress = (programXOnly, hrp = 'bcrt') =>
   bech32m.encode(hrp, [1, ...bech32m.toWords(programXOnly)], 1023);

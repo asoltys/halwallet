@@ -77,10 +77,11 @@ export async function validateVtxo(vtxo, { serverPubkey, chain, expectPubkeys, a
     const sig = hex.decode(t.signature);
 
     let msg, key;
-    if (t.type === 'hashLockedCosigned') {
+    if (t.type === 'hashLockedCosigned' || t.type === 'hashLockedCosigned_v0') {
       // script-spend through the unlock clause; signed by the raw agg key
       const hash = t.unlock.hash ? hex.decode(t.unlock.hash) : sha256(hex.decode(t.unlock.preimage));
-      const tp = harkLeafTaproot(hex.decode(t.userPubkey), serverPubkey, vtxo.expiryHeight, hash);
+      const gen = t.type === 'hashLockedCosigned' ? 1 : 0;
+      const tp = harkLeafTaproot(hex.decode(t.userPubkey), serverPubkey, vtxo.expiryHeight, hash, gen);
       msg = taprootScriptSighash(tx, [prevout], tapLeafHash(tp.unlockScript));
       key = tp.internalXOnly;
       if (!t.unlock.preimage) fail(`transition ${i} has no unlock preimage`);

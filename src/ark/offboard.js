@@ -63,13 +63,14 @@ export const feeRateKwu = (satVkb) => Math.floor(satVkb / 4);
 export function offboardFee({ spkLen, satVkb, fees, tip, inputs }) {
   const wu = (fees.fixedAdditionalVb + spkLen) * 4;
   const weightFee = Math.floor((feeRateKwu(satVkb) * wu + 999) / 1000);
-  let ppmFee = 0;
+  // pver >= 4: sub-satoshi ppm accumulates across vtxos, one round-up at the end
+  let ppmUnits = 0;
   for (const v of inputs) {
     const blocks = Math.max(0, v.expiryHeight - tip);
     const entry = [...fees.ppmExpiryTable].reverse().find((e) => blocks >= e.thresholdBlocks);
-    if (entry) ppmFee += Math.floor((v.amountSat * entry.ppm) / 1_000_000);
+    if (entry) ppmUnits += v.amountSat * entry.ppm;
   }
-  return fees.baseFeeSat + weightFee + ppmFee;
+  return fees.baseFeeSat + weightFee + Math.ceil(ppmUnits / 1_000_000);
 }
 
 // OffboardRequestAttestation: BIP340 signature over

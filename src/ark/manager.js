@@ -1250,14 +1250,17 @@ export class ArkManager {
 
   // ---- refresh (also the consolidation primitive) ----
   refreshFee(inputs, tip) {
+    // pver >= 4: ppm accumulates sub-satoshi across ALL inputs and rounds UP
+    // once at the end (the server's calc_ppm_expiry_fee). Per-input floor —
+    // the old way — undercharges and the server rejects the round intent.
     const table = this.info.refreshFees.ppmExpiryTable;
-    let fee = this.info.refreshFees.baseFeeSat;
+    let ppmUnits = 0;
     for (const v of inputs) {
       const blocks = v.expiryHeight - tip;
       const entry = table.filter((e) => e.thresholdBlocks <= blocks).pop();
-      fee += Math.floor((v.amountSat * (entry?.ppm ?? 0)) / 1_000_000);
+      ppmUnits += v.amountSat * (entry?.ppm ?? 0);
     }
-    return fee;
+    return this.info.refreshFees.baseFeeSat + Math.ceil(ppmUnits / 1_000_000);
   }
 
   async refresh(vtxoIds) {

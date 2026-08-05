@@ -47,9 +47,12 @@ const timelockSignScript = (height, xonlyKey) =>
   concatBytes(pushInt(height), Uint8Array.of(0xb1, 0x75, 0x20), xonlyKey, Uint8Array.of(0xac));
 const delayedSignScript = (delta, xonlyKey) =>
   concatBytes(pushInt(delta), Uint8Array.of(0xb2, 0x75, 0x20), xonlyKey, Uint8Array.of(0xac));
-// OP_HASH160 <ripemd160(hash)> OP_EQUALVERIFY <xonly> OP_CHECKSIG
+// v0: OP_HASH160 <ripemd160(hash)> OP_EQUALVERIFY <xonly> OP_CHECKSIG
 const hashSignScript = (unlockHash, xonlyKey) =>
   concatBytes(Uint8Array.of(0xa9, 0x14), ripemd160(unlockHash), Uint8Array.of(0x88, 0x20), xonlyKey, Uint8Array.of(0xac));
+// v1 (pver 5) prefixes OP_SIZE <32> OP_EQUALVERIFY — the preimage must be 32 bytes
+const hashSignScriptV1 = (unlockHash, xonlyKey) =>
+  concatBytes(Uint8Array.of(0x82, 0x01, 0x20, 0x88), hashSignScript(unlockHash, xonlyKey));
 
 export const tapLeafHash = (script) =>
   taggedHash('TapLeaf', Uint8Array.of(0xc0), varint(script.length), script);
@@ -82,11 +85,13 @@ function cosignedInputTaproot(pubkeys, serverPub, expiryHeight) {
 }
 
 // HashLockedCosigned transition input: hArk leaf output —
-// internal = musig(user, server); leaves: expiry (server) + unlock (agg key)
-export function harkLeafTaproot(userPub, serverPub, expiryHeight, unlockHash) {
+// internal = musig(user, server); leaves: expiry (server) + unlock (agg key).
+// `gen` picks the unlock-script generation: 1 (0.6.0, preimage size check)
+// for new rounds, 0 for reconstructing vtxos minted before the upgrade.
+export function harkLeafTaproot(userPub, serverPub, expiryHeight, unlockHash, gen = 1) {
   const { internalXOnly } = musigInternalKey([userPub, serverPub]);
   const expiryLeaf = tapLeafHash(timelockSignScript(expiryHeight, serverPub.slice(1)));
-  const unlockScript = hashSignScript(unlockHash, internalXOnly);
+  const unlockScript = (gen === 1 ? hashSignScriptV1 : hashSignScript)(unlockHash, internalXOnly);
   const unlockLeaf = tapLeafHash(unlockScript);
   // expiryLeaf doubles as the merkle path when spending through the unlock leaf
   return { ...taprootFromMerkle(internalXOnly, tapBranch(expiryLeaf, unlockLeaf)), unlockScript, internalXOnly, expiryLeaf };
@@ -94,10 +99,11 @@ export function harkLeafTaproot(userPub, serverPub, expiryHeight, unlockHash) {
 
 // Forfeit claim output: internal = musig(user, server);
 // leaves: delayed exit (user) + unlock (server key)
+// Only built during live round participation, which is pver 5 — always v1.
 function forfeitClaimTaproot(userPub, serverPub, exitDelta, unlockHash) {
   const { internalXOnly } = musigInternalKey([userPub, serverPub]);
   const exitLeaf = tapLeafHash(delayedSignScript(exitDelta, userPub.slice(1)));
-  const unlockLeaf = tapLeafHash(hashSignScript(unlockHash, serverPub.slice(1)));
+  const unlockLeaf = tapLeafHash(hashSignScriptV1(unlockHash, serverPub.slice(1)));
   return taprootFromMerkle(internalXOnly, tapBranch(exitLeaf, unlockLeaf));
 }
 
@@ -113,9 +119,10 @@ export function transitionInputTxout(transition, amountSat, serverPub, expiryHei
     const pubkeys = transition.pubkeys.map((p) => hex.decode(p));
     return { valueSat: amountSat, scriptPubKey: cosignedInputTaproot(pubkeys, serverPub, expiryHeight).scriptPubKey };
   }
-  if (transition.type === 'hashLockedCosigned') {
+  if (transition.type === 'hashLockedCosigned' || transition.type === 'hashLockedCosigned_v0') {
     const hash = hex.decode(transition.unlock.hash ?? sha256Hex(transition.unlock.preimage));
-    const tp = harkLeafTaproot(hex.decode(transition.userPubkey), serverPub, expiryHeight, hash);
+    const gen = transition.type === 'hashLockedCosigned' ? 1 : 0;
+    const tp = harkLeafTaproot(hex.decode(transition.userPubkey), serverPub, expiryHeight, hash, gen);
     return { valueSat: amountSat, scriptPubKey: tp.scriptPubKey };
   }
   if (transition.type === 'arkoor') {
@@ -242,10 +249,11 @@ const encodeTransition = (t) => {
     return concatBytes(Uint8Array.of(0x02), varint(t.clientCosigners.length),
       ...t.clientCosigners.map((p) => hex.decode(p)), hex.decode(t.tapTweak), sig);
   }
-  if (t.type === 'hashLockedCosigned') {
+  if (t.type === 'hashLockedCosigned' || t.type === 'hashLockedCosigned_v0') {
     const [tag, val] = t.unlock.preimage != null
       ? [0, hex.decode(t.unlock.preimage)] : [1, hex.decode(t.unlock.hash)];
-    return concatBytes(Uint8Array.of(0x03), hex.decode(t.userPubkey), sig, Uint8Array.of(tag), val);
+    const typeByte = t.type === 'hashLockedCosigned' ? 0x04 : 0x03;
+    return concatBytes(Uint8Array.of(typeByte), hex.decode(t.userPubkey), sig, Uint8Array.of(tag), val);
   }
   throw new Error('unknown transition type ' + t.type);
 };
@@ -320,7 +328,8 @@ export async function roundParticipationStatus(ark, unlockHash) {
 // MuSig2 script-spend cosign of the hash-locked leaf (NO taptweak)
 export async function cosignHarkLeaf(ark, vtxo, fundingTx, vtxoKeys, serverPub) {
   const last = vtxo.genesis[vtxo.genesis.length - 1];
-  if (last.transition.type !== 'hashLockedCosigned') throw new Error('not a hark leaf vtxo');
+  if (!['hashLockedCosigned', 'hashLockedCosigned_v0'].includes(last.transition.type)) throw new Error('not a hark leaf vtxo');
+  const leafGen = last.transition.type === 'hashLockedCosigned' ? 1 : 0;
   const unlockHash = hex.decode(last.transition.unlock.hash);
 
   // leaf tx + the output it spends
@@ -330,7 +339,7 @@ export async function cosignHarkLeaf(ark, vtxo, fundingTx, vtxoKeys, serverPub) 
     ? chain[chain.length - 2].tx.outputs[chain[chain.length - 2].outputIdx]
     : fundingTx.outputs[vtxo.anchorPoint.vout];
 
-  const tp = harkLeafTaproot(vtxoKeys.pubkey, serverPub, vtxo.expiryHeight, unlockHash);
+  const tp = harkLeafTaproot(vtxoKeys.pubkey, serverPub, vtxo.expiryHeight, unlockHash, leafGen);
   const sighash = taprootScriptSighash(leaf.tx, [preleafTxout], tapLeafHash(tp.unlockScript));
 
   const nonces = musig2.nonceGen(vtxoKeys.pubkey, vtxoKeys.privkey, undefined, sighash);

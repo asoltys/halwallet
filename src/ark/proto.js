@@ -74,7 +74,11 @@ export function* pbFields(buf) {
 // ---------------------------------------------------------------------------
 
 // Ark protocol version we speak (server advertises min/max in Handshake).
-export const PVER = 3;
+// 5 = hashlock clauses v1 (preimage size check in scripts, new policy type
+// bytes, HashLockedCosigned v1 transitions) — required by 0.6.0 servers for
+// Lightning and round participation. Implies pver-4 semantics too: ppm fees
+// round UP and expiry-ppm is charged on the total across VTXOs.
+export const PVER = 5;
 
 export class GrpcError extends Error {
   constructor(status, message, method) {
@@ -298,31 +302,39 @@ function decodeGenesisTransition(r) {
     const tapTweak = hex.encode(r.bytes(32));
     return { type: 'arkoor', clientCosigners, tapTweak, signature: optSignature(r) };
   }
-  if (type === 3) { // HashLockedCosigned
+  if (type === 3 || type === 4) {
+    // HashLockedCosigned: type 3 = v0 (pre-0.6.0 scripts), 4 = v1 (unlock
+    // clause checks the preimage is 32 bytes). Same wire shape; the type
+    // decides which script generation reconstructs/validates the leaf.
     const userPubkey = hex.encode(r.bytes(33));
     const signature = optSignature(r);
     const tag = r.u8();
     const unlock = { [tag === 0 ? 'preimage' : 'hash']: hex.encode(r.bytes(32)) };
-    return { type: 'hashLockedCosigned', userPubkey, signature, unlock };
+    return { type: type === 4 ? 'hashLockedCosigned' : 'hashLockedCosigned_v0', userPubkey, signature, unlock };
   }
   throw new Error('unknown genesis transition type ' + type);
 }
 
 function decodePolicy(r) {
   const type = r.u8();
+  // Bare names are the v1 (0.6.0) policies; _v0 marks the legacy scripts that
+  // existing vtxos may still carry. (The retired third-party HTLC proposal
+  // used 0x08, which upstream has since assigned to serverHtlcRecv v1.)
   if (type === 0x00) return { type: 'pubkey', userPubkey: hex.encode(r.bytes(33)) };
   if (type === 0x01) return {
-    type: 'serverHtlcSend', userPubkey: hex.encode(r.bytes(33)),
+    type: 'serverHtlcSend_v0', userPubkey: hex.encode(r.bytes(33)),
     paymentHash: hex.encode(r.bytes(32)), htlcExpiry: r.u32(),
   };
   if (type === 0x02) return {
+    type: 'serverHtlcRecv_v0', userPubkey: hex.encode(r.bytes(33)),
+    paymentHash: hex.encode(r.bytes(32)), htlcExpiry: r.u32(), htlcExpiryDelta: r.u16(),
+  };
+  if (type === 0x08) return {
     type: 'serverHtlcRecv', userPubkey: hex.encode(r.bytes(33)),
     paymentHash: hex.encode(r.bytes(32)), htlcExpiry: r.u32(), htlcExpiryDelta: r.u16(),
   };
-  // third-party HTLC (claim/refund between two users) — see the upstream
-  // proposal in docs/third-party-htlc.md
-  if (type === 0x08) return {
-    type: 'htlc', claimPubkey: hex.encode(r.bytes(33)), refundPubkey: hex.encode(r.bytes(33)),
+  if (type === 0x09) return {
+    type: 'serverHtlcSend', userPubkey: hex.encode(r.bytes(33)),
     paymentHash: hex.encode(r.bytes(32)), htlcExpiry: r.u32(),
   };
   throw new Error('unknown vtxo policy type ' + type);
