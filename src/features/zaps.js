@@ -41,7 +41,8 @@ export function zapsFeature(ctx) {
       if (profile && profile.name) z.name = profile.name;
       const lnTarget = zapTargetFromProfile(profile, target.pk);
       if (!lnTarget) { z.status = 'error'; z.error = t('lnZapNoAddress'); render(); return; }
-      z.target = target = lnTarget;
+      z.target = target = { ...lnTarget, eventId: target.eventId || null }; // keep the note being zapped
+
       z.address = lnTarget.address || z.address;
     }
     const params = await fetchPayParams(target.url);
@@ -72,7 +73,8 @@ export function zapsFeature(ctx) {
       if (canZap) {
         zapRequest = buildZapRequest({
           amountMsat: msat, relays: wallet.nostrRelays(), lnurlBech32: z.target.lnurlBech32,
-          recipientPk: z.target.pk, comment: z.comment, signFn: (partial) => wallet.nostrSign(partial),
+          recipientPk: z.target.pk, eventId: z.target.eventId || null, comment: z.comment,
+          signFn: (partial) => wallet.nostrSign(partial),
         });
       }
       const invoice = await requestInvoice(p, { amountMsat: msat, zapRequest, lnurlBech32: z.target.lnurlBech32, comment: z.comment });
@@ -197,10 +199,11 @@ export function zapsFeature(ctx) {
     // ark's "no Ark address" screen checks this before offering the fallback.
     canLnZap() { return canPay() && !!wallet.nostrProfile; },
     // Ark's "no Ark address published" screen offers a Lightning fallback,
-    // which lands here with the recipient's pubkey.
-    lnZapNpub(pk, npub) {
+    // which lands here with the recipient's pubkey (and, when the zap was
+    // aimed at a note, its event id for the zap request's e tag).
+    lnZapNpub(pk, npub, eventId) {
       if (!canPay() || !wallet.nostrProfile) return false;
-      begin({ kind: 'npub', pk }, shortNpub(npub || npubOf(pk)));
+      begin({ kind: 'npub', pk, eventId: eventId || null }, shortNpub(npub || npubOf(pk)));
       return true;
     },
     sendView() { return zapView(); },

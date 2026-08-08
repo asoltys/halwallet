@@ -87,6 +87,8 @@ const ui = {
   giftSplitOffer: null, // { amt, lock, freed, fee } when offering to split a coin first
   revokeId: null, // outpoint of a gift being revoked (confirm state)
   claimCode: null, // gift code being claimed (opened from a #gift= link)
+  claimLocked: null, // npub-locked gift blob opened from a /lg/ link (public fields)
+  claimCodeInput: '', // one-time claim code typed on the locked-gift screen
   claimedAmount: 0,
   claimError: '',
   offlineFallback: false, // auto-entered offline because the network was unreachable

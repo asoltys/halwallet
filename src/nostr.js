@@ -14,6 +14,7 @@ import * as nip44 from 'nostr-tools/nip44';
 import * as nip04 from 'nostr-tools/nip04';
 import { getPublicKey, finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { decode as nip19decode, npubEncode, nsecEncode } from 'nostr-tools/nip19';
+import { wrapEvent as nip17WrapEvent } from 'nostr-tools/nip17';
 import { SimplePool } from 'nostr-tools/pool';
 import { randomBytes } from '@noble/hashes/utils';
 import { base64urlnopad } from '@scure/base';
@@ -152,6 +153,25 @@ export async function fetchInboxRelays(pubkeyHex, relays = PROFILE_RELAYS) {
   return [];
 }
 
+// Encrypt a gift payload two ways: (1) under a fresh one-time code, delivered to
+// the recipient out-of-band via a nostr DM — the manual path; and (2) to the
+// recipient's nostr pubkey via an ephemeral key, so a NIP-07 browser extension
+// can decrypt it in-place with no code. Both decrypt to the same payload.
+// (NIP-44 takes raw 32-byte key material, so the one-time code works as a key.)
+export function encryptGiftPayload(plaintext, recipientPkHex) {
+  const codeKey = randomBytes(32);
+  const ephSk = generateSecretKey();
+  return {
+    code: base64urlnopad.encode(codeKey),
+    ctCode: nip44.encrypt(plaintext, codeKey),
+    eph: getPublicKey(ephSk),
+    ctKey: nip44.encrypt(plaintext, nip44.getConversationKey(ephSk, recipientPkHex)),
+  };
+}
+export function decryptWithCode(code, ct) {
+  return nip44.decrypt(ct, base64urlnopad.decode((code || '').trim()));
+}
+
 const DTAG = 'bitcoin-wallet';
 // Each network syncs under its own d-tag base — a shared one would let a signet
 // snapshot overwrite mainnet state (and vice versa). Mainnet keeps the bare tag
@@ -283,6 +303,22 @@ export class NostrSync {
     try {
       return finalizeEvent({ created_at: Math.floor(Date.now() / 1000), tags: [], content: '', ...partial }, this.sk);
     } catch { return null; }
+  }
+
+  // Deliver an encrypted DM (a locked gift's claim code) as a NIP-17 gift wrap
+  // (kind 1059) — the modern standard every current client supports. Goes to the
+  // recipient's published inbox relays (NIP-17/65) plus a broad fallback.
+  async sendDM(recipientPkHex, text, relays = null) {
+    if (!this.sk) return false;
+    let evt;
+    try { evt = nip17WrapEvent(this.sk, { publicKey: recipientPkHex }, text); } catch { return false; }
+    let targets = relays;
+    if (!targets) {
+      const inbox = await fetchInboxRelays(recipientPkHex);
+      targets = [...new Set([...inbox, ...PROFILE_RELAYS])].slice(0, 8);
+    }
+    const res = await Promise.allSettled(pool.publish(targets, evt));
+    return res.some((x) => x.status === 'fulfilled');
   }
 
   // Publish an event signed by some other key (the NWC service key). The

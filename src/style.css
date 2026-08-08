@@ -425,6 +425,9 @@ hr.divider { margin: 16px 0; }
 .chat-bubble.me { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); text-align: left; }
 .chat-row.dm .chat-time { font-size: 10px; color: var(--faint); margin-top: 2px; }
 
+/* Profile note feed: inline images stay contained, links wrap. */
+.note-img { display: block; max-width: 100%; max-height: 320px; border-radius: 10px; margin-top: 6px; object-fit: contain; }
+
 
 /* Inline move-money panel on the balance card. */
 .balance-move { gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); text-align: left; }

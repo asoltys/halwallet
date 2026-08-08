@@ -1010,6 +1010,75 @@ export function messagesFeature(ctx) {
     }
   }
 
+  // ---- profile notes: latest public posts & replies -----------------------
+
+  const NOTE_RELAYS = [...new Set([...PROFILE_RELAYS, ...DM_RELAYS])];
+  const notesCache = new Map(); // pk -> { status: 'loading'|'ready', notes: [kind-1 events] }
+  function notesFor(pk) {
+    let c = notesCache.get(pk);
+    if (c) return c;
+    c = { status: 'loading', notes: [] };
+    notesCache.set(pk, c);
+    queryOn(NOTE_RELAYS, { kinds: [1], authors: [pk], limit: 30 }, 4500).then((evs) => {
+      const seen = new Set();
+      c.notes = (evs || [])
+        .filter((e) => !seen.has(e.id) && seen.add(e.id))
+        .sort((a, b) => b.created_at - a.created_at)
+        .slice(0, 20);
+      c.status = 'ready';
+      if (ui.profilePk === pk) render();
+    }).catch(() => { c.status = 'ready'; if (ui.profilePk === pk) render(); });
+    return c;
+  }
+
+  // Note content, safely: text stays text nodes — relay content must never
+  // reach innerHTML. URLs become links (image URLs inline), npub mentions a
+  // clickable @name, other nostr: refs a dim stub.
+  const NOTE_SPLIT = /(https?:\/\/[^\s]+|nostr:(?:npub|nprofile|note|nevent|naddr)1[a-z0-9]+)/gi;
+  function noteBody(text) {
+    const out = [];
+    for (const part of String(text || '').split(NOTE_SPLIT)) {
+      if (!part) continue;
+      if (/^https?:\/\//i.test(part)) {
+        if (/\.(png|jpe?g|gif|webp|avif)(\?[^\s]*)?$/i.test(part)) {
+          out.push(h('img', { src: part, class: 'note-img', loading: 'lazy',
+            onError: (e) => { e.target.style.display = 'none'; } }));
+        } else {
+          out.push(h('a', { href: part, target: '_blank', rel: 'noopener noreferrer' },
+            part.length > 64 ? part.slice(0, 61) + '…' : part));
+        }
+      } else if (/^nostr:npub1/i.test(part)) {
+        const mpk = parseNostrPubkey(part.slice(6));
+        if (mpk) out.push(h('a', { href: '#', onClick: (e) => { e.preventDefault(); openProfile(mpk); } }, '@' + displayName(mpk)));
+        else out.push(part);
+      } else if (/^nostr:/i.test(part)) {
+        out.push(h('span', { class: 'faint' }, part.slice(6, 18) + '…'));
+      } else out.push(part);
+    }
+    return out;
+  }
+
+  // Zap a specific note: ark first (instant, free, e-tagged receipt), else
+  // the Lightning zap flow — same ladder as paying the person directly.
+  function zapNote(pk, ev) {
+    const npubStr = npubOf(pk);
+    ui.profilePk = null;
+    ui.chatOpen = false;
+    ui.tab = 'send';
+    render();
+    if (!hook('zapNpub', pk, npubStr, ev.id)) hook('lnZapNpub', pk, npubStr, ev.id);
+  }
+
+  function noteCard(pk, ev) {
+    const isReply = ev.tags.some((x) => x[0] === 'e');
+    const canZap = !isMe(pk) && !!(hook('arkReady') || hook('canLnZap'));
+    return h('div', { class: 'card col', style: 'gap:6px' },
+      h('div', { class: 'row between', style: 'align-items:center' },
+        h('span', { class: 'small faint' }, (isReply ? '↩ ' + t('profReplyTag') + ' · ' : '') + timeLabel(ev.created_at * 1000)),
+        canZap ? h('button', { class: 'btn-sm', title: t('zapTitle'), onClick: () => zapNote(pk, ev) }, '⚡') : null),
+      h('div', { class: 'small', style: 'white-space:pre-wrap;overflow-wrap:anywhere' }, ...noteBody(ev.content)));
+  }
+
   async function saveProfile() {
     const id = await identity();
     if (!id) { toast(t('msgNoIdentity')); return; }
@@ -1131,6 +1200,17 @@ export function messagesFeature(ctx) {
                   render();
                   hook('matchSendText', npubStr);
                 } }, t('profPay')))),
+      // Their latest public notes, zappable in place.
+      (() => {
+        const c = notesFor(pk);
+        if (c.status === 'loading')
+          return h('div', { class: 'card col', style: 'align-items:center;padding:18px' }, h('span', { class: 'spinner sm' }));
+        if (!c.notes.length)
+          return h('div', { class: 'small faint', style: 'text-align:center' }, t('profNotesNone'));
+        return h('div', { class: 'col', style: 'gap:10px' },
+          h('div', { class: 'small muted', style: 'padding:0 2px' }, t('profNotesTitle')),
+          ...c.notes.map((ev) => noteCard(pk, ev)));
+      })(),
       h('button', { class: 'btn-ghost btn-block', onClick: () => { ui.profilePk = null; ui.profEdit = null; render(); } }, t('back')));
   }
 

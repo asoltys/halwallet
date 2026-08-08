@@ -885,8 +885,9 @@ export function arkFeature(ctx) {
   //   2. lightning: profile lud16/lud06, via the zap flow
   //   3. an on-chain address from the BIP-353 record
   const NAMES_REGISTRAR = 'https://names.coinos.io';
-  function startNpubPay(pk, npub) {
-    const z = (ui.arkZap = { npub, pk, amount: '', comment: '', status: 'lookup' });
+  function startNpubPay(pk, npub, eventId = null) {
+    const z = (ui.arkZap = { npub, pk, eventId, amount: '', comment: '', status: 'lookup' });
+    ui.zap = null; // a stale Lightning-zap card must not resurface behind ours
     ui.sendError = '';
     render();
     const live = () => ui.arkZap === z;
@@ -925,7 +926,7 @@ export function arkFeature(ctx) {
       if (profile && (profile.lud16 || profile.lud06)) {
         await connectArk().catch(() => {});
         if (!live()) return;
-        if (ctx.hook('canLnZap')) { ctx.hook('lnZapNpub', pk, npub); return; }
+        if (ctx.hook('canLnZap')) { ctx.hook('lnZapNpub', pk, npub, z.eventId); return; }
       }
       // 3. on-chain fallback
       if (onchain) {
@@ -979,10 +980,49 @@ export function arkFeature(ctx) {
       await wallet.nostrPublish({
         kind: ARK_ZAP_KIND,
         content: (z.comment || '').slice(0, 280),
-        tags: [['p', z.pk], ['amount', String(sats)], ['vtxo', vtxoId], ['network', getNetwork()]],
+        tags: [['p', z.pk], ...(z.eventId ? [['e', z.eventId]] : []),
+          ['amount', String(sats)], ['vtxo', vtxoId], ['network', getNetwork()]],
       }).catch(() => {});
       ui.arkZapped = { amountSat: sats, npub: z.npub };
       ui.arkZap = null;
+    } catch (e) {
+      ui.sendError = e.message;
+    }
+    ui.busy = false; render();
+  }
+
+  // No ark address published: the zap leaves anyway, as an ark gift locked to
+  // their nostr key. The sats move into a bearer vtxo now; the public link is
+  // safe to put in the receipt because only the recipient's key — or the
+  // claim code we DM them — opens it. Unclaimed, it stays revocable from the
+  // gift card like any other ark gift.
+  async function doArkZapGift() {
+    const z = ui.arkZap;
+    const sats = ctx.parseAmount(z.amount, ctx.getUnit());
+    if (!sats || sats <= 0) { ui.sendError = t('enterValidAmtForN', { n: 1 }); render(); return; }
+    if (sats > (arkBalance()?.spendableSat || 0)) { ui.sendError = t('giftExceedsBalance'); render(); return; }
+    ui.busy = true; ui.sendError = ''; render();
+    try {
+      const g = await createArkGift(sats, z.pk);
+      const locked = ctx.hook('lockArkGift', g.code, sats, z.pk);
+      if (!locked) throw new Error(t('claimFailed')); // no gifts feature in this build
+      noteZap('to:' + g.address, z.pk);
+      const done = (ui.arkZapped = { amountSat: sats, npub: z.npub, gift: { url: locked.url, claimCode: locked.claimCode, dm: 'sending' } });
+      ui.arkZap = null;
+      // best-effort receipt; carries the locked link so the recipient can
+      // discover the gift from the note even if the DM never lands
+      await wallet.nostrPublish({
+        kind: ARK_ZAP_KIND,
+        content: (z.comment || '').slice(0, 280),
+        tags: [['p', z.pk], ...(z.eventId ? [['e', z.eventId]] : []),
+          ['amount', String(sats)], ['network', getNetwork()], ['gift', locked.url]],
+      }).catch(() => {});
+      const dmText = t('giftDmText', { amount: fmtAmount(sats) + ' ' + unitLabel(), link: locked.url, code: locked.claimCode });
+      if (wallet.sendNostrDM) {
+        wallet.sendNostrDM(z.pk, dmText)
+          .then((ok) => { done.gift.dm = ok ? 'sent' : 'failed'; render(); })
+          .catch(() => { done.gift.dm = 'failed'; render(); });
+      } else done.gift.dm = 'failed';
     } catch (e) {
       ui.sendError = e.message;
     }
@@ -995,45 +1035,77 @@ export function arkFeature(ctx) {
     // screen fills in rather than being replaced.
     if (ui.arkZap && ui.arkZap.status === 'lookup') return zapSkeleton(ui.arkZap.pk, ui.arkZap.npub);
     if (ui.arkZapped) {
-      return h('div', {
-        class: 'card col',
-        style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
-        onClick: () => { ui.arkZapped = null; ui.send = blankSend(); render(); },
-      },
-        h('div', { class: 'check-badge' }, '⚡'),
-        h('h2', { style: 'margin:0' }, t('arkZapSentTitle')),
+      const gift = ui.arkZapped.gift;
+      const finish = () => { ui.arkZapped = null; ui.send = blankSend(); render(); };
+      if (!gift) {
+        return h('div', {
+          class: 'card col',
+          style: 'align-items:center;text-align:center;gap:14px;cursor:pointer;padding:48px 20px',
+          onClick: finish,
+        },
+          h('div', { class: 'check-badge' }, '⚡'),
+          h('h2', { style: 'margin:0' }, t('arkZapSentTitle')),
+          h('div', { class: 'amount-neg', style: 'font-size:18px' }, '-' + fmtAmount(ui.arkZapped.amountSat) + ' ' + unitLabel()),
+          h('div', { class: 'small muted' }, t('tapToProceed')));
+      }
+      // A locked-gift zap has aftercare: the DM's fate, and the link + claim
+      // code to pass along by hand when the DM couldn't be delivered.
+      return h('div', { class: 'card col', style: 'align-items:center;text-align:center;gap:12px;padding:28px 16px' },
+        h('div', { class: 'check-badge' }, '🎁'),
+        h('h2', { style: 'margin:0' }, t('arkZapGiftSentTitle')),
         h('div', { class: 'amount-neg', style: 'font-size:18px' }, '-' + fmtAmount(ui.arkZapped.amountSat) + ' ' + unitLabel()),
-        h('div', { class: 'small muted' }, t('tapToProceed')));
+        gift.dm === 'sending'
+          ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('giftDmSending')))
+          : gift.dm === 'sent'
+            ? h('div', { class: 'small', style: 'color:var(--green)' }, t('giftDmSent'))
+            : h('div', { class: 'notice info', style: 'text-align:left' }, t('giftDmFailed')),
+        h('div', { class: 'addr-box break', style: 'width:100%;font-size:11px' }, gift.url),
+        h('div', { class: 'row gap6 wrap', style: 'justify-content:center' },
+          copyBtn(gift.url, t('copyLink')),
+          gift.dm !== 'sent' ? copyBtn(gift.claimCode, t('giftCopyCode')) : null),
+        h('button', { class: 'btn-primary btn-block', onClick: finish }, t('done')));
     }
     const z = ui.arkZap;
     if (!z) return null;
+    const spendable = arkBalance()?.spendableSat || 0;
+    // No ark address found — but a zap can still leave as an ark gift locked
+    // to their nostr key, when this build carries the gifts feature.
+    const giftOk = z.status === 'noark' && !wallet.watchOnly && spendable >= 1 && !!ctx.hook('canLockGift');
+    const amountInputs = (hint) => h('div', { class: 'col gap6' },
+      h('div', { class: 'input-group' },
+        h('input', { type: 'number', min: '0', inputmode: 'decimal', placeholder: t('lnPayAmount'), value: z.amount,
+          onInput: (e) => { z.amount = e.target.value; } }),
+        h('div', { style: 'display:flex;align-items:center' }, unitTag())),
+      h('input', { type: 'text', class: 'mono-input', placeholder: t('arkZapCommentPh'), value: z.comment,
+        onInput: (e) => { z.comment = e.target.value; } }),
+      h('div', { class: 'small faint' }, hint));
     return h('div', { class: 'card col', style: 'gap:12px' },
       h('h3', {}, '⚡ ' + t('zapTitle')),
       ctx.hook('profileChip', z.pk, 'lg') || h('div', { class: 'small muted', style: 'word-break:break-all' }, z.npub),
       z.status === 'lookup' ? h('div', { class: 'row gap6', style: 'align-items:center' }, h('span', { class: 'spinner sm' }), h('span', { class: 'small muted' }, t('arkZapLookup'))) : null,
-      z.status === 'noark' ? h('div', { class: 'notice err' }, t('arkZapNoArk')) : null,
+      z.status === 'noark' && !giftOk ? h('div', { class: 'notice err' }, t('arkZapNoArk')) : null,
+      giftOk ? h('div', { class: 'notice info' }, t('arkZapNoArkGift')) : null,
+      giftOk ? amountInputs(t('arkZapGiftHint')) : null,
+      giftOk
+        ? (ui.busy
+            ? h('button', { class: 'btn-primary btn-block', disabled: true }, h('span', { class: 'spinner' }))
+            : h('button', { class: 'btn-primary btn-block', onClick: doArkZapGift }, '🎁 ' + t('arkZapGiftBtn')))
+        : null,
+      z.status === 'wrongnet' ? h('div', { class: 'notice err' }, t('arkGiftWrongNet', { net: z.net })) : null,
       // No Ark address, but they may still take a Lightning zap — hand off to
       // the zaps feature (present alongside swaps).
       (z.status === 'noark' || z.status === 'wrongnet') && ctx.hook('canLnZap')
-        ? h('button', { class: 'btn-primary btn-block', onClick: () => { ctx.hook('lnZapNpub', z.pk, z.npub); } }, '⚡ ' + t('lnZapFallback'))
+        ? h('button', { class: (giftOk ? '' : 'btn-primary ') + 'btn-block', disabled: !!ui.busy, onClick: () => { ctx.hook('lnZapNpub', z.pk, z.npub, z.eventId); } }, '⚡ ' + t('lnZapFallback'))
         : null,
-      z.status === 'wrongnet' ? h('div', { class: 'notice err' }, t('arkGiftWrongNet', { net: z.net })) : null,
-      z.status === 'ready' && (arkBalance()?.spendableSat || 0) < 330
+      z.status === 'ready' && spendable < 330
         ? h('div', { class: 'notice info' }, t('zapNoBalance'))
         : z.status === 'ready'
-        ? h('div', { class: 'col gap6' },
-            h('div', { class: 'input-group' },
-              h('input', { type: 'number', min: '0', inputmode: 'decimal', placeholder: t('lnPayAmount'), value: z.amount,
-                onInput: (e) => { z.amount = e.target.value; } }),
-              h('div', { style: 'display:flex;align-items:center' }, unitTag())),
-            h('input', { type: 'text', class: 'mono-input', placeholder: t('arkZapCommentPh'), value: z.comment,
-              onInput: (e) => { z.comment = e.target.value; } }),
-            h('div', { class: 'small faint' }, t('arkZapHint')))
+        ? amountInputs(t('arkZapHint'))
         : null,
       ui.sendError ? h('div', { class: 'notice err' }, ui.sendError) : null,
       h('div', { class: 'row gap6' },
         h('button', { class: 'btn-ghost', onClick: () => { ui.arkZap = null; ui.sendError = ''; ui.send = blankSend(); render(); } }, t('back')),
-        z.status === 'ready' && (arkBalance()?.spendableSat || 0) >= 330
+        z.status === 'ready' && spendable >= 330
           ? (ui.busy
               ? h('button', { class: 'btn-primary grow', disabled: true }, h('span', { class: 'spinner' }))
               : h('button', { class: 'btn-primary grow', onClick: doArkZap }, t('arkZapBtn')))
@@ -1510,6 +1582,24 @@ export function arkFeature(ctx) {
     })).then((flags) => { if (flags.some(Boolean)) ark._save(); });
   }
 
+  // Fund a fresh bearer gift identity. Shared by the gifts feature's hook and
+  // the zap flow's locked-gift fallback; `lockedTo` records who a locked gift
+  // was for (the sender can still revoke either kind while unclaimed).
+  async function createArkGift(amountSat, lockedTo = null) {
+    const mgr = await connectArk();
+    const secret = crypto.getRandomValues(new Uint8Array(32));
+    const secretHex = hex.encode(secret);
+    const gm = await giftManager(secretHex);
+    const address = gm.address();
+    const actionId = await mgr.send(address, amountSat);
+    const action = mgr.state.actions.find((a) => a.id === actionId);
+    if (!action || action.step === 'failed') throw new Error(action?.error || t('claimFailed'));
+    const vtxoId = decodeVtxo(hex.decode((action.destBytesList || [action.destBytes])[0])).id;
+    arkGiftRecords().push({ id: vtxoId, amountSat, secretHex, created: Date.now(), revoked: false, claimed: false, ...(lockedTo ? { lockedTo } : {}) });
+    mgr._save();
+    return { code: encodeArkGiftCode(getNetwork(), amountSat, secret), amount: amountSat, address };
+  }
+
   // Sweep the gift identity's balance to `destAddress`. Shared by claim
   // (recipient's address) and revoke (sender's own address).
   async function sweepArkGift(code, destAddress) {
@@ -1962,6 +2052,15 @@ export function arkFeature(ctx) {
       startNpubPay(pk, String(text).trim());
       return true;
     },
+    // Zap a person — optionally a specific note of theirs (the profile feed's
+    // ⚡ button) — through the same resolution ladder as a pasted npub. The
+    // event id rides into the receipt's e tag; callers fall back to the
+    // lnZapNpub hook when ark can't serve this build/wallet.
+    zapNpub(pk, npub, eventId) {
+      if (!arkAvailable() || !wallet.nostrFetch) return false;
+      startNpubPay(pk, npub, eventId || null);
+      return true;
+    },
     historyEntries() {
       const s = arkStateNow();
       if (!s) return [];
@@ -2062,19 +2161,7 @@ export function arkFeature(ctx) {
       setNetwork(g.net);
       return true;
     },
-    async arkGiftCreate(amountSat) {
-      const mgr = await connectArk();
-      const secret = crypto.getRandomValues(new Uint8Array(32));
-      const secretHex = hex.encode(secret);
-      const gm = await giftManager(secretHex);
-      const actionId = await mgr.send(gm.address(), amountSat);
-      const action = mgr.state.actions.find((a) => a.id === actionId);
-      if (!action || action.step === 'failed') throw new Error(action?.error || t('claimFailed'));
-      const vtxoId = decodeVtxo(hex.decode((action.destBytesList || [action.destBytes])[0])).id;
-      arkGiftRecords().push({ id: vtxoId, amountSat, secretHex, created: Date.now(), revoked: false, claimed: false });
-      mgr._save();
-      return { code: encodeArkGiftCode(getNetwork(), amountSat, secret), amount: amountSat };
-    },
+    arkGiftCreate(amountSat) { return createArkGift(amountSat); },
     // Claim-side status: claimable (with the live amount), taken, wrongnet, or
     // unknown (not visible here — wrong server or not yet delivered).
     async arkGiftStatus(code) {

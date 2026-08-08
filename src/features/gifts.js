@@ -4,7 +4,8 @@
 
 import { newMnemonic } from '../wallet.js';
 import { getNetwork } from '../api.js';
-import { installGiftWallet, previewGift, giftOutpoints, buildClaimTx, giftMinimum } from './gifts-wallet.js';
+import { decryptWithCode, npubOf } from '../nostr.js';
+import { installGiftWallet, previewGift, giftOutpoints, buildClaimTx, giftMinimum, lockGift, previewLockedGift } from './gifts-wallet.js';
 import { t } from '../i18n.js';
 import { qrSvg } from '../qr.js';
 import { fmtBtc, timeAgo, shortAddr } from '../format.js';
@@ -47,6 +48,76 @@ export function giftsFeature(ctx) {
     } catch {
       return null;
     }
+  }
+
+  // A locked ark gift (/lg/ — base64url, so case-sensitive unlike /g/ and
+  // /ag/): the blob is public, the ark gift code inside is ciphertext only
+  // the recipient's nostr key (or the DM'd claim code) can open.
+  function readLockedGiftHash() {
+    try {
+      const m = location.pathname.match(/^\/lg\/([A-Za-z0-9_-]+)\/?$/);
+      if (!m) return null;
+      history.replaceState(null, '', '/');
+      return previewLockedGift(m[1]);
+    } catch { return null; }
+  }
+
+  // The locked-gift claim screen: who it's for, and the two ways to open it.
+  function lockedGiftClaimView() {
+    const lk = ui.claimLocked;
+    const hasExt = !!(typeof globalThis !== 'undefined' && globalThis.nostr && lk.eph && lk.ctKey);
+    const dismiss = () => { ui.claimLocked = null; ui.claimCodeInput = ''; ui.claimError = ''; render(); };
+    return h('div', { class: 'col', style: 'gap:16px;padding:16px;max-width:460px;margin:0 auto;width:100%' },
+      h('div', { class: 'card col', style: 'gap:14px;align-items:center' },
+        h('div', { class: 'check-badge', style: 'background:var(--accent)' }, '🎁'),
+        h('h3', { style: 'margin:0' }, t('giftForYou')),
+        h('div', { class: 'amt' }, fmtAmount(lk.amount), ' ', unitTag()),
+        h('div', { class: 'row gap6', style: 'align-items:center' },
+          h('span', { class: 'small muted' }, t('giftLockedTo')),
+          hook('profileChip', lk.to) || h('span', { class: 'small mono' }, (npubOf(lk.to) || lk.to).slice(0, 16) + '…')),
+        ui.claimError && h('div', { class: 'notice err' }, ui.claimError),
+        hasExt ? h('button', { class: 'btn-primary btn-block', disabled: ui.busy, onClick: claimViaExtension }, ui.busy ? h('span', { class: 'spinner' }) : t('claimWithExtension')) : null,
+        hasExt ? h('div', { class: 'small faint', style: 'text-align:center' }, t('orEnterCode')) : h('p', { class: 'small muted', style: 'text-align:center;margin:0' }, t('giftCodeHint')),
+        h('input', { type: 'text', class: 'mono-input', style: 'width:100%', placeholder: t('claimCodePlaceholder'),
+          autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', value: ui.claimCodeInput,
+          onInput: (e) => { ui.claimCodeInput = e.target.value; } }),
+        h('button', { class: (hasExt ? '' : 'btn-primary ') + 'btn-block', onClick: submitLockedCode }, t('claimBtn')),
+        h('button', { class: 'btn-ghost btn-block', onClick: dismiss }, t('dismiss'))
+      )
+    );
+  }
+
+  // Both unlock paths decrypt to the ordinary ark gift code and then walk the
+  // ordinary claim flow — the lock is purely a gate on learning the code.
+  function acceptLockedPayload(payload) {
+    if (!payload || !arkGiftOf(payload)) return false;
+    ui.claimLocked = null; ui.claimCodeInput = ''; ui.claimError = '';
+    claimGift(payload);
+    return true;
+  }
+
+  async function claimViaExtension() {
+    const ext = typeof globalThis !== 'undefined' && globalThis.nostr;
+    if (!ext) return;
+    ui.busy = true; ui.claimError = ''; render();
+    try {
+      const pk = await ext.getPublicKey();
+      if (pk !== ui.claimLocked.to) { ui.claimError = t('extWrongAccount'); ui.busy = false; render(); return; }
+      if (!ext.nip44 || !ext.nip44.decrypt) { ui.claimError = t('extNoNip44'); ui.busy = false; render(); return; }
+      const payload = await ext.nip44.decrypt(ui.claimLocked.eph, ui.claimLocked.ctKey);
+      ui.busy = false;
+      if (!acceptLockedPayload(payload)) { ui.claimError = t('extDecryptFailed'); render(); }
+    } catch {
+      ui.busy = false; ui.claimError = t('extDecryptFailed'); render();
+    }
+  }
+
+  function submitLockedCode() {
+    const code = (ui.claimCodeInput || '').trim();
+    if (!code) return;
+    let payload = null;
+    try { payload = decryptWithCode(code, ui.claimLocked.ct); } catch {}
+    if (!acceptLockedPayload(payload)) { ui.claimError = t('claimCodeWrong'); render(); }
   }
 
   // Entry point for claiming a gift code. If the recipient already has wallet(s),
@@ -779,18 +850,29 @@ export function giftsFeature(ctx) {
 
   return {
     id: 'gifts',
-    // opened with ?gift / /g/ / /lg/ in the URL — start the claim flow
+    // opened with ?gift / /g/ / /ag/ / /lg/ in the URL — start the claim flow
     bootUrl() {
       const code = readGiftHash();
       if (code) { claimGift(code); return true; } // bearer gift → claim into an existing wallet or a new one
+      const locked = readLockedGiftHash();
+      if (locked) { ui.claimLocked = locked; render(); return true; } // locked gift → unlock screen first
       return false;
     },
     giftOpened(code) { checkGiftClaimed(code); },
     screenView() {
+      if (ui.claimLocked) return lockedGiftClaimView();
       if (ui.viewGift) return viewGiftView();
       if (ui.claimChoose) return claimChooseView();
       if (ui.screen === 'claim') return claimScreen();
       return null;
+    },
+    // Wrap an ark gift code in an npub-locked blob (the ark zap flow's
+    // "no ark address" fallback). Returns the public link + the one-time
+    // claim code to deliver to the recipient.
+    canLockGift() { return true; },
+    lockArkGift(code, amount, recipientPkHex) {
+      const { blob, claimCode } = lockGift(code, amount, recipientPkHex);
+      return { blob, claimCode, url: `${location.origin}/lg/${blob}` };
     },
     receiveTakeover() { return claimCelebration(); },
     sendView() { return ui.giftMode ? giftView() : null; },

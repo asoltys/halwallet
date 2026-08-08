@@ -63,6 +63,9 @@ export function installSyncWallet(wallet) {
     nostrNpub() { const pk = this.nostrPubkey(); return pk ? npubOf(pk) : null; },
 
     // Send a nostr DM (e.g. a locked gift's claim code) to a recipient pubkey.
+    async sendNostrDM(recipientPkHex, text) {
+      return this.nostr && this.nostr.sk ? this.nostr.sendDM(recipientPkHex, text) : false;
+    },
 
     // Generic event publish/fetch on the configured sync relays — the seam
     // other features (ark zaps) use to speak their own kinds. No-ops when
