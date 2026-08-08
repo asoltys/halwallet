@@ -2179,8 +2179,12 @@ function onboardScreen() {
   // Steps that were waiting on something advance the moment it exists — unless
   // the user explicitly stepped back from username (heldFor remembers which
   // wallet they backed away from); only a different wallet re-advances then.
+  // A nostr login in flight holds the step: the wallet opens mid-login, but
+  // whether the wizard should end (a restored account) isn't known until the
+  // login finishes — advancing now flashes "Choose your username" at people
+  // who chose one long ago.
   if ((o.step === 'welcome' || o.step === 'signin') && ui.screen === 'wallet' && activeAccount()
-      && activeAccount().id !== o.heldFor) {
+      && activeAccount().id !== o.heldFor && !ui.nostrLoginBusy) {
     o.step = 'username';
     o.enterAddr = featureHook('namesAddress') || null;
   }
@@ -2990,7 +2994,7 @@ function parkSendField() {
   const el = document.activeElement;
   if (el && el.isConnected && el.tagName === 'INPUT') el.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
-const sendSearcher = makeSearcher((q, rows) => { sendSearch.rows = rows; render(); if (rows.length) setTimeout(parkSendField, 50); });
+const sendSearcher = makeSearcher((q, rows) => { sendSearch.rows = rows; render(); if (rows && rows.length) setTimeout(parkSendField, 50); });
 
 // One recipient: address + amount. Max is only offered for a single recipient.
 function recipientRow(s, r, i) {
@@ -3034,11 +3038,12 @@ function recipientRow(s, r, i) {
   });
   const pickRecipient = (cand) => {
     const v = cand.address || npubOf(cand.pk);
-    sendSearcher.clear();
-    addrInput.value = v;
+    // State first: clear() re-renders, and that render must already see the
+    // picked address — the old order repainted the half-typed query and left
+    // the pick looking like it did nothing.
     r.address = v;
     ui.sendError = '';
-    syncCheck();
+    sendSearcher.clear();
     if (!featureMatchSend(v)) render();
   };
   const row = h(

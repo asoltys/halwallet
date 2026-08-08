@@ -556,6 +556,15 @@ export function namesFeature(ctx) {
       if (!ui.send || ui.send.recipients.length !== 1) return false;
       return beginResolve(text);
     },
+    // DNS resolution takes visible time — say so under the recipient field
+    // instead of leaving a picked name looking ignored.
+    sendFormNote(a) {
+      const nr = ui.nameResolve;
+      if (!nr || nr.text !== a) return null;
+      return h('div', { class: 'row gap6', style: 'align-items:center;justify-content:center' },
+        h('span', { class: 'spinner sm' }),
+        h('span', { class: 'small muted' }, t('namesResolving', { name: String(a || '').trim() })));
+    },
     settingsCards() { return [namesCard()]; },
   };
 }

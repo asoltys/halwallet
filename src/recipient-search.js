@@ -31,27 +31,71 @@ const MAX_RESULTS = 8;
 // Primal's public cache API has the best-ranked user search on nostr (it's
 // what the Primal client itself uses): a custom REQ that answers with plain
 // kind-0 events. Nonstandard, so the NIP-50 relays stay as fallback.
+// One socket serves the whole typing session — the per-query handshake used
+// to cost more than the query itself. Idle for a minute, it closes itself.
+let pws = null, pwsN = 0, pwsIdle = null;
+const pwsSubs = new Map(); // sub id -> { rows, finish }
 function primalSearch(q, limit = MAX_RESULTS) {
   return new Promise((resolve) => {
+    const sid = 'rs' + ++pwsN;
     const rows = [];
-    let ws;
-    const finish = () => { clearTimeout(to); try { ws.close(); } catch {} resolve(rows); };
+    const finish = () => { clearTimeout(to); pwsSubs.delete(sid); resolve(rows); };
     const to = setTimeout(finish, 3500);
-    try { ws = new WebSocket(PRIMAL_CACHE); } catch { clearTimeout(to); return resolve(rows); }
-    ws.onopen = () => ws.send(JSON.stringify(['REQ', 'rs', { cache: ['user_search', { query: q, limit }] }]));
-    ws.onmessage = (ev) => {
-      try {
-        const m = JSON.parse(ev.data);
-        if (m[0] === 'EVENT' && m[2] && m[2].kind === 0) rows.push(m[2]);
-        if (m[0] === 'EOSE') finish();
-      } catch {}
-    };
-    ws.onerror = finish;
+    pwsSubs.set(sid, { rows, finish });
+    clearTimeout(pwsIdle);
+    pwsIdle = setTimeout(() => { try { pws?.close(); } catch {} pws = null; }, 60_000);
+    const send = () => { try { pws.send(JSON.stringify(['REQ', sid, { cache: ['user_search', { query: q, limit }] }])); } catch { finish(); } };
+    if (pws && pws.readyState === 1) return send();
+    if (!pws || pws.readyState > 1) {
+      try { pws = new WebSocket(PRIMAL_CACHE); } catch { pws = null; return finish(); }
+      pws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          const sub = pwsSubs.get(m[1]);
+          if (!sub) return;
+          if (m[0] === 'EVENT' && m[2] && m[2].kind === 0) sub.rows.push(m[2]);
+          if (m[0] === 'EOSE') sub.finish();
+        } catch {}
+      };
+      pws.onerror = pws.onclose = () => {
+        pws = null;
+        const waiting = [...pwsSubs.values()];
+        pwsSubs.clear();
+        for (const s of waiting) s.finish();
+      };
+    }
+    pws.addEventListener('open', send, { once: true });
   });
 }
 
+// Caches survive reloads: a name searched yesterday paints instantly today.
+// Profiles cap at 200 by recency; whole-query results keep for 12 hours.
+const PROF_KEY = 'btc-wallet-search-profiles';
+const QUERY_KEY = 'btc-wallet-search-queries';
+const QUERY_TTL = 12 * 3600_000;
 const profileCache = new Map(); // pk -> { name, picture }
 const queryCache = new Map(); // q -> rows
+const queryAt = new Map(); // q -> when the rows were fetched
+try {
+  for (const [pk, v] of Object.entries(JSON.parse(localStorage.getItem(PROF_KEY) || '{}'))) profileCache.set(pk, v);
+  const now = Date.now();
+  for (const [q, e] of Object.entries(JSON.parse(localStorage.getItem(QUERY_KEY) || '{}')))
+    if (e && Array.isArray(e.rows) && now - (e.t || 0) < QUERY_TTL) { queryCache.set(q, e.rows); queryAt.set(q, e.t); }
+} catch {}
+let persistTimer = null;
+function persistCaches() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    try {
+      const prof = {};
+      for (const [pk, v] of [...profileCache].slice(-200)) prof[pk] = { name: v.name || null, picture: v.picture || null };
+      localStorage.setItem(PROF_KEY, JSON.stringify(prof));
+      const qs = {};
+      for (const [q, rows] of [...queryCache].slice(-60)) qs[q] = { t: queryAt.get(q) || Date.now(), rows };
+      localStorage.setItem(QUERY_KEY, JSON.stringify(qs));
+    } catch {}
+  }, 800);
+}
 
 // Worth searching? A partial username or npub — never an address, invoice,
 // or key the Send form knows how to handle whole. Known payment prefixes are
@@ -84,7 +128,11 @@ async function fillProfiles(rows) {
   }
 }
 
-export async function searchRecipients(qRaw) {
+// onPartial (optional) receives the current best rows as each source lands,
+// so the UI paints the fast sources (registrar, cached profiles) without
+// waiting for the slow ones. The returned promise still resolves with the
+// final, profile-filled rows.
+export async function searchRecipients(qRaw, onPartial = null) {
   const q = qRaw.trim().toLowerCase();
   if (queryCache.has(q)) return queryCache.get(q);
   const out = new Map(); // pk -> { pk, name, address, picture, pri }
@@ -95,13 +143,26 @@ export async function searchRecipients(qRaw) {
     else out.set(pk, { pk, ...row, pri });
   };
 
+  // Within a source, a name that actually contains the query outranks the
+  // search relay's looser relevance matches.
+  const score = (r) => ((r.name || '').toLowerCase().includes(q) || (r.address || r.nip05 || '').toLowerCase().includes(q)) ? 0 : 1;
+  const snapshot = () => {
+    const rows = [...out.values()].sort((a, b) => a.pri - b.pri || score(a) - score(b)).slice(0, MAX_RESULTS);
+    for (const r of rows) {
+      const p = profileCache.get(r.pk);
+      if (p) { r.picture ||= p.picture; r.name ||= p.name; }
+    }
+    return rows;
+  };
+  const emit = () => { if (onPartial && out.size) onPartial(snapshot()); };
+
   const exact = parseNostrPubkey(q);
-  if (exact) add(exact, {}, 0);
+  if (exact) { add(exact, {}, 0); emit(); }
 
   await Promise.allSettled([
     fetch(`${REGISTRAR}/search?q=${encodeURIComponent(q)}`)
       .then((r) => r.json())
-      .then((j) => (j.results || []).forEach((r) => add(r.pubkey, { name: r.name, address: r.address }, 1))),
+      .then((j) => { (j.results || []).forEach((r) => add(r.pubkey, { name: r.name, address: r.address }, 1)); emit(); }),
     (async () => {
       if (exact) return; // an npub needs no full-text search
       const noteKind0 = (e, pri) => {
@@ -113,19 +174,20 @@ export async function searchRecipients(qRaw) {
       };
       const primal = await primalSearch(q);
       for (const e of primal) noteKind0(e, 2);
-      if (primal.length) return; // fallback only when the cache is empty/down
-      const evs = await queryOn(SEARCH_RELAYS, { kinds: [0], search: q, limit: MAX_RESULTS }, 3500);
-      for (const e of evs) noteKind0(e, 3);
+      if (!primal.length) {
+        const evs = await queryOn(SEARCH_RELAYS, { kinds: [0], search: q, limit: MAX_RESULTS }, 3500);
+        for (const e of evs) noteKind0(e, 3);
+      }
+      emit();
     })(),
   ]);
 
-  // Within a source, a name that actually contains the query outranks the
-  // search relay's looser relevance matches.
-  const score = (r) => ((r.name || '').toLowerCase().includes(q) || (r.address || r.nip05 || '').toLowerCase().includes(q)) ? 0 : 1;
-  const rows = [...out.values()].sort((a, b) => a.pri - b.pri || score(a) - score(b)).slice(0, MAX_RESULTS);
+  const rows = snapshot();
   await fillProfiles(rows).catch(() => {});
-  if (queryCache.size > 200) queryCache.clear();
+  if (queryCache.size > 200) { queryCache.clear(); queryAt.clear(); }
   queryCache.set(q, rows);
+  queryAt.set(q, Date.now());
+  persistCaches();
   return rows;
 }
 
@@ -145,9 +207,10 @@ export function makeSearcher(onUpdate) {
       // almost immediately (that's the wait the user actually feels), while
       // longer ones — mid-word keystrokes — wait long enough to skip the
       // characters still being typed. Cached prefixes are instant.
-      const wait = queryCache.has(s) ? 0 : s.length <= 3 ? 120 : 500;
+      const wait = queryCache.has(s) ? 0 : s.length <= 3 ? 120 : 300;
       timer = setTimeout(async () => {
-        const rows = await searchRecipients(q).catch(() => []);
+        // partial results paint as each source lands; the final call settles it
+        const rows = await searchRecipients(q, (partial) => { if (my === seq) onUpdate(q, partial); }).catch(() => []);
         if (my === seq) onUpdate(q, rows);
       }, wait);
     },
