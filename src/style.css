@@ -551,7 +551,7 @@ body::after {
 .onb-punk { width: 56px; height: 56px; border-radius: 50%; flex-shrink: 0; cursor: pointer; border: 3px solid transparent; transition: transform .15s, border-color .15s; }
 .onb-punk:hover { transform: scale(1.08); }
 .onb-punk.sel { border-color: var(--accent); transform: scale(1.08); }
-.onb-preview { width: 84px; height: 84px; border-radius: 50%; object-fit: cover; align-self: center; box-shadow: var(--shadow); }
+.onb-avatar { width: 160px; height: 160px; border-radius: 50%; object-fit: cover; align-self: center; box-shadow: var(--shadow); transition: opacity .15s; }
 .onb-confetti { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .onb-confetti i { position: absolute; top: -12px; width: 9px; height: 14px; opacity: .9; animation: confetti-fall 2.8s ease-in forwards; }
 .onb-confetti i:nth-child(4n) { background: #f7931a; }

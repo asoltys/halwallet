@@ -2285,9 +2285,17 @@ function onboardScreen() {
   if (o.step === 'avatar') {
     const me = (featureHook('nostrLoginIdentity') || {}).pubkey || (wallet.nostrPubkey && wallet.nostrPubkey());
     const sel = o.avatar;
+    // The big avatar IS the selection: it shows exactly what Continue will
+    // publish — a picked punk, an upload, or the pubkey-derived default.
+    const preview = sel || (me ? punkUrl(me) : null);
     return page([
       title(t('onbAvatarTitle')),
       h('p', { class: 'muted', style: 'margin:0' }, t('onbAvatarBody')),
+      preview ? h('img', {
+        class: 'onb-avatar', src: preview, alt: '',
+        style: ui.onbBusy ? 'opacity:.5' : '',
+        onError: (e) => { e.target.style.visibility = 'hidden'; },
+      }) : null,
       h('div', { class: 'onb-punks', 'data-keep-scroll': 'punks' },
         ...PUNK_PICKS.map((n) =>
           h('img', {
@@ -2305,7 +2313,6 @@ function onboardScreen() {
           try { o.avatar = await onbUpload(f); } catch (err) { ui.onbError = err.message; }
           ui.onbBusy = false; render();
         } })),
-      o.avatar ? h('img', { class: 'onb-preview', src: o.avatar, alt: '' }) : null,
       ui.onbError ? h('div', { class: 'notice err' }, ui.onbError) : null,
       h('button', { class: 'btn-primary btn-block', style: 'padding:14px', disabled: ui.onbBusy, onClick: async () => {
         ui.onbBusy = true; ui.onbError = ''; render();
