@@ -1892,6 +1892,7 @@ export function messagesFeature(ctx) {
       rooms.clear();
       threads.clear();
       pendingDirect.clear();
+      seenWraps.clear(); // the next account must decrypt wraps this one couldn't
       dmStarted = false;
       listsSynced = false;
     },

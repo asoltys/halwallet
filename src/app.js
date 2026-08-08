@@ -857,6 +857,12 @@ async function enterWallet(mnemonic, passphrase, opts = {}) {
 // Load an account into the wallet and start scanning. Full-account seeds are
 // kept in sessionStorage (ephemeral); a refresh restores the open account.
 async function activateAccount(acc, opts = {}) {
+  // Tear down the previous account's feature runtime BEFORE the wallet
+  // switches identity: live relay subscriptions and in-memory state (chat
+  // threads, decrypted DMs) belong to the old keys, and surviving into this
+  // account they'd both leak the old account's messages on screen and block
+  // the new account's own subscriptions from ever starting.
+  for (const f of FEATURES) { try { f.stop && f.stop(); } catch {} }
   activeId = acc.id;
   // A gift link generates this wallet only to claim into. Keep it provisional
   // until the user commits (claims, or chooses to keep it / enters the wallet),
@@ -1437,6 +1443,9 @@ function applyBootAutoLogout() {
 
 function lock({ offerPassword = false } = {}) {
   wallet.stopRealtime();
+  // A locked session must not keep listening as the account that just left —
+  // and whatever logs in next must not inherit its threads or subscriptions.
+  for (const f of FEATURES) { try { f.stop && f.stop(); } catch {} }
   clearAccounts();
   vaultPassword = null;
   wallet.load({ mnemonic: '', passphrase: '', netName: getNetwork(), offline: false });
